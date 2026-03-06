@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { hashPassword, normalizeEmail } from "@/lib/auth";
+import { enforceAppUserOtp } from "@/lib/app-auth";
 import { logAppAudit } from "@/lib/app-audit";
 import { randomBytes } from "crypto";
 
@@ -28,6 +29,8 @@ export type SsoLoginInput = {
   provider: SsoProvider;
   connectionName?: string;
   payload: unknown;
+  otp?: string;
+  otpBackup?: string;
 };
 
 type SsoIdentity = {
@@ -286,6 +289,17 @@ export async function loginWithSso(pageId: string, input: SsoLoginInput) {
     });
     created = true;
   }
+
+  await enforceAppUserOtp(
+    {
+      id: account.app_user_id,
+      otp_enabled: Boolean(account.app_user?.otp_enabled),
+      otp_secret: account.app_user?.otp_secret ?? null,
+      otp_backup_codes: account.app_user?.otp_backup_codes ?? null,
+      otp_last_used_at: account.app_user?.otp_last_used_at ?? null,
+    },
+    { otp: input.otp, otpBackup: input.otpBackup }
+  );
 
   const token = generateToken();
   await prisma.appSession.create({

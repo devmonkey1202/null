@@ -23,6 +23,7 @@ export type AppStoreArtifacts = {
   packagePath: string;
   metadataPath: string;
   checklistPath: string;
+  signingGuidePath: string;
   metadata: Record<string, unknown>;
 };
 
@@ -66,6 +67,21 @@ function buildChecklist(platform: AppStorePlatform, appId: string) {
   ].join("\n");
 }
 
+function buildSigningGuide(platform: AppStorePlatform, appId: string) {
+  const title = platform === "android" ? "Android Signing Guide" : "iOS Signing Guide";
+  return [
+    `# ${title}`,
+    "",
+    `- App ID: ${appId}`,
+    "- Prepare signing keys/certificates and keep them in a secure vault",
+    "- Verify entitlements and permission strings before signing",
+    "- Run a clean build and sign the release artifact",
+    "- Store the signed artifact checksum in release notes",
+    "- Re-verify signature after upload (store console or notarization)",
+    "",
+  ].join("\n");
+}
+
 export function buildAppStoreArtifacts(input: AppStorePipelineInput): AppStoreArtifacts {
   const platform = normalizePlatform(input.platform);
   const hostType = normalizeHostType(input.hostType);
@@ -100,5 +116,8 @@ export function buildAppStoreArtifacts(input: AppStorePipelineInput): AppStoreAr
   const checklistPath = join(outputDir, "RELEASE_CHECKLIST.md");
   writeFileSync(checklistPath, buildChecklist(platform, resolvedHost.appId), "utf8");
 
-  return { outputDir, packagePath, metadataPath, checklistPath, metadata };
+  const signingGuidePath = join(outputDir, "SIGNING_GUIDE.md");
+  writeFileSync(signingGuidePath, buildSigningGuide(platform, resolvedHost.appId), "utf8");
+
+  return { outputDir, packagePath, metadataPath, checklistPath, signingGuidePath, metadata };
 }

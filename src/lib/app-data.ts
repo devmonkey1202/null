@@ -3,6 +3,7 @@
  */
 
 import { prisma } from "@/lib/db";
+import { randomBytes } from "crypto";
 import {
   buildListCacheKey,
   buildRecordCacheKey,
@@ -46,6 +47,8 @@ export type SetSchemaOptions = {
   mode?: SchemaMode;
   migrations?: AppSchemaMigrations;
   batchSize?: number;
+  recordRollback?: boolean;
+  migrationId?: string;
 };
 
 export type AppRecordActor = {
@@ -59,6 +62,11 @@ export type FieldValidationError = {
   code: string;
   message: string;
   value?: unknown;
+};
+
+export type RelationValidationResult = {
+  ok: boolean;
+  missing: string[];
 };
 
 type ValidateOptions = {
@@ -209,6 +217,81 @@ export function validateRecordData(
   return { data: output, errors };
 }
 
+function normalizeRelationValue(value: unknown): string[] {
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  if (Array.isArray(value)) {
+    return value
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .map((v) => v.trim());
+  }
+  return [];
+}
+
+export async function validateRelationTargets(
+  pageId: string,
+  fields: AppFieldDef[],
+  data: Record<string, unknown>,
+  options?: { skipFields?: string[] }
+): Promise<RelationValidationResult> {
+  const skip = new Set(options?.skipFields ?? []);
+  const relationFields = fields.filter((f) => f.type === "relation" && !skip.has(f.name));
+  const ids = new Set<string>();
+  for (const field of relationFields) {
+    normalizeRelationValue(data[field.name]).forEach((id) => ids.add(id));
+  }
+  const all = Array.from(ids);
+  if (!all.length) return { ok: true, missing: [] };
+
+  const rows = await prisma.appRecord.findMany({
+    where: { page_id: pageId, id: { in: all } },
+    select: { id: true },
+  });
+  const found = new Set(rows.map((r) => r.id));
+  const missing = all.filter((id) => !found.has(id));
+  return { ok: missing.length === 0, missing };
+}
+
+export async function expandRelations(
+  pageId: string,
+  fields: AppFieldDef[],
+  items: Array<{ id: string; data: Record<string, unknown>; created_at: Date; updated_at: Date; app_user_id?: string | null }>,
+  expandFields: string[],
+  options?: { skipFields?: string[] }
+) {
+  const skip = new Set(options?.skipFields ?? []);
+  const relationFields = fields
+    .filter((f) => f.type === "relation" && !skip.has(f.name))
+    .map((f) => f.name);
+  const targetFields = expandFields.length
+    ? relationFields.filter((name) => expandFields.includes(name))
+    : relationFields;
+  if (!targetFields.length) return items.map((item) => ({ ...item, relations: {} }));
+
+  const ids = new Set<string>();
+  for (const item of items) {
+    for (const field of targetFields) {
+      normalizeRelationValue(item.data?.[field]).forEach((id) => ids.add(id));
+    }
+  }
+  const all = Array.from(ids);
+  if (!all.length) return items.map((item) => ({ ...item, relations: {} }));
+
+  const rows = await prisma.appRecord.findMany({
+    where: { page_id: pageId, id: { in: all } },
+    select: { id: true, data: true, created_at: true, updated_at: true, app_user_id: true },
+  });
+  const map = new Map(rows.map((row) => [row.id, row]));
+
+  return items.map((item) => {
+    const relations: Record<string, unknown[]> = {};
+    for (const field of targetFields) {
+      const idsForField = normalizeRelationValue(item.data?.[field]);
+      relations[field] = idsForField.map((id) => map.get(id)).filter(Boolean) as unknown[];
+    }
+    return { ...item, relations };
+  });
+}
+
 export async function getCollections(pageId: string) {
   const list = await prisma.appCollection.findMany({
     where: { page_id: pageId },
@@ -230,11 +313,14 @@ async function applyFieldMigrations(
   pageId: string,
   collectionSlug: string,
   migrations: AppSchemaMigrations,
-  batchSize = 200
+  batchSize = 200,
+  options?: { migrationId?: string; recordRollback?: boolean }
 ) {
   const renameMap = migrations.renameFields?.[collectionSlug] ?? {};
   const deleteList = migrations.deleteFields?.[collectionSlug] ?? [];
   const defaults = migrations.defaults?.[collectionSlug] ?? {};
+  const migrationId = options?.migrationId;
+  const recordRollback = options?.recordRollback !== false;
 
   const hasWork =
     Object.keys(renameMap).length > 0 ||
@@ -287,6 +373,20 @@ async function applyFieldMigrations(
       }
 
       if (changed) {
+        if (migrationId && recordRollback) {
+          await prisma.appRecordVersion.create({
+            data: {
+              page_id: pageId,
+              record_id: record.id,
+              collection_slug: collectionSlug,
+              action: `schema_migration:${migrationId}`,
+              data: current as object,
+              actor_user_id: null,
+              actor_app_user_id: null,
+              actor_anon_id: null,
+            },
+          });
+        }
         await prisma.appRecord.update({
           where: { id: record.id },
           data: { data: next as object, updated_at: new Date() },
@@ -301,6 +401,61 @@ async function applyFieldMigrations(
   return { scanned, updated };
 }
 
+export async function rollbackSchemaMigration(
+  pageId: string,
+  migrationId: string,
+  options: { batchSize?: number } = {}
+) {
+  if (!migrationId) throw new Error("migration_id_required");
+  const batchSize = Math.min(Math.max(options.batchSize ?? 200, 20), 1000);
+  const action = `schema_migration:${migrationId}`;
+  let cursor: string | undefined;
+  let scanned = 0;
+  let restored = 0;
+
+  while (true) {
+    const versions = await prisma.appRecordVersion.findMany({
+      where: { page_id: pageId, action },
+      orderBy: { id: "asc" },
+      take: batchSize,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      select: { id: true, record_id: true, collection_slug: true, data: true },
+    });
+    if (!versions.length) break;
+
+    for (const version of versions) {
+      scanned += 1;
+      const existing = await prisma.appRecord.findFirst({
+        where: { id: version.record_id, page_id: pageId, collection_slug: version.collection_slug },
+        select: { id: true },
+      });
+      if (!existing) continue;
+
+      await prisma.appRecord.update({
+        where: { id: existing.id },
+        data: { data: version.data as object, updated_at: new Date() },
+      });
+      await prisma.appRecordVersion.create({
+        data: {
+          page_id: pageId,
+          record_id: version.record_id,
+          collection_slug: version.collection_slug,
+          action: `schema_rollback:${migrationId}`,
+          data: version.data as object,
+          actor_user_id: null,
+          actor_app_user_id: null,
+          actor_anon_id: null,
+        },
+      });
+      restored += 1;
+    }
+
+    cursor = versions[versions.length - 1]?.id;
+  }
+
+  return { scanned, restored, migrationId };
+}
+
 export async function setSchema(
   pageId: string,
   collections: AppCollectionDef[],
@@ -310,6 +465,10 @@ export async function setSchema(
   const batchSize = Math.min(Math.max(options.batchSize ?? 200, 20), 1000);
   const normalized = collections.filter((c) => c && c.slug && c.name);
   const slugs = normalized.map((c) => c.slug);
+  const migrationId =
+    options.migrations && options.recordRollback !== false
+      ? options.migrationId ?? randomBytes(6).toString("hex")
+      : options.migrationId;
 
   await prisma.$transaction(async (tx) => {
     for (const c of normalized) {
@@ -347,13 +506,18 @@ export async function setSchema(
     Object.keys(options.migrations.deleteFields ?? {}).forEach((slug) => targets.add(slug));
     Object.keys(options.migrations.defaults ?? {}).forEach((slug) => targets.add(slug));
     for (const slug of targets) {
-      await applyFieldMigrations(pageId, slug, options.migrations, batchSize);
+      await applyFieldMigrations(pageId, slug, options.migrations, batchSize, {
+        migrationId,
+        recordRollback: options.recordRollback,
+      });
     }
   }
 
   for (const slug of slugs) {
     await bumpCollectionCacheVersion(pageId, slug);
   }
+
+  return { migrationId };
 }
 
 export async function getCollectionBySlug(pageId: string, slug: string) {

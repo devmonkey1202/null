@@ -1,0 +1,11 @@
+# L2 Organization/Team Scenario
+ts=2026-03-06T12:38:52.708Z
+org=cmmevs80v0005un6c012nqt8r slug=l2-org
+invite ok=true
+invite_accept ok=true
+role_update ok=true
+team_create ok=true
+team_add ok=true
+team_remove ok=true
+page_assign ok=true
+org_pages=1

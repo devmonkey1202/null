@@ -1,0 +1,9 @@
+# L2 Background Jobs Scenario
+ts=2026-03-06T12:24:38.664Z
+enqueue job1=cmmev9wzd0001un4ku5tetmjj type=log
+enqueue job2=cmmev9wzv0003un4k1yk4d4tn type=noop
+claimed=2
+complete job=cmmev9wzd0001un4ku5tetmjj type=log
+complete job=cmmev9wzv0003un4k1yk4d4tn type=noop
+claimed_retry=1
+force_fail job=cmmev9x1j0005un4koj37dy8n

@@ -41,6 +41,7 @@ import {
   type ScrollTriggerConfig,
   type PathSegment,
   type NodeDataBinding,
+  type NodeDataBindingFilterOp,
   type AutoLayout,
   type ComponentVersion,
 } from "../doc/scene";
@@ -151,6 +152,60 @@ function buildPathFromNode(node: Node, abs: Rect): string | null {
     default:
       return null;
   }
+}
+
+function normalizeRing(ring: number[][]): number[][] {
+  if (ring.length > 1) {
+    const [fx, fy] = ring[0];
+    const [lx, ly] = ring[ring.length - 1];
+    if (fx === lx && fy === ly) return ring.slice(0, -1);
+  }
+  return ring;
+}
+
+function ringArea(ring: number[][]): number {
+  let sum = 0;
+  for (let i = 0; i < ring.length; i += 1) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % ring.length];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return sum / 2;
+}
+
+function offsetRing(ring: number[][], offset: number): number[][] | null {
+  if (!ring.length) return null;
+  if (Math.abs(offset) < 0.0001) return ring.slice();
+  let cx = 0;
+  let cy = 0;
+  ring.forEach(([x, y]) => {
+    cx += x;
+    cy += y;
+  });
+  cx /= ring.length;
+  cy /= ring.length;
+  const next: number[][] = [];
+  for (const [x, y] of ring) {
+    const dx = x - cx;
+    const dy = y - cy;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.0001) {
+      next.push([x, y]);
+      continue;
+    }
+    const scaled = (len + offset) / len;
+    if (!Number.isFinite(scaled) || scaled <= 0.05) return null;
+    next.push([cx + dx * scaled, cy + dy * scaled]);
+  }
+  return next;
+}
+
+function buildRingFromNode(node: Node, abs: Rect): number[][] | null {
+  const d = buildPathFromNode(node, abs);
+  if (!d) return null;
+  const ring = pathDataToPolygon(d);
+  if (!ring || ring.length < 3) return null;
+  return normalizeRing(ring);
 }
 
 
@@ -299,6 +354,16 @@ type EditorEvent = {
   kind: "selection" | "tool" | "panel" | "page" | "zoom" | "action";
   detail: string;
 };
+
+const EVENT_LOG_FILTER_OPTIONS: Array<{ value: EditorEvent["kind"] | "all"; label: string }> = [
+  { value: "all", label: "전체" },
+  { value: "selection", label: "선택" },
+  { value: "tool", label: "도구" },
+  { value: "panel", label: "패널" },
+  { value: "page", label: "페이지" },
+  { value: "zoom", label: "줌" },
+  { value: "action", label: "액션" },
+];
 
 const MAX_PLUGIN_MANIFESTS = 50;
 const MAX_PLUGIN_ACTIONS = 200;
@@ -715,6 +780,7 @@ function resolveFillColor(doc: Doc, node: Node) {
   if (!fill) return "#EDEDED";
   if (fill.type === "solid") return fill.color;
   if (fill.type === "linear") return fill.from;
+  if (fill.type === "radial") return fill.from;
   return "#EDEDED";
 }
 
@@ -991,7 +1057,7 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
   const fill =
     outline && node.type !== "text"
       ? "transparent"
-      : firstFill?.type === "linear"
+      : firstFill?.type === "linear" || firstFill?.type === "radial"
         ? `url(#${EDITOR_GRADIENT_PREFIX}-${node.id})`
         : firstFill?.type === "image" && firstFill.src
           ? `url(#${EDITOR_IMAGE_FILL_PREFIX}-${node.id})`
@@ -1109,7 +1175,7 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
         const segFillStr = (f: Fill | undefined, i: number): string => {
           if (!f) return "transparent";
           if (f.type === "solid") return f.color;
-          if (f.type === "linear") return `url(#${EDITOR_GRADIENT_PREFIX}-${node.id}-seg-${i})`;
+          if (f.type === "linear" || f.type === "radial") return `url(#${EDITOR_GRADIENT_PREFIX}-${node.id}-seg-${i})`;
           if (f.type === "image" && f.src) return `url(#adv-imgfill-${node.id}-seg-${i})`;
           return "#E5E7EB";
         };
@@ -1331,69 +1397,85 @@ const EDITOR_GRADIENT_PREFIX = "adv-linear";
 
 function buildGradientDefs(doc: Doc, prefix: string) {
   const defs: React.ReactElement[] = [];
-  Object.values(doc.nodes).forEach((node) => {
-    const segments = node.shape?.segments;
-    if (segments?.length) {
-      segments.forEach((seg, i) => {
-        const fill = seg.fills[0];
-        if (!fill || fill.type !== "linear") return;
-        const rad = ((fill.angle ?? 0) * Math.PI) / 180;
-        const x1 = 0.5 - 0.5 * Math.cos(rad);
-        const y1 = 0.5 - 0.5 * Math.sin(rad);
-        const x2 = 0.5 + 0.5 * Math.cos(rad);
-        const y2 = 0.5 + 0.5 * Math.sin(rad);
-        const stops = fill.stops && fill.stops.length >= 2
-          ? fill.stops
-          : [{ offset: 0, color: fill.from }, { offset: 1, color: fill.to }];
-        defs.push(
-          <linearGradient
-            key={`${prefix}-${node.id}-seg-${i}`}
-            id={`${prefix}-${node.id}-seg-${i}`}
-            gradientUnits="objectBoundingBox"
-            x1={x1}
-            y1={y1}
-            x2={x2}
-            y2={y2}
-          >
-            {stops.map((s, j) => (
-              <stop key={j} offset={s.offset} stopColor={s.color} />
-            ))}
-          </linearGradient>,
-        );
-      });
-      return;
-    }
-    const fills = resolveFill(doc, node);
-    const fill = fills[0];
-    if (!fill || fill.type !== "linear") return;
+  const clamp01 = (value: number | undefined, fallback: number) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.min(1, value));
+  };
+  const buildStops = (fill: Extract<Fill, { type: "linear" | "radial" }>) =>
+    fill.stops && fill.stops.length >= 2
+      ? fill.stops
+      : [{ offset: 0, color: fill.from }, { offset: 1, color: fill.to }];
+  const pushLinear = (fill: Extract<Fill, { type: "linear" }>, id: string) => {
     const rad = ((fill.angle ?? 0) * Math.PI) / 180;
     const x1 = 0.5 - 0.5 * Math.cos(rad);
     const y1 = 0.5 - 0.5 * Math.sin(rad);
     const x2 = 0.5 + 0.5 * Math.cos(rad);
     const y2 = 0.5 + 0.5 * Math.sin(rad);
-    const stops = fill.stops && fill.stops.length >= 2
-      ? fill.stops
-      : [{ offset: 0, color: fill.from }, { offset: 1, color: fill.to }];
+    const stops = buildStops(fill);
     defs.push(
-      <linearGradient
-        key={`${prefix}-${node.id}`}
-        id={`${prefix}-${node.id}`}
-        gradientUnits="objectBoundingBox"
-        x1={x1}
-        y1={y1}
-        x2={x2}
-        y2={y2}
-      >
+      <linearGradient key={id} id={id} gradientUnits="objectBoundingBox" x1={x1} y1={y1} x2={x2} y2={y2}>
         {stops.map((s, i) => (
           <stop key={i} offset={s.offset} stopColor={s.color} />
         ))}
       </linearGradient>,
     );
+  };
+  const pushRadial = (fill: Extract<Fill, { type: "radial" }>, id: string) => {
+    const stops = buildStops(fill);
+    defs.push(
+      <radialGradient
+        key={id}
+        id={id}
+        gradientUnits="objectBoundingBox"
+        cx={clamp01(fill.cx, 0.5)}
+        cy={clamp01(fill.cy, 0.5)}
+        r={clamp01(fill.r, 0.5)}
+      >
+        {stops.map((s, i) => (
+          <stop key={i} offset={s.offset} stopColor={s.color} />
+        ))}
+      </radialGradient>,
+    );
+  };
+  Object.values(doc.nodes).forEach((node) => {
+    const segments = node.shape?.segments;
+    if (segments?.length) {
+      segments.forEach((seg, i) => {
+        const fill = seg.fills[0];
+        if (!fill || (fill.type !== "linear" && fill.type !== "radial")) return;
+        const id = `${prefix}-${node.id}-seg-${i}`;
+        if (fill.type === "linear") pushLinear(fill, id);
+        else pushRadial(fill, id);
+      });
+      return;
+    }
+    const fills = resolveFill(doc, node);
+    const fill = fills[0];
+    if (!fill || (fill.type !== "linear" && fill.type !== "radial")) return;
+    const id = `${prefix}-${node.id}`;
+    if (fill.type === "linear") pushLinear(fill, id);
+    else pushRadial(fill, id);
   });
   return defs;
 }
 
 const EDITOR_IMAGE_FILL_PREFIX = "adv-imgfill";
+
+const DATA_BINDING_FILTER_OPS: Array<{ value: NodeDataBindingFilterOp; label: string }> = [
+  { value: "eq", label: "=" },
+  { value: "ne", label: "!=" },
+  { value: "gt", label: ">" },
+  { value: "gte", label: ">=" },
+  { value: "lt", label: "<" },
+  { value: "lte", label: "<=" },
+  { value: "contains", label: "contains" },
+  { value: "startsWith", label: "startsWith" },
+  { value: "endsWith", label: "endsWith" },
+  { value: "in", label: "in" },
+  { value: "notIn", label: "notIn" },
+  { value: "exists", label: "exists" },
+  { value: "notExists", label: "notExists" },
+];
 
 function buildImageFillPatternDefs(doc: Doc) {
   const defs: React.ReactElement[] = [];
@@ -1947,6 +2029,8 @@ export default function AdvancedEditor() {
   const gridSnapRef = useRef(gridSnap);
   const [guideSnap, setGuideSnap] = useState(true);
   const guideSnapRef = useRef(guideSnap);
+  const [guideSnapThreshold, setGuideSnapThreshold] = useState(6);
+  const guideSnapThresholdRef = useRef(guideSnapThreshold);
   const [gridSize, setGridSize] = useState(GRID);
   const gridSizeRef = useRef(gridSize);
   const [pixelSnap, setPixelSnap] = useState(false);
@@ -1963,6 +2047,9 @@ export default function AdvancedEditor() {
     guideSnapRef.current = guideSnap;
   }, [guideSnap]);
   useEffect(() => {
+    guideSnapThresholdRef.current = guideSnapThreshold;
+  }, [guideSnapThreshold]);
+  useEffect(() => {
     gridSizeRef.current = gridSize;
   }, [gridSize]);
   useEffect(() => {
@@ -1974,7 +2061,7 @@ export default function AdvancedEditor() {
     const guides = axis === "x" ? docRef.current.view.guides?.x : docRef.current.view.guides?.y;
     if (!guides || guides.length === 0) return gridValue;
     const zoom = Math.max(0.05, docRef.current.view.zoom || 1);
-    const threshold = 6 / zoom;
+    const threshold = Math.max(1, guideSnapThresholdRef.current) / zoom;
     let best = gridValue;
     let bestDist = threshold + 1;
     for (const guide of guides) {
@@ -1994,6 +2081,9 @@ export default function AdvancedEditor() {
   const [newStyleName, setNewStyleName] = useState<string>("");
   const [styleSearch, setStyleSearch] = useState<string>("");
   const [styleTypeFilter, setStyleTypeFilter] = useState<"all" | "fill" | "stroke" | "text" | "effect">("all");
+  const [styleIoOpen, setStyleIoOpen] = useState(false);
+  const [styleImportText, setStyleImportText] = useState<string>("");
+  const [styleImportError, setStyleImportError] = useState<string | null>(null);
   const [styleApplyScope, setStyleApplyScope] = useState<"selection" | "page" | "document">("selection");
   const [variableSearch, setVariableSearch] = useState<string>("");
   const [variableTypeFilter, setVariableTypeFilter] = useState<"all" | VariableType>("all");
@@ -2199,12 +2289,14 @@ export default function AdvancedEditor() {
   const [elementQuery, setElementQuery] = useState("");
   const [templateQuery, setTemplateQuery] = useState("");
   const [assetTagFilters, setAssetTagFilters] = useState<string[]>([]);
+  const [assetVersionFilter, setAssetVersionFilter] = useState<string>("all");
   const [resourceQuery, setResourceQuery] = useState("");
   const [layerTypeFilter, setLayerTypeFilter] = useState<string>("all");
   const [layerSort, setLayerSort] = useState<"tree" | "name">("tree");
   const [showGrid, setShowGrid] = useState(true);
   const [showPixelGrid, setShowPixelGrid] = useState(false);
   const [showLayoutGrid, setShowLayoutGrid] = useState(true);
+  const [vectorOffsetValue, setVectorOffsetValue] = useState(8);
   const [outlineMode, setOutlineMode] = useState(false);
   const [uiHidden, setUiHidden] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
@@ -5003,6 +5095,146 @@ export default function AdvancedEditor() {
     commit(draft);
   }, [activePageId, commit, pushMessage]);
 
+  const outlineSelectionToPath = useCallback(() => {
+    const ids = Array.from(docRef.current.selection);
+    if (!ids.length) {
+      pushMessage("selection_required");
+      return;
+    }
+    const draft = cloneDoc(docRef.current);
+    const rootId = ensurePageRoot(draft, activePageId);
+    const converted: string[] = [];
+    ids.forEach((id) => {
+      const node = draft.nodes[id];
+      if (!node) return;
+      if (!["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(node.type)) return;
+      const abs = getAbsoluteFrame(draft, id);
+      if (!abs) return;
+      const ring = buildRingFromNode(node, abs);
+      if (!ring) return;
+      const stroke = resolveStroke(draft, node);
+      const width = stroke?.width ?? 0;
+      if (width <= 0) return;
+      const align = stroke?.align ?? "center";
+      const outerOffset = align === "inside" ? 0 : align === "outside" ? width : width / 2;
+      const innerOffset = align === "inside" ? -width : align === "outside" ? 0 : -width / 2;
+      const outerRing = offsetRing(ring, outerOffset);
+      if (!outerRing) return;
+      const innerRing = innerOffset !== 0 ? offsetRing(ring, innerOffset) : null;
+      const outerD = polygonToPathD(outerRing);
+      let outlineD = outerD;
+      if (innerRing && innerRing.length >= 3) {
+        const outerArea = ringArea(outerRing);
+        let inner = innerRing;
+        if (Math.sign(ringArea(inner)) === Math.sign(outerArea)) inner = inner.slice().reverse();
+        outlineD = `${outerD} ${polygonToPathD(inner)}`;
+      }
+      const bounds = pathDataToBounds(outlineD, 0);
+      const parentId = node.parentId ?? rootId;
+      const parentAbs = parentId ? getAbsoluteFrame(draft, parentId) : null;
+      const relX = parentAbs ? bounds.x - parentAbs.x : bounds.x;
+      const relY = parentAbs ? bounds.y - parentAbs.y : bounds.y;
+      const localD = translatePathD(outlineD, -bounds.x, -bounds.y);
+      const pathNode = createNode("path", {
+        name: `${node.name ?? "Outline"} (Stroke)`,
+        frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
+        shape: { pathData: localD },
+      });
+      const fillColor = stroke?.color ?? resolveFillColor(draft, node);
+      const style = cloneStyle(node.style);
+      style.fills = [{ type: "solid", color: fillColor }];
+      style.strokes = [];
+      style.fillStyleId = undefined;
+      style.strokeStyleId = undefined;
+      style.radius = undefined;
+      pathNode.style = style;
+      pathNode.layout = cloneLayout(node.layout);
+      pathNode.layoutSizing = node.layoutSizing ? { ...node.layoutSizing } : undefined;
+      pathNode.constraints = node.constraints ? { ...node.constraints } : undefined;
+      pathNode.data = node.data ? { ...node.data } : undefined;
+      pathNode.prototype = clonePrototype(node.prototype);
+      pathNode.locked = node.locked;
+      pathNode.hidden = node.hidden;
+      pathNode.clipContent = node.clipContent;
+
+      draft.nodes[pathNode.id] = pathNode;
+      pathNode.parentId = parentId;
+      const parent = draft.nodes[parentId];
+      if (parent) parent.children = parent.children.map((cid) => (cid === id ? pathNode.id : cid));
+      delete draft.nodes[id];
+      converted.push(pathNode.id);
+    });
+    if (!converted.length) {
+      pushMessage("vector_coming_soon");
+      return;
+    }
+    draft.selection = new Set(converted);
+    commit(draft);
+  }, [activePageId, commit, pushMessage]);
+
+  const offsetSelectionToPath = useCallback(
+    (offsetValue: number) => {
+      if (!Number.isFinite(offsetValue) || offsetValue === 0) {
+        pushMessage("Label");
+        return;
+      }
+      const ids = Array.from(docRef.current.selection);
+      if (!ids.length) {
+        pushMessage("selection_required");
+        return;
+      }
+      const draft = cloneDoc(docRef.current);
+      const rootId = ensurePageRoot(draft, activePageId);
+      const converted: string[] = [];
+      ids.forEach((id) => {
+        const node = draft.nodes[id];
+        if (!node) return;
+        if (!["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(node.type)) return;
+        const abs = getAbsoluteFrame(draft, id);
+        if (!abs) return;
+        const ring = buildRingFromNode(node, abs);
+        if (!ring) return;
+        const nextRing = offsetRing(ring, offsetValue);
+        if (!nextRing) return;
+        const offsetD = polygonToPathD(nextRing);
+        const bounds = pathDataToBounds(offsetD, 0);
+        const parentId = node.parentId ?? rootId;
+        const parentAbs = parentId ? getAbsoluteFrame(draft, parentId) : null;
+        const relX = parentAbs ? bounds.x - parentAbs.x : bounds.x;
+        const relY = parentAbs ? bounds.y - parentAbs.y : bounds.y;
+        const localD = translatePathD(offsetD, -bounds.x, -bounds.y);
+        const pathNode = createNode("path", {
+          name: `${node.name ?? "Offset"} (${offsetValue >= 0 ? "+" : ""}${offsetValue})`,
+          frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
+          shape: { pathData: localD },
+        });
+        pathNode.style = { ...cloneStyle(node.style), radius: undefined };
+        pathNode.layout = cloneLayout(node.layout);
+        pathNode.layoutSizing = node.layoutSizing ? { ...node.layoutSizing } : undefined;
+        pathNode.constraints = node.constraints ? { ...node.constraints } : undefined;
+        pathNode.data = node.data ? { ...node.data } : undefined;
+        pathNode.prototype = clonePrototype(node.prototype);
+        pathNode.locked = node.locked;
+        pathNode.hidden = node.hidden;
+        pathNode.clipContent = node.clipContent;
+
+        draft.nodes[pathNode.id] = pathNode;
+        pathNode.parentId = parentId;
+        const parent = draft.nodes[parentId];
+        if (parent) parent.children = parent.children.map((cid) => (cid === id ? pathNode.id : cid));
+        delete draft.nodes[id];
+        converted.push(pathNode.id);
+      });
+      if (!converted.length) {
+        pushMessage("vector_coming_soon");
+        return;
+      }
+      draft.selection = new Set(converted);
+      commit(draft);
+    },
+    [activePageId, commit, pushMessage],
+  );
+
   const runBooleanSelection = useCallback(
     (op: BooleanOp) => {
       const ids = Array.from(docRef.current.selection);
@@ -5789,6 +6021,134 @@ export default function AdvancedEditor() {
     });
     commit(draft);
   }, [commit]);
+
+  const buildStyleExportPayload = useCallback(() => {
+    const payload = { styles: docRef.current.styles };
+    return JSON.stringify(payload, null, 2);
+  }, []);
+
+  const copyStyleExport = useCallback(() => {
+    const payload = buildStyleExportPayload();
+    setStyleImportText(payload);
+    setStyleImportError(null);
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(payload).catch(() => {
+        setStyleImportError("클립보드 복사에 실패했습니다.");
+      });
+    } else {
+      setStyleImportError("클립보드 API를 사용할 수 없습니다.");
+    }
+  }, [buildStyleExportPayload]);
+
+  const downloadStyleExport = useCallback(() => {
+    const payload = buildStyleExportPayload();
+    setStyleImportText(payload);
+    setStyleImportError(null);
+    if (typeof window === "undefined") return;
+    const blob = new Blob([payload], { type: "application/json" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `null-style-library-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }, [buildStyleExportPayload]);
+
+  const importStyleTokens = useCallback(
+    (mode: "merge" | "replace") => {
+      const raw = styleImportText.trim();
+      if (!raw) {
+        setStyleImportError("가져올 JSON이 비어 있습니다.");
+        return;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        setStyleImportError("JSON 파싱에 실패했습니다.");
+        return;
+      }
+      const stylesRaw = Array.isArray(parsed) ? parsed : (parsed as { styles?: unknown }).styles;
+      if (!Array.isArray(stylesRaw)) {
+        setStyleImportError("styles 배열을 찾지 못했습니다.");
+        return;
+      }
+      const isValidType = (value: unknown): value is StyleToken["type"] =>
+        value === "fill" || value === "stroke" || value === "text" || value === "effect";
+      const sanitized: StyleToken[] = stylesRaw
+        .map((item, index) => {
+          if (!item || typeof item !== "object") return null;
+          const source = item as Partial<StyleToken>;
+          if (!isValidType(source.type)) return null;
+          const name = String(source.name ?? "").trim() || `Imported ${source.type} ${index + 1}`;
+          return {
+            id: String(source.id ?? makeRuntimeId("style")),
+            name,
+            type: source.type,
+            value: source.value,
+          } satisfies StyleToken;
+        })
+        .filter((item): item is StyleToken => Boolean(item));
+      if (sanitized.length === 0) {
+        setStyleImportError("유효한 스타일 토큰이 없습니다.");
+        return;
+      }
+      const draft = cloneDoc(docRef.current);
+      if (mode === "replace") {
+        const oldById = new Map(draft.styles.map((style) => [style.id, style] as const));
+        const nextStyles = sanitized.map((style) => ({
+          ...style,
+          id: style.id || makeRuntimeId("style"),
+        }));
+        const keyFor = (style: StyleToken) => `${style.type}:${style.name.toLowerCase()}`;
+        const nextByKey = new Map(nextStyles.map((style) => [keyFor(style), style.id] as const));
+        Object.values(draft.nodes).forEach((node) => {
+          if (!node) return;
+          const fillId = node.style.fillStyleId;
+          if (fillId && oldById.has(fillId)) {
+            const old = oldById.get(fillId);
+            const nextId = old ? nextByKey.get(`${old.type}:${old.name.toLowerCase()}`) : undefined;
+            node.style.fillStyleId = nextId;
+          }
+          const strokeId = node.style.strokeStyleId;
+          if (strokeId && oldById.has(strokeId)) {
+            const old = oldById.get(strokeId);
+            const nextId = old ? nextByKey.get(`${old.type}:${old.name.toLowerCase()}`) : undefined;
+            node.style.strokeStyleId = nextId;
+          }
+          const effectId = node.style.effectStyleId;
+          if (effectId && oldById.has(effectId)) {
+            const old = oldById.get(effectId);
+            const nextId = old ? nextByKey.get(`${old.type}:${old.name.toLowerCase()}`) : undefined;
+            node.style.effectStyleId = nextId;
+          }
+          if (node.type === "text" && node.text?.styleRef) {
+            const refId = node.text.styleRef;
+            if (refId && oldById.has(refId)) {
+              const old = oldById.get(refId);
+              const nextId = old ? nextByKey.get(`${old.type}:${old.name.toLowerCase()}`) : undefined;
+              node.text.styleRef = nextId;
+            }
+          }
+        });
+        draft.styles = nextStyles;
+      } else {
+        const existingKeys = new Set(draft.styles.map((style) => `${style.type}:${style.name.toLowerCase()}`));
+        const nextStyles = [...draft.styles];
+        sanitized.forEach((style) => {
+          const key = `${style.type}:${style.name.toLowerCase()}`;
+          if (existingKeys.has(key)) return;
+          nextStyles.push({ ...style, id: makeRuntimeId("style") });
+          existingKeys.add(key);
+        });
+        draft.styles = nextStyles;
+      }
+      commit(draft);
+      setStyleImportError(null);
+      pushMessage("style_imported");
+    },
+    [commit, pushMessage, styleImportText],
+  );
 
   const addVariable = useCallback(() => {
     const draft = cloneDoc(docRef.current);
@@ -8360,6 +8720,90 @@ export default function AdvancedEditor() {
     pushEditorEvent("action", "show all layers");
   }, [commit, pushMessage, pushEditorEvent]);
 
+  const lockOtherLayers = useCallback(() => {
+    const draft = cloneDoc(docRef.current);
+    const selected = Array.from(draft.selection);
+    if (!selected.length) return;
+    const keep = new Set<string>();
+    selected.forEach((id) => collectSubtreeIds(draft, id, keep));
+    let updated = false;
+    Object.keys(draft.nodes).forEach((id) => {
+      if (id === draft.root) return;
+      const node = draft.nodes[id];
+      if (!node) return;
+      if (keep.has(id)) return;
+      if (!node.locked) {
+        node.locked = true;
+        updated = true;
+      }
+    });
+    if (!updated) return;
+    commit(draft);
+    pushMessage("lock_applied");
+    pushEditorEvent("action", "lock others");
+  }, [commit, pushMessage, pushEditorEvent]);
+
+  const unlockAllLayers = useCallback(() => {
+    const draft = cloneDoc(docRef.current);
+    let updated = false;
+    Object.keys(draft.nodes).forEach((id) => {
+      if (id === draft.root) return;
+      const node = draft.nodes[id];
+      if (!node) return;
+      if (node.locked) {
+        node.locked = false;
+        updated = true;
+      }
+    });
+    if (!updated) return;
+    commit(draft);
+    pushMessage("unlock_applied");
+    pushEditorEvent("action", "unlock all layers");
+  }, [commit, pushMessage, pushEditorEvent]);
+
+  const selectSameType = useCallback(() => {
+    const draft = docRef.current;
+    const selected = Array.from(draft.selection);
+    if (!selected.length) return;
+    const types = new Set(
+      selected.map((id) => draft.nodes[id]?.type).filter((value): value is NodeType => Boolean(value)),
+    );
+    if (!types.size) return;
+    const rootId = ensurePageRoot(draft, activePageIdRef.current);
+    if (!rootId) return;
+    const ids = flattenIds(draft, rootId)
+      .filter((id) => {
+        const node = draft.nodes[id];
+        return Boolean(node && types.has(node.type));
+      });
+    replace({ ...draft, selection: new Set(ids) });
+    pushEditorEvent("selection", `select same type (${Array.from(types).join(", ")})`);
+  }, [pushEditorEvent, replace]);
+
+  const selectSameComponent = useCallback(() => {
+    const draft = docRef.current;
+    const selected = Array.from(draft.selection);
+    if (!selected.length) return;
+    let componentId: string | null = null;
+    selected.forEach((id) => {
+      const node = draft.nodes[id];
+      if (!node) return;
+      if (node.type === "instance" && node.instanceOf) componentId = node.instanceOf;
+      if (node.type === "component") componentId = node.id;
+    });
+    if (!componentId) return;
+    const rootId = ensurePageRoot(draft, activePageIdRef.current);
+    if (!rootId) return;
+    const ids = flattenIds(draft, rootId)
+      .filter((id) => {
+        const node = draft.nodes[id];
+        return Boolean(node && node.type === "instance" && node.instanceOf === componentId);
+      });
+    if (!ids.length) return;
+    replace({ ...draft, selection: new Set(ids) });
+    pushEditorEvent("selection", "select same component");
+  }, [pushEditorEvent, replace]);
+
   const fitSelectionToContent = useCallback(() => {
     const ids = getTopLevelSelection(docRef.current, Array.from(docRef.current.selection));
     if (!ids.length) return;
@@ -9687,6 +10131,16 @@ export default function AdvancedEditor() {
     });
     return Array.from(tagMap.values()).sort((a, b) => a.localeCompare(b));
   }, []);
+  const resolvePresetVersion = useCallback((item: PresetDefinition) => item.version ?? "v1.0", []);
+  const allPresetVersions = useMemo(() => {
+    const versions = new Set<string>();
+    ALL_PRESET_GROUPS.forEach((group) => {
+      group.items.forEach((item) => {
+        versions.add(resolvePresetVersion(item));
+      });
+    });
+    return Array.from(versions).sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  }, [resolvePresetVersion]);
   const toggleAssetTag = useCallback((tag: string) => {
     setAssetTagFilters((prev) => {
       if (prev.includes(tag)) return prev.filter((t) => t !== tag);
@@ -9695,6 +10149,10 @@ export default function AdvancedEditor() {
   }, []);
   const clearAssetTags = useCallback(() => setAssetTagFilters([]), []);
   const assetTagSet = useMemo(() => new Set(assetTagFilters.map((tag) => tag.toLowerCase())), [assetTagFilters]);
+  const matchesAssetVersion = useCallback(
+    (item: PresetDefinition) => assetVersionFilter === "all" || resolvePresetVersion(item) === assetVersionFilter,
+    [assetVersionFilter, resolvePresetVersion],
+  );
   const templatePresetGroups = useMemo(() => {
     return ALL_PRESET_GROUPS.map((group) => ({
       ...group,
@@ -9703,16 +10161,27 @@ export default function AdvancedEditor() {
   }, []);
   const filteredTemplateGroups = useMemo(() => {
     const query = templateQuery.trim().toLowerCase();
-    if (!query) return templatePresetGroups;
+    const hasTagFilter = assetTagSet.size > 0;
+    if (!query && !hasTagFilter) return templatePresetGroups;
     return templatePresetGroups.map((group) => ({
       ...group,
       items: group.items.filter((item) => {
         const label = displayPresetLabel(item.label, item.id).toLowerCase();
         const desc = sanitizeDescription(item.description).toLowerCase();
-        return label.includes(query) || desc.includes(query) || item.id.toLowerCase().includes(query);
+        const groupLabel = displayPresetGroupTitle(group.title, group.items[0]?.id ?? "group").toLowerCase();
+        const matchesQuery = !query || label.includes(query) || desc.includes(query) || item.id.toLowerCase().includes(query);
+        if (!matchesQuery) return false;
+        if (!matchesAssetVersion(item)) return false;
+        if (!hasTagFilter) return true;
+        const itemTags = new Set<string>([groupLabel]);
+        (item.tags ?? []).forEach((tag) => itemTags.add(tag.toLowerCase()));
+        for (const tag of assetTagSet) {
+          if (itemTags.has(tag)) return true;
+        }
+        return false;
       }),
     })).filter((group) => group.items.length > 0);
-  }, [templatePresetGroups, templateQuery]);
+  }, [assetTagSet, matchesAssetVersion, templatePresetGroups, templateQuery]);
   const filteredPresetGroups = useMemo(() => {
     const query = elementQuery.trim().toLowerCase();
     const hasTagFilter = assetTagSet.size > 0;
@@ -9725,6 +10194,7 @@ export default function AdvancedEditor() {
         const matchesQuery =
           !query || itemLabel.includes(query) || item.id.toLowerCase().includes(query) || groupLabel.includes(query);
         if (!matchesQuery) return false;
+        if (!matchesAssetVersion(item)) return false;
         if (!hasTagFilter) return true;
         const itemTags = new Set<string>([groupLabel]);
         (item.tags ?? []).forEach((tag) => itemTags.add(tag.toLowerCase()));
@@ -9734,20 +10204,24 @@ export default function AdvancedEditor() {
         return false;
       }),
     })).filter((group) => group.items.length > 0);
-  }, [elementQuery, assetTagSet]);
+  }, [assetTagSet, elementQuery, matchesAssetVersion]);
   const filteredResourceGroups = useMemo(() => {
     const query = resourceQuery.trim().toLowerCase();
     if (!query) return ALL_PRESET_GROUPS;
     return ALL_PRESET_GROUPS.map((group) => ({
       ...group,
       items: group.items.filter(
-        (item) =>
-          displayPresetLabel(item.label, item.id).toLowerCase().includes(query) ||
-          item.id.toLowerCase().includes(query) ||
-          displayPresetGroupTitle(group.title, group.items[0]?.id ?? "group").toLowerCase().includes(query),
+        (item) => {
+          const matchesQuery =
+            displayPresetLabel(item.label, item.id).toLowerCase().includes(query) ||
+            item.id.toLowerCase().includes(query) ||
+            displayPresetGroupTitle(group.title, group.items[0]?.id ?? "group").toLowerCase().includes(query);
+          if (!matchesQuery) return false;
+          return matchesAssetVersion(item);
+        },
       ),
     })).filter((group) => group.items.length > 0);
-  }, [resourceQuery]);
+  }, [matchesAssetVersion, resourceQuery]);
 
   const hasSelection = selectedIds.length > 0;
   const hasMultipleSelection = selectedIds.length > 1;
@@ -9836,6 +10310,14 @@ export default function AdvancedEditor() {
   const instanceSlotContents = selectedIsInstance && selectedNode?.overrides?.slotContents
     ? selectedNode.overrides.slotContents
     : {};
+  const instanceDescendantIds = useMemo(() => {
+    if (!selectedIsInstance || !selectedNode) return new Set<string>();
+    return new Set(flattenIds(doc, selectedNode.id));
+  }, [doc, selectedIsInstance, selectedNode?.id]);
+  const instanceSelectionIds = useMemo(() => {
+    if (!selectedIsInstance || !selectedNode) return [] as string[];
+    return selectedIds.filter((id) => id !== selectedNode.id && instanceDescendantIds.has(id));
+  }, [instanceDescendantIds, selectedIds, selectedIsInstance, selectedNode?.id]);
   const instanceTextOverrides = useMemo(() => {
     if (!selectedIsInstance || !selectedNode) return [];
     return flattenIds(doc, selectedNode.id)
@@ -9978,6 +10460,45 @@ export default function AdvancedEditor() {
   const resolvedTextStyle = selectedNode ? resolveTextStyle(doc, selectedNode) : null;
   const textWrapEnabled = selectedNode?.type === "text" ? selectedNode.text?.wrap !== false : false;
   const textAutoSizeEnabled = selectedNode?.type === "text" ? Boolean(selectedNode.text?.autoSize) : false;
+  const toggleTextWrap = useCallback(
+    (enabled: boolean) => {
+      if (!selectedNode || selectedNode.type !== "text") return;
+      const baseText = selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE };
+      updateNode(
+        selectedNode.id,
+        {
+          text: {
+            ...baseText,
+            wrap: enabled,
+            autoSize: enabled ? false : baseText.autoSize,
+          },
+        },
+        true,
+      );
+    },
+    [selectedNode, updateNode],
+  );
+  const toggleTextAutoSize = useCallback(
+    (enabled: boolean) => {
+      if (!selectedNode || selectedNode.type !== "text") return;
+      if (enabled) {
+        fitTextNodeToContent(selectedNode.id, true);
+        return;
+      }
+      const baseText = selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE };
+      updateNode(
+        selectedNode.id,
+        {
+          text: {
+            ...baseText,
+            autoSize: false,
+          },
+        },
+        true,
+      );
+    },
+    [fitTextNodeToContent, selectedNode, updateNode],
+  );
   const selectedSupportsDataBinding = Boolean(
     selectedNode && ["frame", "section", "group", "component", "instance", "table"].includes(selectedNode.type),
   );
@@ -9986,7 +10507,12 @@ export default function AdvancedEditor() {
       ? (selectedNode.data as NodeDataBinding)
       : null;
   const selectedDataBindingFields = selectedDataBinding?.fields?.join(", ") ?? "";
+  const selectedDataBindingSearchFields = selectedDataBinding?.search?.fields?.join(", ") ?? "";
+  const selectedDataBindingFilters = selectedDataBinding?.filters ?? [];
   const selectedIsMedia = Boolean(selectedNode && (selectedNode.type === "image" || selectedNode.type === "video"));
+  const vectorOpsEnabled = Boolean(
+    selectedNode && ["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(selectedNode.type),
+  );
   const selectedMedia = selectedNode?.type === "video" ? selectedNode.video : selectedNode?.image;
   const updateSelectedMedia = (patch: Partial<NodeImage>) => {
     if (!selectedNode) return;
@@ -10446,6 +10972,194 @@ export default function AdvancedEditor() {
                         />
                       </label>
                       <label className="flex items-center justify-between gap-2">
+                        <span className="text-neutral-500">Offset</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={selectedDataBinding.offset ?? ""}
+                          onChange={(e) => {
+                            if (!selectedNode) return;
+                            const raw = e.target.value;
+                            const value = raw === "" ? undefined : Math.max(0, Number(raw));
+                            updateNode(
+                              selectedNode.id,
+                              { data: { ...selectedDataBinding, offset: value } },
+                              true,
+                            );
+                          }}
+                          className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Order by</span>
+                        <input
+                          type="text"
+                          value={selectedDataBinding.orderBy ?? ""}
+                          onChange={(e) =>
+                            selectedNode &&
+                            updateNode(
+                              selectedNode.id,
+                              { data: { ...selectedDataBinding, orderBy: e.target.value || undefined } },
+                              true,
+                            )
+                          }
+                          placeholder="created_at, updated_at, price"
+                          className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-2">
+                        <span className="text-neutral-500">Order dir</span>
+                        <select
+                          value={selectedDataBinding.orderDir ?? "desc"}
+                          onChange={(e) =>
+                            selectedNode &&
+                            updateNode(
+                              selectedNode.id,
+                              { data: { ...selectedDataBinding, orderDir: e.target.value as "asc" | "desc" } },
+                              true,
+                            )
+                          }
+                          className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                        >
+                          <option value="desc">desc</option>
+                          <option value="asc">asc</option>
+                        </select>
+                      </label>
+                      <div className="border-t border-neutral-100 pt-2 mt-1">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">Search</div>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Query</span>
+                          <input
+                            type="text"
+                            value={selectedDataBinding.search?.q ?? ""}
+                            onChange={(e) => {
+                              if (!selectedNode) return;
+                              const q = e.target.value;
+                              const nextSearch = { ...(selectedDataBinding.search ?? {}), q: q || undefined };
+                              if (!nextSearch.q && (!nextSearch.fields || nextSearch.fields.length === 0)) {
+                                updateNode(selectedNode.id, { data: { ...selectedDataBinding, search: undefined } }, true);
+                                return;
+                              }
+                              updateNode(selectedNode.id, { data: { ...selectedDataBinding, search: nextSearch } }, true);
+                            }}
+                            placeholder="search..."
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1 mt-2">
+                          <span className="text-neutral-500">Fields</span>
+                          <input
+                            type="text"
+                            value={selectedDataBindingSearchFields}
+                            onChange={(e) => {
+                              if (!selectedNode) return;
+                              const fields = e.target.value
+                                .split(",")
+                                .map((v) => v.trim())
+                                .filter(Boolean);
+                              const nextSearch = { ...(selectedDataBinding.search ?? {}), fields: fields.length ? fields : undefined };
+                              if ((!nextSearch.q || nextSearch.q === "") && (!nextSearch.fields || nextSearch.fields.length === 0)) {
+                                updateNode(selectedNode.id, { data: { ...selectedDataBinding, search: undefined } }, true);
+                                return;
+                              }
+                              updateNode(selectedNode.id, { data: { ...selectedDataBinding, search: nextSearch } }, true);
+                            }}
+                            placeholder="title, description"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </div>
+                      <div className="border-t border-neutral-100 pt-2 mt-1">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">Filters</div>
+                        {selectedDataBindingFilters.length ? (
+                          <div className="space-y-2">
+                            {selectedDataBindingFilters.map((filter, idx) => (
+                              <div key={`${filter.field ?? "filter"}-${idx}`} className="rounded border border-neutral-200 bg-white p-2 space-y-1">
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Field</span>
+                                  <input
+                                    type="text"
+                                    value={filter.field ?? ""}
+                                    onChange={(e) => {
+                                      if (!selectedNode) return;
+                                      const next = selectedDataBindingFilters.map((f, i) => i === idx ? { ...f, field: e.target.value } : f);
+                                      updateNode(selectedNode.id, { data: { ...selectedDataBinding, filters: next } }, true);
+                                    }}
+                                    placeholder="status"
+                                    className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  />
+                                </label>
+                                <label className="flex items-center justify-between gap-2">
+                                  <span className="text-neutral-500">Op</span>
+                                  <select
+                                    value={filter.op ?? "eq"}
+                                    onChange={(e) => {
+                                      if (!selectedNode) return;
+                                      const op = e.target.value as NodeDataBindingFilterOp;
+                                      const next = selectedDataBindingFilters.map((f, i) => i === idx ? { ...f, op, value: op === "exists" || op === "notExists" ? undefined : f.value } : f);
+                                      updateNode(selectedNode.id, { data: { ...selectedDataBinding, filters: next } }, true);
+                                    }}
+                                    className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  >
+                                    {DATA_BINDING_FILTER_OPS.map((opt) => (
+                                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Value</span>
+                                  <input
+                                    type="text"
+                                    value={filter.value == null ? "" : String(filter.value)}
+                                    onChange={(e) => {
+                                      if (!selectedNode) return;
+                                      const next = selectedDataBindingFilters.map((f, i) => i === idx ? { ...f, value: e.target.value } : f);
+                                      updateNode(selectedNode.id, { data: { ...selectedDataBinding, filters: next } }, true);
+                                    }}
+                                    placeholder={filter.op === "in" || filter.op === "notIn" ? "comma separated" : "value"}
+                                    disabled={filter.op === "exists" || filter.op === "notExists"}
+                                    className="w-full rounded border border-neutral-200 px-2 py-1 text-xs disabled:bg-neutral-100"
+                                  />
+                                </label>
+                                <div className="flex justify-end">
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                                    onClick={() => {
+                                      if (!selectedNode) return;
+                                      const next = selectedDataBindingFilters.filter((_, i) => i !== idx);
+                                      updateNode(
+                                        selectedNode.id,
+                                        { data: { ...selectedDataBinding, filters: next.length ? next : undefined } },
+                                        true,
+                                      );
+                                    }}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-neutral-500">No filters.</p>
+                        )}
+                        <button
+                          type="button"
+                          className="mt-2 w-full rounded border border-neutral-200 bg-white px-2 py-1 text-xs"
+                          onClick={() => {
+                            if (!selectedNode) return;
+                            const next = [
+                              ...selectedDataBindingFilters,
+                              { field: "", op: "eq" as NodeDataBindingFilterOp, value: "" },
+                            ];
+                            updateNode(selectedNode.id, { data: { ...selectedDataBinding, filters: next } }, true);
+                          }}
+                        >
+                          Add filter
+                        </button>
+                      </div>
+                      <label className="flex items-center justify-between gap-2">
                         <span className="text-neutral-500">���� ���</span>
                         <input
                           type="checkbox"
@@ -10537,6 +11251,27 @@ export default function AdvancedEditor() {
               <div className="mt-2">
                 <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={fitSelectionToContent} disabled={!selectedNode.children?.length && !autoLayout}>���� ����</button>
               </div>
+              {vectorOpsEnabled ? (
+                <div className="mt-3 rounded-md border border-neutral-200 bg-white px-2 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Vector Ops</div>
+                  <label className="mt-2 flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                    <span>Offset</span>
+                    <input
+                      type="number"
+                      value={vectorOffsetValue}
+                      onChange={(e) => setVectorOffsetValue(Number(e.target.value) || 0)}
+                      className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                    />
+                  </label>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={outlineSelectionToPath}>Outline (Stroke)</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => offsetSelectionToPath(vectorOffsetValue)}>Offset Path</button>
+                  </div>
+                  <div className="mt-2 text-[10px] text-neutral-400">
+                    Offset/Outline uses polygon approximation for curves.
+                  </div>
+                </div>
+              ) : null}
               {selectedIsPageRoot && activePageMeta ? (
                 <div className="mt-3 border-t border-neutral-100 pt-2 space-y-2">
                   <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">�극��ũ����Ʈ</div>
@@ -11010,6 +11745,20 @@ export default function AdvancedEditor() {
                     <input type="checkbox" checked={guideSnap} onChange={(e) => setGuideSnap(e.target.checked)} />
                   </label>
                   <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">가이드 허용 거리</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={40}
+                      value={guideSnapThreshold}
+                      onChange={(e) => {
+                        const next = Math.max(1, Math.min(40, Number(e.target.value) || 1));
+                        setGuideSnapThreshold(next);
+                      }}
+                      className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
                     <span className="text-neutral-500">그리드 크기</span>
                     <input
                       type="number"
@@ -11235,10 +11984,14 @@ export default function AdvancedEditor() {
                   const setFills = (fills: Fill[]) => updateNode(selectedNode.id, { style: { ...selectedNode.style, fills, fillStyleId: undefined } }, true);
                   const isSolid = primaryFill.type === "solid";
                   const isLinear = primaryFill.type === "linear";
+                  const isRadial = primaryFill.type === "radial";
                   const isImage = primaryFill.type === "image";
-                  const linearStops = isLinear && primaryFill.stops && primaryFill.stops.length >= 2
-                    ? primaryFill.stops
-                    : isLinear ? [{ offset: 0, color: primaryFill.from }, { offset: 1, color: primaryFill.to }] : [];
+                  const gradientFill = (isLinear || isRadial)
+                    ? (primaryFill as Extract<Fill, { type: "linear" | "radial" }>)
+                    : null;
+                  const gradientStops = gradientFill && gradientFill.stops && gradientFill.stops.length >= 2
+                    ? gradientFill.stops
+                    : gradientFill ? [{ offset: 0, color: gradientFill.from }, { offset: 1, color: gradientFill.to }] : [];
                   return (
                     <>
                       <label className="flex items-center justify-between gap-2">
@@ -11247,17 +12000,19 @@ export default function AdvancedEditor() {
                           {selectedNode.style.fillRef ? <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800">����</span> : null}
                         </span>
                         <select
-                          value={isSolid ? "solid" : isLinear ? "linear" : isImage ? "image" : "solid"}
+                          value={isSolid ? "solid" : isLinear ? "linear" : isRadial ? "radial" : isImage ? "image" : "solid"}
                           onChange={(e) => {
-                            const v = e.target.value as "solid" | "linear" | "image";
+                            const v = e.target.value as "solid" | "linear" | "radial" | "image";
                             if (v === "solid") setFills([{ type: "solid", color: resolveFillColor(doc, selectedNode) }]);
                             else if (v === "linear") setFills([{ type: "linear", from: "#000000", to: "#ffffff", angle: 0 }]);
+                            else if (v === "radial") setFills([{ type: "radial", from: "#000000", to: "#ffffff", cx: 0.5, cy: 0.5, r: 0.5 }]);
                             else if (v === "image") setFills([{ type: "image", src: "", fit: "cover" }]);
                           }}
                           className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                         >
                           <option value="solid">�ܻ�</option>
                           <option value="linear">���� �׶���Ʈ</option>
+                          <option value="radial">Radial</option>
                           <option value="image">�̹���</option>
                         </select>
                       </label>
@@ -11299,41 +12054,59 @@ export default function AdvancedEditor() {
                           </label>
                         </>
                       )}
-                      {isLinear && (
+                      {(isLinear || isRadial) && (
                         <>
                           <label className="flex items-center justify-between gap-2">
                             <span className="text-neutral-500">���� ��</span>
-                            <input type="color" value={primaryFill.from} onChange={(e) => setFills([{ ...primaryFill, from: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
+                            <input type="color" value={gradientFill?.from ?? "#000000"} onChange={(e) => gradientFill && setFills([{ ...gradientFill, from: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                           </label>
                           <label className="flex items-center justify-between gap-2">
                             <span className="text-neutral-500">�� ��</span>
-                            <input type="color" value={primaryFill.to} onChange={(e) => setFills([{ ...primaryFill, to: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
+                            <input type="color" value={gradientFill?.to ?? "#ffffff"} onChange={(e) => gradientFill && setFills([{ ...gradientFill, to: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                           </label>
-                          <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">����(��)</span>
-                            <input type="number" value={primaryFill.angle ?? 0} onChange={(e) => setFills([{ ...primaryFill, angle: Number(e.target.value) }])} className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
-                          </label>
+                          {isLinear && (
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-neutral-500">����(��)</span>
+                              <input type="number" value={gradientFill?.angle ?? 0} onChange={(e) => gradientFill && setFills([{ ...gradientFill, angle: Number(e.target.value) }])} className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                            </label>
+                          )}
+                          {isRadial && (
+                            <div className="grid grid-cols-3 gap-2">
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Center X</span>
+                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.cx ?? 0.5} onChange={(e) => gradientFill && setFills([{ ...gradientFill, cx: Number(e.target.value) }])} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Center Y</span>
+                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.cy ?? 0.5} onChange={(e) => gradientFill && setFills([{ ...gradientFill, cy: Number(e.target.value) }])} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Radius</span>
+                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.r ?? 0.5} onChange={(e) => gradientFill && setFills([{ ...gradientFill, r: Number(e.target.value) }])} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                              </label>
+                            </div>
+                          )}
                           <div className="border-t border-neutral-100 pt-2 mt-1">
                             <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">������ (stops)</div>
-                            {linearStops.map((stop, idx) => (
+                            {gradientStops.map((stop, idx) => (
                               <div key={idx} className="flex items-center gap-2 mb-2 rounded border border-neutral-200 bg-white p-2">
                                 <input type="number" min={0} max={1} step={0.05} value={stop.offset} onChange={(e) => {
-                                  const next = linearStops.map((s, i) => (i === idx ? { ...s, offset: Number(e.target.value) } : s)).sort((a, b) => a.offset - b.offset);
-                                  setFills([{ ...primaryFill, stops: next }]);
+                                  const next = gradientStops.map((s, i) => (i === idx ? { ...s, offset: Number(e.target.value) } : s)).sort((a, b) => a.offset - b.offset);
+                                  gradientFill && setFills([{ ...gradientFill, stops: next }]);
                                 }} className="w-14 rounded border border-neutral-200 px-1.5 py-0.5 text-[11px]" title="��ġ 0~1" />
                                 <input type="color" value={stop.color} onChange={(e) => {
-                                  const next = linearStops.map((s, i) => (i === idx ? { ...s, color: e.target.value } : s));
-                                  setFills([{ ...primaryFill, stops: next }]);
+                                  const next = gradientStops.map((s, i) => (i === idx ? { ...s, color: e.target.value } : s));
+                                  gradientFill && setFills([{ ...gradientFill, stops: next }]);
                                 }} className="h-6 w-10 rounded border border-neutral-200" />
                                 <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => {
-                                  const next = linearStops.filter((_, i) => i !== idx);
-                                  setFills([{ ...primaryFill, stops: next.length >= 2 ? next : undefined }]);
-                                }} disabled={linearStops.length <= 2}>����</button>
+                                  const next = gradientStops.filter((_, i) => i !== idx);
+                                  gradientFill && setFills([{ ...gradientFill, stops: next.length >= 2 ? next : undefined }]);
+                                }} disabled={gradientStops.length <= 2}>����</button>
                               </div>
                             ))}
                             <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => {
-                              const next = [...linearStops, { offset: 0.5, color: "#888888" }].sort((a, b) => a.offset - b.offset);
-                              setFills([{ ...primaryFill, stops: next }]);
+                              const next = [...gradientStops, { offset: 0.5, color: "#888888" }].sort((a, b) => a.offset - b.offset);
+                              gradientFill && setFills([{ ...gradientFill, stops: next }]);
                             }}>������ �߰�</button>
                           </div>
                         </>
@@ -11494,17 +12267,19 @@ export default function AdvancedEditor() {
                               <div className="flex items-center gap-2">
                                 <span className="text-neutral-500 text-[10px]">ä���</span>
                                 <select
-                                  value={primaryFill.type === "solid" ? "solid" : primaryFill.type === "linear" ? "linear" : "image"}
+                                  value={primaryFill.type === "solid" ? "solid" : primaryFill.type === "linear" ? "linear" : primaryFill.type === "radial" ? "radial" : "image"}
                                   onChange={(e) => {
-                                    const v = e.target.value as "solid" | "linear" | "image";
+                                    const v = e.target.value as "solid" | "linear" | "radial" | "image";
                                     if (v === "solid") setSegFills([{ type: "solid", color: primaryFill.type === "solid" ? primaryFill.color : "#EDEDED" }]);
                                     else if (v === "linear") setSegFills([{ type: "linear", from: "#000000", to: "#ffffff", angle: 0 }]);
+                                    else if (v === "radial") setSegFills([{ type: "radial", from: "#000000", to: "#ffffff", cx: 0.5, cy: 0.5, r: 0.5 }]);
                                     else if (v === "image") setSegFills([{ type: "image", src: "", fit: "cover" }]);
                                   }}
                                   className="rounded border border-neutral-200 px-2 py-0.5 text-[10px]"
                                 >
                                   <option value="solid">�ܻ�</option>
                                   <option value="linear">�׶���Ʈ</option>
+                                  <option value="radial">Radial</option>
                                   <option value="image">�̹���</option>
                                 </select>
                                 {primaryFill.type === "solid" && <input type="color" value={primaryFill.color} onChange={(e) => setSegFills([{ type: "solid", color: e.target.value }])} className="h-6 w-8 rounded border border-neutral-200" />}
@@ -11608,6 +12383,23 @@ export default function AdvancedEditor() {
                       <input type="number" step={0.1} value={resolvedTextStyle?.letterSpacing ?? 0} onChange={(e) => applyTextStyle({ letterSpacing: Number(e.target.value) || 0 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                   </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="flex items-center gap-1.5 text-xs text-neutral-600">
+                      <input type="checkbox" checked={textWrapEnabled} onChange={(e) => toggleTextWrap(e.target.checked)} />
+                      줄바꿈
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-neutral-600">
+                      <input type="checkbox" checked={textAutoSizeEnabled} onChange={(e) => toggleTextAutoSize(e.target.checked)} />
+                      자동 크기
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    className="w-full rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                    onClick={() => selectedNode && fitTextNodeToContent(selectedNode.id)}
+                  >
+                    내용에 맞춤
+                  </button>
                   <label className="flex items-center justify-between gap-2">
                     <span className="text-neutral-500">����</span>
                     <select value={resolvedTextStyle?.align ?? "left"} onChange={(e) => applyTextStyle({ align: e.target.value as "left" | "center" | "right" })} className="rounded border border-neutral-200 px-2 py-1 text-xs">
@@ -11823,6 +12615,17 @@ export default function AdvancedEditor() {
                   </>
                 )}
               </div>
+              <div className="mt-2 rounded-md border border-neutral-200 bg-white px-2 py-2">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">레이어 도구</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={hideOtherLayers} disabled={!hasSelection}>나머지 숨김</button>
+                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={showAllLayers}>숨김 해제</button>
+                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={lockOtherLayers} disabled={!hasSelection}>나머지 잠금</button>
+                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={unlockAllLayers}>잠금 해제</button>
+                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={selectSameType} disabled={!hasSelection}>같은 타입 선택</button>
+                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={selectSameComponent} disabled={!selectedIsInstance && !selectedIsComponent}>같은 컴포넌트 선택</button>
+                </div>
+              </div>
               <input type="text" value={layerQuery} onChange={(e) => setLayerQuery(e.target.value)} placeholder="레이어 검색" className="mt-2 w-full rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs" aria-label="레이어 검색" />
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <select value={layerTypeFilter} onChange={(e) => setLayerTypeFilter(e.target.value)} className="rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-[11px]">
@@ -11886,6 +12689,48 @@ export default function AdvancedEditor() {
           ) : (
             <>
               <input type="text" value={elementQuery} onChange={(e) => setElementQuery(e.target.value)} placeholder="요소 검색" className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs" />
+              {allPresetTags.length ? (
+                <div className="mt-2">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-neutral-400">
+                    <span>태그</span>
+                    {assetTagFilters.length ? (
+                      <button type="button" className="text-[10px] text-neutral-500" onClick={clearAssetTags}>초기화</button>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {allPresetTags.map((tag) => {
+                      const active = assetTagFilters.includes(tag);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                            active ? "border-blue-600 bg-blue-50 text-blue-700" : "border-neutral-200 bg-white text-neutral-600"
+                          }`}
+                          onClick={() => toggleAssetTag(tag)}
+                        >
+                          #{tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              {allPresetVersions.length ? (
+                <label className="mt-3 flex items-center justify-between text-[11px] text-neutral-500">
+                  <span>버전</span>
+                  <select
+                    value={assetVersionFilter}
+                    onChange={(e) => setAssetVersionFilter(e.target.value)}
+                    className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                  >
+                    <option value="all">전체</option>
+                    {allPresetVersions.map((ver) => (
+                      <option key={ver} value={ver}>{ver}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <div className="mt-3 space-y-1">
                 {filteredPresetGroups.map((group) => {
                   const isOpen = assetsAccordionOpen[group.title] !== false;
@@ -11913,7 +12758,10 @@ export default function AdvancedEditor() {
                               title={item.description ?? undefined}
                             >
                               <span className="block">{displayPresetLabel(item.label, item.id)}</span>
-                              {item.description ? <span className="block text-[9px] text-neutral-400 mt-0.5 truncate">{item.description}</span> : null}
+                              <div className="mt-0.5 flex items-center justify-between text-[9px] text-neutral-400">
+                                <span className="truncate">{item.description ?? ""}</span>
+                                <span className="shrink-0">{resolvePresetVersion(item)}</span>
+                              </div>
                             </button>
                           ))}
                         </div>
@@ -11921,6 +12769,60 @@ export default function AdvancedEditor() {
                     </div>
                   );
                 })}
+              </div>
+              <div className="mt-4 border-t border-neutral-200 pt-4">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">템플릿</div>
+                <input
+                  type="text"
+                  value={templateQuery}
+                  onChange={(e) => setTemplateQuery(e.target.value)}
+                  placeholder="템플릿 검색"
+                  className="mt-2 w-full rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs"
+                />
+                <div className="mt-2 space-y-1">
+                  {filteredTemplateGroups.length === 0 ? (
+                    <div className="rounded-md border border-neutral-200 bg-white px-2 py-3 text-center text-[11px] text-neutral-400">
+                      템플릿이 없습니다.
+                    </div>
+                  ) : (
+                    filteredTemplateGroups.map((group) => {
+                      const isOpen = assetsAccordionOpen[group.title] !== false;
+                      const groupTitle = displayPresetGroupTitle(group.title, group.items[0]?.id ?? "group");
+                      return (
+                        <div key={`tmpl-${group.title}`} className="rounded-md border border-neutral-200 bg-white overflow-hidden">
+                          <button
+                            type="button"
+                            className="flex w-full items-center justify-between bg-neutral-50 px-2 py-1.5 text-left text-[11px] font-medium text-neutral-600 hover:bg-neutral-100"
+                            onClick={() => toggleAssetsAccordion(group.title)}
+                          >
+                            <span>{groupTitle}</span>
+                            <span className={`shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} aria-hidden>▾</span>
+                          </button>
+                          {isOpen ? (
+                            <div className="grid grid-cols-2 gap-1.5 p-2">
+                              {group.items.map((item) => (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  data-preset-id={item.id}
+                                  className="rounded border border-neutral-100 px-2 py-1.5 text-left text-[11px] hover:bg-neutral-50"
+                                  onClick={() => insertPreset(item)}
+                                  title={item.description ?? undefined}
+                                >
+                                  <span className="block">{displayPresetLabel(item.label, item.id)}</span>
+                                  <div className="mt-0.5 flex items-center justify-between text-[9px] text-neutral-400">
+                                    <span className="truncate">{item.description ?? ""}</span>
+                                    <span className="shrink-0">{resolvePresetVersion(item)}</span>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
               <input type="text" value={resourceQuery} onChange={(e) => setResourceQuery(e.target.value)} placeholder="컴포넌트·위젯 검색" className="mt-4 w-full rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs" />
               <div className="mt-2 space-y-1">
@@ -11949,7 +12851,10 @@ export default function AdvancedEditor() {
                               title={item.description ?? undefined}
                             >
                               <span className="block">{displayPresetLabel(item.label, item.id)}</span>
-                              {item.description ? <span className="block text-[9px] text-neutral-400 mt-0.5 truncate">{item.description}</span> : null}
+                              <div className="mt-0.5 flex items-center justify-between text-[9px] text-neutral-400">
+                                <span className="truncate">{item.description ?? ""}</span>
+                                <span className="shrink-0">{resolvePresetVersion(item)}</span>
+                              </div>
                             </button>
                           ))}
                         </div>
@@ -13340,23 +14245,167 @@ export default function AdvancedEditor() {
                   {selectedIsComponent ? (
                     <div className="space-y-2">
                       <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">변형 (Variants)</div>
-                      {(selectedNode.variants ?? []).length > 0 ? (
-                        <ul className="space-y-1 rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px]">
-                          {selectedNode.variants?.map((v) => (
-                            <li key={v.id} className="flex items-center justify-between gap-2">
-                              <span>{v.name}</span>
-                              <span className="text-neutral-400">{doc.nodes[v.rootId]?.name ?? v.rootId.slice(0, 8)}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
-                        onClick={() => addComponentVariant(selectedNode.id)}
-                      >
-                        변형 추가
-                      </button>
+                      <div className="space-y-2 rounded-md border border-neutral-200 bg-white p-2">
+                        {(selectedNode.variants ?? []).length > 0 ? (
+                          <div className="space-y-2">
+                            {selectedNode.variants?.map((v, index) => {
+                              const isDefault = defaultVariantId === v.id;
+                              const isEditing = variantEditId === v.id;
+                              const rootName = doc.nodes[v.rootId]?.name ?? v.rootId.slice(0, 8);
+                              return (
+                                <div key={v.id} className="rounded border border-neutral-200 bg-neutral-50 px-2 py-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[11px] font-medium text-neutral-700">{v.name}</span>
+                                      {isDefault ? (
+                                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] text-emerald-700">기본</span>
+                                      ) : null}
+                                    </div>
+                                    <span className="text-[10px] text-neutral-400">{rootName}</span>
+                                  </div>
+                                  {isEditing ? (
+                                    <div className="mt-2 flex items-center gap-2">
+                                      <input
+                                        type="text"
+                                        value={variantEditName}
+                                        onChange={(e) => setVariantEditName(e.target.value)}
+                                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                                        placeholder="변형 이름"
+                                      />
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                        onClick={() => finalizeVariantRename(selectedNode.id, v.id)}
+                                      >
+                                        저장
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                        onClick={cancelVariantRename}
+                                      >
+                                        취소
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px]">
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-0.5"
+                                        onClick={() => {
+                                          setVariantEditId(v.id);
+                                          setVariantEditName(v.name);
+                                        }}
+                                      >
+                                        이름 변경
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-0.5 disabled:opacity-50"
+                                        onClick={() => setDefaultVariant(selectedNode.id, v.id)}
+                                        disabled={isDefault}
+                                      >
+                                        기본 지정
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-0.5 disabled:opacity-50"
+                                        onClick={() => moveComponentVariant(selectedNode.id, v.id, "up")}
+                                        disabled={index === 0}
+                                      >
+                                        위로
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-0.5 disabled:opacity-50"
+                                        onClick={() => moveComponentVariant(selectedNode.id, v.id, "down")}
+                                        disabled={index === (selectedNode.variants?.length ?? 1) - 1}
+                                      >
+                                        아래로
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-0.5"
+                                        onClick={() => duplicateComponentVariant(selectedNode.id, v.id)}
+                                      >
+                                        복제
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-red-600 disabled:opacity-50"
+                                        onClick={() => deleteComponentVariant(selectedNode.id, v.id)}
+                                        disabled={(selectedNode.variants?.length ?? 0) <= 1}
+                                      >
+                                        삭제
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-neutral-400">아직 변형이 없습니다.</div>
+                        )}
+                        <button
+                          type="button"
+                          className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
+                          onClick={() => addComponentVariant(selectedNode.id)}
+                        >
+                          변형 추가
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">컴포넌트 버전</div>
+                        <div className="space-y-2 rounded-md border border-neutral-200 bg-white p-2">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={componentVersionName}
+                              onChange={(e) => setComponentVersionName(e.target.value)}
+                              placeholder="버전 이름 (선택)"
+                              className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                              onClick={saveComponentVersion}
+                            >
+                              저장
+                            </button>
+                          </div>
+                          {selectedComponentVersions.length ? (
+                            <div className="space-y-1">
+                              {selectedComponentVersions.map((version) => (
+                                <div key={version.id} className="flex items-center justify-between gap-2 rounded border border-neutral-100 bg-neutral-50 px-2 py-1">
+                                  <div>
+                                    <div className="text-[11px] font-medium text-neutral-700">{version.name}</div>
+                                    <div className="text-[10px] text-neutral-400">{new Date(version.createdAt).toLocaleString()}</div>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px]"
+                                      onClick={() => restoreComponentVersion(version.id)}
+                                    >
+                                      복원
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px] text-red-600"
+                                      onClick={() => deleteComponentVersion(version.id)}
+                                    >
+                                      삭제
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-neutral-400">버전 기록이 없습니다.</div>
+                          )}
+                        </div>
+                      </div>
                       <button
                         type="button"
                         className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
@@ -13462,6 +14511,49 @@ export default function AdvancedEditor() {
                           </div>
                         ) : null}
                       </div>
+                      <div className="space-y-2">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">슬롯</div>
+                        <div className="rounded-md border border-neutral-200 bg-white p-2 space-y-2">
+                          {selectedNode ? (
+                            <label className="flex flex-col gap-1 text-[11px] text-neutral-500">
+                              <span>선택 레이어 슬롯 ID</span>
+                              <input
+                                type="text"
+                                value={selectedNode.slotId ?? ""}
+                                onChange={(e) => updateSlotId(selectedNode.id, e.target.value)}
+                                placeholder="slot-id"
+                                className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                            </label>
+                          ) : null}
+                          {componentSlots.length ? (
+                            <div className="space-y-2">
+                              {componentSlots.map((slot) => (
+                                <div key={slot.id} className="flex items-center gap-2">
+                                  <div className="flex-1 space-y-1">
+                                    <div className="text-[11px] text-neutral-500">{slot.name}</div>
+                                    <input
+                                      type="text"
+                                      value={slot.slotId}
+                                      onChange={(e) => updateSlotId(slot.id, e.target.value)}
+                                      className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                                    />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                    onClick={() => updateSlotId(slot.id, null)}
+                                  >
+                                    해제
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-neutral-400">등록된 슬롯이 없습니다.</div>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   ) : null}
                   {selectedIsInstance ? (
@@ -13484,6 +14576,46 @@ export default function AdvancedEditor() {
                             ))}
                           </select>
                         </label>
+                      ) : null}
+                      {instanceSlots.length ? (
+                        <div className="space-y-2 rounded-md border border-neutral-200 bg-white p-2">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">슬롯 콘텐츠</div>
+                          {instanceSlots.map((slot) => {
+                            const assigned = instanceSlotContents?.[slot.slotId] ?? [];
+                            const assignedLabels = assigned.map((id) => doc.nodes[id]?.name ?? id.slice(0, 8));
+                            return (
+                              <div key={slot.id} className="space-y-1 rounded border border-neutral-100 bg-neutral-50 px-2 py-1.5">
+                                <div className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                                  <span>{slot.name}</span>
+                                  <span className="text-[10px] text-neutral-400">{slot.slotId}</span>
+                                </div>
+                                <div className="text-[10px] text-neutral-400">
+                                  할당됨: {assignedLabels.length ? assignedLabels.join(", ") : "없음"}
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px]">
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 bg-white px-2 py-0.5 disabled:opacity-50"
+                                    onClick={() => updateInstanceSlotContents(selectedNode.id, slot.slotId, instanceSelectionIds)}
+                                    disabled={instanceSelectionIds.length === 0}
+                                  >
+                                    선택 할당
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 bg-white px-2 py-0.5"
+                                    onClick={() => updateInstanceSlotContents(selectedNode.id, slot.slotId, null)}
+                                  >
+                                    비우기
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          <div className="text-[10px] text-neutral-400">
+                            슬롯에 할당할 레이어를 먼저 인스턴스 내부에서 선택한 뒤 “선택 할당”을 눌러주세요.
+                          </div>
+                        </div>
                       ) : null}
                       {componentName.length ? (
                         <div className="space-y-2">
@@ -13722,6 +14854,27 @@ export default function AdvancedEditor() {
                   <div className="flex items-center gap-2">
                     <input
                       type="text"
+                      value={styleSearch}
+                      onChange={(e) => setStyleSearch(e.target.value)}
+                      placeholder="스타일 검색"
+                      className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                    />
+                    <select
+                      value={styleTypeFilter}
+                      onChange={(e) => setStyleTypeFilter(e.target.value as "all" | "fill" | "stroke" | "text" | "effect")}
+                      className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                      title="스타일 종류"
+                    >
+                      <option value="all">전체</option>
+                      <option value="fill">채우기</option>
+                      <option value="stroke">테두리</option>
+                      <option value="effect">효과</option>
+                      <option value="text">텍스트</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
                       value={newStyleName}
                       onChange={(e) => setNewStyleName(e.target.value)}
                       placeholder="스타일 이름"
@@ -13737,6 +14890,72 @@ export default function AdvancedEditor() {
                       <option value="page">페이지</option>
                       <option value="document">문서</option>
                     </select>
+                  </div>
+                  <div className="rounded-md border border-neutral-200 bg-white px-2 py-2">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between text-[11px] text-neutral-600"
+                      onClick={() => setStyleIoOpen((prev) => !prev)}
+                    >
+                      <span>내보내기/가져오기</span>
+                      <span className={`transition-transform ${styleIoOpen ? "rotate-180" : ""}`} aria-hidden>▾</span>
+                    </button>
+                    {styleIoOpen ? (
+                      <div className="mt-2 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            onClick={() => setStyleImportText(buildStyleExportPayload())}
+                          >
+                            JSON 생성
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            onClick={copyStyleExport}
+                          >
+                            클립보드 복사
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            onClick={downloadStyleExport}
+                          >
+                            파일 저장
+                          </button>
+                        </div>
+                        <textarea
+                          value={styleImportText}
+                          onChange={(e) => setStyleImportText(e.target.value)}
+                          placeholder="스타일 라이브러리 JSON 붙여넣기"
+                          className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px] font-mono"
+                          rows={4}
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            onClick={() => importStyleTokens("merge")}
+                          >
+                            병합 가져오기
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            onClick={() => importStyleTokens("replace")}
+                          >
+                            대체 가져오기
+                          </button>
+                        </div>
+                        {styleImportError ? (
+                          <div className="text-[11px] text-red-600">{styleImportError}</div>
+                        ) : null}
+                        <div className="text-[10px] text-neutral-400">
+                          대체 가져오기는 기존 스타일을 이름/타입 기준으로 매핑합니다.
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <button
@@ -15388,6 +16607,48 @@ export default function AdvancedEditor() {
                     <div className="mt-2 text-[11px] text-neutral-500">인터랙션이 없습니다.</div>
                   )}
                 </div>
+                <div className="mt-4">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">인터랙션 타임라인</div>
+                  {interactionTimeline.length ? (
+                    <div className="mt-2 space-y-2">
+                      {interactionTimeline.map((page) => {
+                        const maxMs = Math.max(1, page.maxMs);
+                        return (
+                          <div key={page.pageId} className="rounded-md border border-neutral-200 bg-white px-2 py-2">
+                            <div className="text-[11px] font-medium text-neutral-700">{page.pageName}</div>
+                            <div className="mt-2 space-y-2">
+                              {page.items.map((item) => {
+                                const delayPct = Math.min(100, (item.delayMs / maxMs) * 100);
+                                const durationPct = Math.min(100, (item.durationMs / maxMs) * 100);
+                                return (
+                                  <div key={item.id} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1">
+                                    <div className="flex items-center justify-between gap-2 text-[11px] text-neutral-600">
+                                      <div className="min-w-0 flex-1 truncate">{item.nodeName}</div>
+                                      <span className="text-neutral-400">{item.totalMs}ms</span>
+                                    </div>
+                                    <div className="mt-1 h-2 w-full rounded bg-neutral-200 relative overflow-hidden">
+                                      {item.delayMs > 0 ? (
+                                        <div className="absolute left-0 top-0 h-full bg-amber-200" style={{ width: `${delayPct}%` }} />
+                                      ) : null}
+                                      {item.durationMs > 0 ? (
+                                        <div className="absolute top-0 h-full bg-blue-400" style={{ left: `${delayPct}%`, width: `${durationPct}%` }} />
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-1 text-[10px] text-neutral-400">
+                                      {item.trigger} · {item.actionLabel} · delay {item.delayMs}ms · dur {item.durationMs}ms
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-[11px] text-neutral-500">타임라인 항목이 없습니다.</div>
+                  )}
+                </div>
               </div>
             ) : null}
             {panelMode === "dev" ? (
@@ -15477,6 +16738,67 @@ export default function AdvancedEditor() {
                     </div>
                   ) : (
                     <div className="text-[11px] text-neutral-400">다른 사용자 없음</div>
+                  )}
+                </div>
+
+                <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">이벤트 추적</div>
+                    <span className="text-[10px] text-neutral-400">{filteredEventLog.length}/{eventLog.length}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={eventLogFilter}
+                      onChange={(e) => setEventLogFilter(e.target.value as EditorEvent["kind"] | "all")}
+                      className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                    >
+                      {EVENT_LOG_FILTER_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      onClick={() => setEventLogPaused((prev) => !prev)}
+                    >
+                      {eventLogPaused ? "재개" : "일시정지"}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      onClick={() => setEventLog([])}
+                    >
+                      비우기
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      onClick={() => {
+                        if (!navigator?.clipboard?.writeText) return;
+                        const payload = JSON.stringify(eventLog.slice(0, 200), null, 2);
+                        void navigator.clipboard.writeText(payload);
+                      }}
+                    >
+                      복사
+                    </button>
+                  </div>
+                  {filteredEventLog.length ? (
+                    <div className="max-h-40 overflow-y-auto space-y-1">
+                      {filteredEventLog.slice(0, 50).map((entry) => (
+                        <div key={entry.id} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1 text-[11px] text-neutral-600">
+                          <div className="flex items-center justify-between">
+                            <span className="text-neutral-500">{entry.kind}</span>
+                            <span className="text-neutral-400">{new Date(entry.ts).toLocaleTimeString()}</span>
+                          </div>
+                          <div className="text-neutral-700">{entry.detail}</div>
+                        </div>
+                      ))}
+                      {filteredEventLog.length > 50 ? (
+                        <div className="text-[10px] text-neutral-400">+{filteredEventLog.length - 50}개 더 있음</div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-neutral-400">기록 없음</div>
                   )}
                 </div>
 

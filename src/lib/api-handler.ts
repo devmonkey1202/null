@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { apiErrorJson } from "./api-error";
 import { logError } from "./logger";
+import { checkWaf } from "./waf";
+import { withNoStore } from "./cache-policy";
 
 /**
  * Wraps an API route handler with:
@@ -12,7 +14,21 @@ export function withErrorHandler<T extends unknown[]>(
 ) {
   return async (...args: T): Promise<NextResponse> => {
     try {
-      return await handler(...args);
+      const req = args[0];
+      if (req instanceof Request) {
+        const decision = await checkWaf(req);
+        if (!decision.allowed) {
+          return apiErrorJson(decision.error, decision.status, {
+            message: decision.message,
+            detail: decision.detail,
+          });
+        }
+      }
+      const res = await handler(...args);
+      if (!res.headers.get("Cache-Control")) {
+        return withNoStore(res);
+      }
+      return res;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;

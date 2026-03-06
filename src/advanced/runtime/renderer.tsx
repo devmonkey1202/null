@@ -180,9 +180,10 @@ function isImageFill(fill: Fill | null | undefined): fill is ImageFill {
 }
 import { hydrateDoc } from "../doc/scene";
 import { layoutDoc } from "../layout/engine";
-import type { Doc, Node, SerializableDoc, Fill, Stroke, StyleToken, TextStyle, PrototypeAction, PrototypeTrigger, PrototypeInteraction, Variable } from "../doc/scene";
+import type { Doc, Node, SerializableDoc, Fill, Stroke, StyleToken, TextStyle, PrototypeAction, PrototypeTrigger, PrototypeInteraction, Variable, NodeDataBinding } from "../doc/scene";
 import { getPageContentBounds, getNodeChildrenBounds } from "./bounds";
 import { getCustomNodeRenderer } from "./plugins";
+import { buildBindingDecision } from "./data-binding";
 
 function getEffectFilterId(prefix: string, nodeId: string) {
   return `${prefix}-${nodeId}`;
@@ -403,7 +404,7 @@ function pickFill(doc: Doc, node: Node, variableRuntime?: VariableRuntime): stri
   if (!fills.length) return "transparent";
   const fill = fills[0];
   if (fill.type === "solid") return fill.color;
-  if (fill.type === "linear") return `url(#${GRADIENT_PREFIX}-${node.id})`;
+  if (fill.type === "linear" || fill.type === "radial") return `url(#${GRADIENT_PREFIX}-${node.id})`;
   if (fill.type === "image" && normalizeImageSrc(fill.src)) return `url(#${IMAGE_FILL_PATTERN_PREFIX}-${node.id})`;
   return "#E5E7EB";
 }
@@ -419,7 +420,7 @@ function pickFillFromFills(
   if (!fills.length) return "transparent";
   const fill = fills[0];
   if (fill.type === "solid") return fill.color;
-  if (fill.type === "linear") return `url(#${GRADIENT_PREFIX}-${nodeId}-seg-${segmentIndex})`;
+  if (fill.type === "linear" || fill.type === "radial") return `url(#${GRADIENT_PREFIX}-${nodeId}-seg-${segmentIndex})`;
   if (fill.type === "image" && normalizeImageSrc(fill.src)) return `url(#${IMAGE_FILL_PATTERN_PREFIX}-${nodeId}-seg-${segmentIndex})`;
   return "#E5E7EB";
 }
@@ -1000,64 +1001,64 @@ function buildImageFillPatternDefs(doc: Doc) {
 
 function buildGradientDefs(doc: Doc) {
   const defs: React.ReactElement[] = [];
-  Object.values(doc.nodes).forEach((node) => {
-    const segments = node.shape?.segments;
-    if (segments?.length) {
-      segments.forEach((seg, i) => {
-        const fill = seg.fills[0];
-        if (!fill || fill.type !== "linear") return;
-        const rad = ((fill.angle ?? 0) * Math.PI) / 180;
-        const x1 = 0.5 - 0.5 * Math.cos(rad);
-        const y1 = 0.5 - 0.5 * Math.sin(rad);
-        const x2 = 0.5 + 0.5 * Math.cos(rad);
-        const y2 = 0.5 + 0.5 * Math.sin(rad);
-        const stops = fill.stops && fill.stops.length >= 2
-          ? fill.stops
-          : [{ offset: 0, color: fill.from }, { offset: 1, color: fill.to }];
-        defs.push(
-          <linearGradient
-            key={`${GRADIENT_PREFIX}-${node.id}-seg-${i}`}
-            id={`${GRADIENT_PREFIX}-${node.id}-seg-${i}`}
-            gradientUnits="objectBoundingBox"
-            x1={x1}
-            y1={y1}
-            x2={x2}
-            y2={y2}
-          >
-            {stops.map((s, j) => (
-              <stop key={j} offset={s.offset} stopColor={s.color} />
-            ))}
-          </linearGradient>,
-        );
-      });
-      return;
-    }
-    const fills = resolveFill(doc, node);
-    const fill = fills[0];
-    if (!fill || fill.type !== "linear") return;
-    const rad = (fill.angle * Math.PI) / 180;
+  const clamp01 = (value: number | undefined, fallback: number) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.min(1, value));
+  };
+  const buildStops = (fill: Extract<Fill, { type: "linear" | "radial" }>) =>
+    fill.stops && fill.stops.length >= 2
+      ? fill.stops
+      : [{ offset: 0, color: fill.from }, { offset: 1, color: fill.to }];
+  const pushLinear = (fill: Extract<Fill, { type: "linear" }>, id: string) => {
+    const rad = ((fill.angle ?? 0) * Math.PI) / 180;
     const x1 = 0.5 - 0.5 * Math.cos(rad);
     const y1 = 0.5 - 0.5 * Math.sin(rad);
     const x2 = 0.5 + 0.5 * Math.cos(rad);
     const y2 = 0.5 + 0.5 * Math.sin(rad);
-    const stops = fill.stops && fill.stops.length >= 2
-      ? fill.stops
-      : [{ offset: 0, color: fill.from }, { offset: 1, color: fill.to }];
+    const stops = buildStops(fill);
     defs.push(
-      <linearGradient
-        key={`${GRADIENT_PREFIX}-${node.id}`}
-        id={`${GRADIENT_PREFIX}-${node.id}`}
-        gradientUnits="objectBoundingBox"
-        x1={x1}
-        y1={y1}
-        x2={x2}
-        y2={y2}
-      >
+      <linearGradient key={id} id={id} gradientUnits="objectBoundingBox" x1={x1} y1={y1} x2={x2} y2={y2}>
         {stops.map((s, i) => (
           <stop key={i} offset={s.offset} stopColor={s.color} />
         ))}
       </linearGradient>,
     );
+  };
+  const pushRadial = (fill: Extract<Fill, { type: "radial" }>, id: string) => {
+    const stops = buildStops(fill);
+    defs.push(
+      <radialGradient
+        key={id}
+        id={id}
+        gradientUnits="objectBoundingBox"
+        cx={clamp01(fill.cx, 0.5)}
+        cy={clamp01(fill.cy, 0.5)}
+        r={clamp01(fill.r, 0.5)}
+      >
+        {stops.map((s, i) => (
+          <stop key={i} offset={s.offset} stopColor={s.color} />
+        ))}
+      </radialGradient>,
+    );
+  };
+  Object.values(doc.nodes).forEach((node) => {
+    const segments = node.shape?.segments;
+    if (segments?.length) {
+      segments.forEach((seg, i) => {
+        const fill = seg.fills[0];
+        if (!fill || (fill.type !== "linear" && fill.type !== "radial")) return;
+        const id = `${GRADIENT_PREFIX}-${node.id}-seg-${i}`;
+        if (fill.type === "linear") pushLinear(fill, id);
+        else pushRadial(fill, id);
+      });
+      return;
+    }
+    const fills = resolveFill(doc, node);
+    const fill = fills[0];
+    if (!fill || (fill.type !== "linear" && fill.type !== "radial")) return;
+    const id = `${GRADIENT_PREFIX}-${node.id}`;
+    if (fill.type === "linear") pushLinear(fill, id);
+    else pushRadial(fill, id);
   });
   return defs;
 }
@@ -1433,11 +1434,7 @@ function renderCheckboxMark(frame: Node["frame"], color: string) {
 function CollectionBound({
   doc,
   appPageId,
-  collectionId,
-  limit: bindingLimit,
-  offset: bindingOffset,
-  orderBy,
-  orderDir,
+  binding,
   firstChildId,
   rowHeight,
   variableRuntime,
@@ -1445,11 +1442,7 @@ function CollectionBound({
 }: {
   doc: Doc;
   appPageId: string;
-  collectionId: string;
-  limit?: number;
-  offset?: number;
-  orderBy?: "created_at" | "updated_at";
-  orderDir?: "asc" | "desc";
+  binding: NodeDataBinding;
   firstChildId: string;
   rowHeight: number;
   variableRuntime?: VariableRuntime;
@@ -1457,31 +1450,23 @@ function CollectionBound({
 }) {
   const [items, setItems] = useState<Array<Record<string, unknown> & { id?: string }>>([]);
   const overrides = variableRuntime?.variableOverrides ?? {};
-  const resolveNumber = (value: unknown) => {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) return Number(value);
-    return null;
-  };
-  const limit =
-    resolveNumber(overrides.limit) ??
-    resolveNumber(overrides.pageSize) ??
-    resolveNumber(overrides.perPage) ??
-    resolveNumber(overrides.page_size) ??
-    resolveNumber(overrides.per_page) ??
-    (typeof bindingLimit === "number" && Number.isFinite(bindingLimit) ? Math.max(1, bindingLimit) : 50);
-  const explicitOffset =
-    resolveNumber(overrides.offset) ??
-    resolveNumber(overrides.collection_offset) ??
-    (typeof bindingOffset === "number" && Number.isFinite(bindingOffset) ? Math.max(0, bindingOffset) : null);
-  const pageValue = resolveNumber(overrides.page) ?? resolveNumber(overrides.pageIndex);
-  const offset = explicitOffset ?? (pageValue ? Math.max(0, (pageValue - 1) * limit) : 0);
+  const bindingKey = useMemo(() => JSON.stringify({ binding, overrides }), [binding, overrides]);
   useEffect(() => {
     let cancelled = false;
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (orderBy) params.set("orderBy", orderBy);
-    if (orderDir) params.set("orderDir", orderDir);
-    const url = `/api/app/${appPageId}/${collectionId}?${params.toString()}`;
-    fetch(url, { credentials: "include" })
+    if (!binding.collectionId) return () => {
+      cancelled = true;
+    };
+    const decision = buildBindingDecision(binding, overrides);
+    const baseUrl = `/api/app/${appPageId}/${binding.collectionId}`;
+    const request = decision.mode === "query"
+      ? fetch(`${baseUrl}?action=query`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(decision.payload),
+        credentials: "include",
+      })
+      : fetch(`${baseUrl}?${decision.params.toString()}`, { credentials: "include" });
+    request
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { items?: Array<Record<string, unknown> & { id?: string }> } | null) => {
         if (cancelled || !data?.items) return;
@@ -1491,7 +1476,7 @@ function CollectionBound({
     return () => {
       cancelled = true;
     };
-  }, [appPageId, collectionId, limit, offset, orderBy, orderDir, bindingLimit, bindingOffset]);
+  }, [appPageId, binding.collectionId, bindingKey]);
 
   if (items.length === 0) return null;
   return (
@@ -1701,16 +1686,13 @@ function renderNodeTree(
   const firstChild = firstChildId ? resolveDoc.nodes[firstChildId] : null;
   const useMask = effectiveChildIds.length >= 2 && firstChild?.isMask === true;
 
-  const dataBinding = node.data as {
-    type?: string;
-    collectionId?: string;
-    limit?: number;
-    offset?: number;
-    orderBy?: "created_at" | "updated_at";
-    orderDir?: "asc" | "desc";
-  } | undefined;
+  const dataBinding = node.data as NodeDataBinding | undefined;
   if (dataBinding?.type === "collection" && dataBinding.collectionId && appPageId && firstChildId) {
     const rowHeight = firstChild?.frame?.h ?? 50;
+    const binding: NodeDataBinding = {
+      ...dataBinding,
+      mode: dataBinding.mode ?? "list",
+    };
     const renderChildWithRuntime = (childId: string, variableRuntimeOverride?: VariableRuntime) =>
       renderNodeTree(
         doc,
@@ -1748,11 +1730,7 @@ function renderNodeTree(
         <CollectionBound
           doc={doc}
           appPageId={appPageId}
-          collectionId={dataBinding.collectionId}
-          limit={dataBinding.limit}
-          offset={dataBinding.offset}
-          orderBy={dataBinding.orderBy}
-          orderDir={dataBinding.orderDir}
+          binding={binding}
           firstChildId={firstChildId}
           rowHeight={rowHeight}
           variableRuntime={variableRuntime}

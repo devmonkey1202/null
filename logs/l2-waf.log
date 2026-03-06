@@ -1,0 +1,6 @@
+# L2 WAF Scenario
+ts=2026-03-06T12:38:53.729Z
+body_size allowed=false
+ua_block allowed=false
+ip_block allowed=false
+health_skip allowed=true

@@ -1,0 +1,8 @@
+# L2 App Store Pipeline Scenario
+ts=2026-03-06T12:24:38.838Z
+ios output=C:\Users\주원\Desktop\null\dist\app-store-l2\ios\com.null.l2-1.0.0-100 package_bytes=6709
+android output=C:\Users\주원\Desktop\null\dist\app-store-l2\android\com.null.l2-1.0.0-101 package_bytes=16266
+ios checklist=C:\Users\주원\Desktop\null\dist\app-store-l2\ios\com.null.l2-1.0.0-100\RELEASE_CHECKLIST.md
+ios signing=C:\Users\주원\Desktop\null\dist\app-store-l2\ios\com.null.l2-1.0.0-100\SIGNING_GUIDE.md
+android checklist=C:\Users\주원\Desktop\null\dist\app-store-l2\android\com.null.l2-1.0.0-101\RELEASE_CHECKLIST.md
+android signing=C:\Users\주원\Desktop\null\dist\app-store-l2\android\com.null.l2-1.0.0-101\SIGNING_GUIDE.md

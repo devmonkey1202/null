@@ -2005,12 +2005,14 @@ const ASSET_PRESETS: Record<string, PresetDefinition> = Object.fromEntries(
     group.ids.map((id) => {
       const label = ASSET_LABELS[id] ?? id;
       const size = getSizeForAsset(group.variant, id);
+      const version = "v1.0";
       return [
         id,
         {
           id,
           label,
           description: ASSET_DESCRIPTIONS[id],
+          version,
           size,
           build: (origin) => {
             const ctx = createBuilder();
@@ -2028,6 +2030,7 @@ function makeFallbackPreset(id: string): PresetDefinition {
   return {
     id,
     label: id,
+    version: "v1.0",
     size,
     build: (origin) => {
       const ctx = createBuilder();

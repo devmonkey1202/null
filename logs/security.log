@@ -25,3 +25,15 @@
 {"ts":"2026-03-05T18:45:59.787Z","action":"test_sec_1772736359786_l5dywgixkh","meta":{"marker":"sec_1772736359786_l5dywgixkh"}}
 {"ts":"2026-03-05T18:54:16.262Z","action":"test_sec_1772736856261_hp2bsmhxtml","meta":{"marker":"sec_1772736856261_hp2bsmhxtml"}}
 {"ts":"2026-03-05T19:10:51.302Z","action":"test_sec_1772737851301_octbdr9tq5j","meta":{"marker":"sec_1772737851301_octbdr9tq5j"}}
+{"ts":"2026-03-06T11:17:41.890Z","action":"test_sec_1772795861889_d9eg1y8em1h","meta":{"marker":"sec_1772795861889_d9eg1y8em1h"}}
+{"ts":"2026-03-06T11:38:07.002Z","action":"test_sec_1772797087002_99x3sr4vh3o","meta":{"marker":"sec_1772797087002_99x3sr4vh3o"}}
+{"ts":"2026-03-06T11:47:27.955Z","action":"test_sec_1772797647954_9xo8zzvoma","meta":{"marker":"sec_1772797647954_9xo8zzvoma"}}
+{"ts":"2026-03-06T11:53:20.147Z","action":"test_sec_1772798000147_1pao0lxag8n","meta":{"marker":"sec_1772798000147_1pao0lxag8n"}}
+{"ts":"2026-03-06T11:59:12.082Z","action":"test_sec_1772798352081_o989y5uff5","meta":{"marker":"sec_1772798352081_o989y5uff5"}}
+{"ts":"2026-03-06T12:07:26.893Z","action":"test_sec_1772798846893_hle9lgerdb","meta":{"marker":"sec_1772798846893_hle9lgerdb"}}
+{"ts":"2026-03-06T12:07:52.947Z","action":"test_sec_1772798872947_fb9e7ya6q89","meta":{"marker":"sec_1772798872947_fb9e7ya6q89"}}
+{"ts":"2026-03-06T12:24:38.833Z","action":"security_update_applied","meta":{"ts":"2026-03-06T12:24:38.832Z","version":"2026.03.06-1","severity":"high","summary":"L2 patch: dependency bump + policy refresh","appliedAt":"2026-03-06T12:24:38.832Z","references":["local-l2"],"actor":{"adminId":"l2-admin"}}}
+{"ts":"2026-03-06T12:24:38.834Z","action":"security_update_applied","meta":{"ts":"2026-03-06T12:24:38.834Z","version":"2026.03.06-rollback","severity":"medium","summary":"L2 rollback: revert patch 2026.03.06-1","appliedAt":"2026-03-06T12:24:38.833Z","metadata":{"rollbackOf":"2026.03.06-1"},"actor":{"adminId":"l2-admin"}}}
+{"ts":"2026-03-06T12:38:53.738Z","action":"waf_block","ip":"unknown","path":"/api/test","meta":{"error":"waf_body_too_large","status":413,"detail":{"max_bytes":10,"length":999}}}
+{"ts":"2026-03-06T12:38:53.740Z","action":"waf_block","ip":"unknown","user_agent":"BadBot/1.0","path":"/api/test","meta":{"error":"waf_ua_blocked","status":403,"detail":{"user_agent":"BadBot/1.0"}}}
+{"ts":"2026-03-06T12:38:53.746Z","action":"waf_block","ip":"203.0.113.10","path":"/api/test","meta":{"error":"waf_ip_blocked","status":403,"detail":{"reason":"l2-test","expires_at":null}}}

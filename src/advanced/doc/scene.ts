@@ -44,6 +44,7 @@ export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" 
 export type Fill =
   | { type: "solid"; color: string; opacity?: number }
   | { type: "linear"; from: string; to: string; angle: number; opacity?: number; stops?: { offset: number; color: string }[] }
+  | { type: "radial"; from: string; to: string; opacity?: number; stops?: { offset: number; color: string }[]; cx?: number; cy?: number; r?: number }
   | { type: "image"; src: string; fit: "cover" | "contain" | "fill" };
 
 export type Stroke = {
@@ -212,6 +213,27 @@ export type DocPrototype = {
   submitRequiredFields?: string[];
 };
 
+export type NodeDataBindingFilterOp =
+  | "eq"
+  | "ne"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "contains"
+  | "startsWith"
+  | "endsWith"
+  | "in"
+  | "notIn"
+  | "exists"
+  | "notExists";
+
+export type NodeDataBindingFilter = {
+  field: string;
+  op: NodeDataBindingFilterOp;
+  value?: unknown;
+};
+
 export type NodeDataBinding =
   | {
       type: "collection";
@@ -220,8 +242,10 @@ export type NodeDataBinding =
       fields?: string[];
       limit?: number;
       offset?: number;
-      orderBy?: "created_at" | "updated_at";
+      orderBy?: string;
       orderDir?: "asc" | "desc";
+      filters?: NodeDataBindingFilter[];
+      search?: { q?: string; fields?: string[] };
       editable?: boolean;
       allowDelete?: boolean;
     };

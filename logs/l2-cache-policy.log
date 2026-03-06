@@ -1,0 +1,6 @@
+# L2 Cache Policy Scenario (simulation)
+ts=2026-03-06T12:24:38.828Z
+note=simulated cache hit/miss using in-memory map
+public miss: hit=false cache-control=public, s-maxage=60, stale-while-revalidate=600
+public hit: hit=true surrogate-key=plugin-store
+no-store: hit=false cache-control=no-store

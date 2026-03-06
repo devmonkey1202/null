@@ -5,5 +5,5 @@ import { withPublicCache } from "@/lib/cache-policy";
 export async function GET() {
   const catalog = listStorePlugins();
   const res = NextResponse.json(catalog);
-  return withPublicCache(res, { maxAgeSeconds: 60, staleWhileRevalidateSeconds: 600 });
+  return withPublicCache(res, { maxAgeSeconds: 60, staleWhileRevalidateSeconds: 600, tags: ["plugin-store"] });
 }

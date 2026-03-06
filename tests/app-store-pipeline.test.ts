@@ -20,6 +20,7 @@ describe("app store pipeline", () => {
     expect(existsSync(result.packagePath)).toBe(true);
     expect(existsSync(result.metadataPath)).toBe(true);
     expect(existsSync(result.checklistPath)).toBe(true);
+    expect(existsSync(result.signingGuidePath)).toBe(true);
 
     const meta = JSON.parse(readFileSync(result.metadataPath, "utf8"));
     expect(meta.version).toBe("1.2.3");

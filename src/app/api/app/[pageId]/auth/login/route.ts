@@ -13,9 +13,16 @@ export const POST = withErrorHandler(
 
     const email = String(body.email ?? "");
     const password = String(body.password ?? "");
+    const otp = typeof body.otp === "string" ? body.otp : typeof body.otp_code === "string" ? body.otp_code : "";
+    const otpBackup =
+      typeof body.otp_backup === "string"
+        ? body.otp_backup
+        : typeof body.backup_code === "string"
+          ? body.backup_code
+          : "";
 
     try {
-      const result = await loginAppUser(pageId, email, password);
+      const result = await loginAppUser(pageId, email, password, { otp, otpBackup });
       await logAppAudit({
         pageId,
         action: "app_user_login",

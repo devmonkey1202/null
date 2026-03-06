@@ -14,6 +14,11 @@ describe("cache policy helpers", () => {
     expect(headers["Pragma"]).toBe("no-cache");
   });
 
+  it("adds surrogate key header when tags provided", () => {
+    const headers = buildPublicCacheHeaders({ maxAgeSeconds: 120, tags: ["Plugin-Store", "plugin-store", ""] });
+    expect(headers["Surrogate-Key"]).toBe("plugin-store");
+  });
+
   it("applies headers to response", () => {
     const res = new Response("ok");
     applyCacheHeaders(res, buildPublicCacheHeaders({ maxAgeSeconds: 10, staleWhileRevalidateSeconds: 50 }));

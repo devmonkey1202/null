@@ -19,6 +19,13 @@ export const POST = withErrorHandler(
         subject: body.subject,
         displayName: body.displayName,
       };
+    const otp = typeof body.otp === "string" ? body.otp : typeof body.otp_code === "string" ? body.otp_code : "";
+    const otpBackup =
+      typeof body.otp_backup === "string"
+        ? body.otp_backup
+        : typeof body.backup_code === "string"
+          ? body.backup_code
+          : "";
 
     if (!provider) return apiErrorJson("sso_provider_required", 400);
 
@@ -26,6 +33,8 @@ export const POST = withErrorHandler(
       provider: String(provider) as "oauth" | "saml",
       connectionName,
       payload,
+      otp,
+      otpBackup,
     });
 
     return NextResponse.json({

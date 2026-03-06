@@ -1,12 +1,22 @@
 ﻿import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
-import { getCollectionBySlug, getRecord, updateRecord, deleteRecord, validateRecordData, type AppFieldDef } from "@/lib/app-data";
+import {
+  getCollectionBySlug,
+  getRecord,
+  updateRecord,
+  deleteRecord,
+  validateRecordData,
+  validateRelationTargets,
+  expandRelations,
+  type AppFieldDef,
+} from "@/lib/app-data";
 import { logAppAudit } from "@/lib/app-audit";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonObject } from "@/lib/validation";
 import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
 import { resolveAppUserFromRequest } from "@/lib/app-request";
+import { isAppActionAllowedWithContext } from "@/lib/app-permissions";
 
 type Params = { pageId: string; model: string; id: string };
 
@@ -36,6 +46,9 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
 
   const { page, isOwner, appUser } = await getPageAndAccess(pageId, req);
   if (!page) return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "read", { isOwner, appUserId: appUser.id })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_read_required" });
+  }
 
   const coll = await getCollectionBySlug(pageId, model);
   if (!coll) return apiErrorJson("collection_not_found", 404);
@@ -50,10 +63,48 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
   });
   if (!record) return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "read", {
+    isOwner,
+    appUserId: appUser.id,
+    recordAppUserId: record.app_user_id ?? null,
+  })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_abac_denied" });
+  }
+  const url = new URL(req.url);
+  const expandRaw = url.searchParams.get("expand") ?? "";
+  const expandFields =
+    expandRaw === "*" || expandRaw.toLowerCase() === "all"
+      ? ["*"]
+      : expandRaw
+          .split(",")
+          .map((v) => v.trim())
+          .filter(Boolean);
+
+  let relations: Record<string, unknown[]> = {};
+  if (expandFields.length) {
+    const fieldsToExpand = expandFields.includes("*") ? [] : expandFields;
+    const expanded = await expandRelations(
+      pageId,
+      fields,
+      [
+        {
+          id: record.id,
+          data: (record.data as Record<string, unknown>) ?? {},
+          created_at: record.created_at,
+          updated_at: record.updated_at,
+          app_user_id: record.app_user_id ?? null,
+        },
+      ],
+      fieldsToExpand,
+      { skipFields: [APP_USER_FIELD] }
+    );
+    relations = expanded[0]?.relations ?? {};
+  }
 
   return NextResponse.json({
     id: record.id,
     ...(record.data as object),
+    relations,
     created_at: record.created_at,
     updated_at: record.updated_at,
   });
@@ -78,6 +129,9 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
   const isOwner = Boolean(user && page.owner_id === user.id);
   if (!isOwner && !appUser) return apiErrorJson("auth_required", 401);
   if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "update", { isOwner, appUserId: appUser.id })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_update_required" });
+  }
 
   const coll = await getCollectionBySlug(pageId, model);
   if (!coll) return apiErrorJson("collection_not_found", 404);
@@ -85,6 +139,10 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
   const appUserField = getAppUserField(fields);
   const requiresAppUser = Boolean(appUserField);
 
+  const url = new URL(req.url, "http://localhost");
+  const validateRelations =
+    url.searchParams.get("validate_relations") === "1" ||
+    req.headers.get("x-null-validate-relations") === "1";
   const parsed = await parseJsonObject(req);
   if (parsed.error) return parsed.error;
   const data = typeof parsed.data === "object" && parsed.data !== null ? parsed.data : {};
@@ -102,6 +160,13 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
   });
   if (!existing) return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "update", {
+    isOwner,
+    appUserId: appUser.id,
+    recordAppUserId: existing.app_user_id ?? null,
+  })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_abac_denied" });
+  }
   const merged = { ...(existing.data as Record<string, unknown>), ...(data as Record<string, unknown>) };
   if (!isOwner && appUser && requiresAppUser) {
     (merged as Record<string, unknown>)[APP_USER_FIELD] = appUser.id;
@@ -110,6 +175,14 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
   const validated = validateRecordData(fields, merged, { mode: "update", strict });
   if (validated.errors.length) {
     return apiErrorJson("validation_failed", 400, { detail: validated.errors });
+  }
+  if (validateRelations) {
+    const rel = await validateRelationTargets(pageId, fields, validated.data as Record<string, unknown>, {
+      skipFields: [APP_USER_FIELD],
+    });
+    if (!rel.ok) {
+      return apiErrorJson("relation_invalid", 400, { detail: { missing: rel.missing } });
+    }
   }
   const appUserIdForRecord = requiresAppUser ? (validated.data?.[APP_USER_FIELD] as string | undefined) : undefined;
   const updateOptions = requiresAppUser ? { replace: true, appUserId: appUserIdForRecord ?? null } : { replace: true };
@@ -176,6 +249,9 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
   const isOwner = Boolean(user && page.owner_id === user.id);
   if (!isOwner && !appUser) return apiErrorJson("auth_required", 401);
   if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "delete", { isOwner, appUserId: appUser.id })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_delete_required" });
+  }
 
   const coll = await getCollectionBySlug(pageId, model);
   if (!coll) return apiErrorJson("collection_not_found", 404);
@@ -196,6 +272,13 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
     appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
   });
   if (!existing) return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "delete", {
+    isOwner,
+    appUserId: appUser.id,
+    recordAppUserId: existing.app_user_id ?? null,
+  })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_abac_denied" });
+  }
 
   const record = await deleteRecord(pageId, model, id, {
     userId: user?.id,

@@ -99,6 +99,7 @@ export type PresetDefinition = {
   label: string;
   description?: string;
   tags?: string[];
+  version?: string;
   size: { w: number; h: number };
   build: (origin: { x: number; y: number }) => PresetBuildResult;
 };

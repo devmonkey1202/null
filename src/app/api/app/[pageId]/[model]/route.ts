@@ -1,13 +1,22 @@
 ﻿import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
-import { getCollectionBySlug, listRecords, createRecord, validateRecordData, type AppFieldDef } from "@/lib/app-data";
+import {
+  getCollectionBySlug,
+  listRecords,
+  createRecord,
+  validateRecordData,
+  validateRelationTargets,
+  expandRelations,
+  type AppFieldDef,
+} from "@/lib/app-data";
 import { logAppAudit } from "@/lib/app-audit";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonObject } from "@/lib/validation";
 import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
 import { resolveAppUserFromRequest } from "@/lib/app-request";
 import { handleAppRecordQuery } from "@/lib/app-record-query";
+import { isAppActionAllowedWithContext } from "@/lib/app-permissions";
 
 type Params = { pageId: string; model: string };
 
@@ -37,6 +46,9 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
 
   const { page, isOwner, appUser } = await getPageAndAccess(pageId, req);
   if (!page) return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "read", { isOwner, appUserId: appUser.id })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_read_required" });
+  }
 
   const coll = await getCollectionBySlug(pageId, model);
   if (!coll) return apiErrorJson("collection_not_found", 404);
@@ -54,6 +66,14 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     | "created_at"
     | "updated_at";
   const orderDir = url.searchParams.get("orderDir") === "asc" ? "asc" : "desc";
+  const expandRaw = url.searchParams.get("expand") ?? "";
+  const expandFields =
+    expandRaw === "*" || expandRaw.toLowerCase() === "all"
+      ? ["*"]
+      : expandRaw
+          .split(",")
+          .map((v) => v.trim())
+          .filter(Boolean);
 
   const result = await listRecords(pageId, model, {
     limit,
@@ -62,10 +82,24 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     orderDir,
     appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
   });
+  let items = result.items.map((r) => ({
+    id: r.id,
+    data: (r.data as Record<string, unknown>) ?? {},
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    app_user_id: r.app_user_id ?? null,
+  }));
+  if (expandFields.length) {
+    const fieldsToExpand = expandFields.includes("*") ? [] : expandFields;
+    items = await expandRelations(pageId, fields, items, fieldsToExpand, { skipFields: [APP_USER_FIELD] });
+  } else {
+    items = items.map((item) => ({ ...item, relations: {} }));
+  }
   return NextResponse.json({
-    items: result.items.map((r) => ({
+    items: items.map((r) => ({
       id: r.id,
       ...(r.data as object),
+      relations: r.relations,
       created_at: r.created_at,
       updated_at: r.updated_at,
     })),
@@ -82,6 +116,9 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
 
   const url = new URL(req.url, "http://localhost");
   const action = url.searchParams.get("action") ?? req.headers.get("x-null-action");
+  const validateRelations =
+    url.searchParams.get("validate_relations") === "1" ||
+    req.headers.get("x-null-validate-relations") === "1";
   if (action === "query") {
     return handleAppRecordQuery(req, pageId, model);
   }
@@ -101,6 +138,9 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   if (!isOwner && !appUser) return apiErrorJson("auth_required", 401);
   if (!isOwner && page.is_hidden) return apiErrorJson("not_found", 404);
   if (!isOwner && page.status !== "live") return apiErrorJson("not_found", 404);
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "create", { isOwner, appUserId: appUser.id })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_create_required" });
+  }
 
   const coll = await getCollectionBySlug(pageId, model);
   if (!coll) return apiErrorJson("collection_not_found", 404);
@@ -125,10 +165,26 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
       ? { ...(input as Record<string, unknown>), [APP_USER_FIELD]: appUser.id }
       : input;
 
+  if (appUser && !isAppActionAllowedWithContext(appUser.role, "create", {
+    isOwner,
+    appUserId: appUser.id,
+    recordAppUserId: requiresAppUser ? (data as Record<string, unknown>)[APP_USER_FIELD] as string | undefined : undefined,
+  })) {
+    return apiErrorJson("permission_denied", 403, { detail: "app_user_abac_denied" });
+  }
+
   const strict = Boolean((coll as { strict?: boolean }).strict);
   const validated = validateRecordData(fields, data as Record<string, unknown>, { mode: "create", strict });
   if (validated.errors.length) {
     return apiErrorJson("validation_failed", 400, { detail: validated.errors });
+  }
+  if (validateRelations) {
+    const rel = await validateRelationTargets(pageId, fields, validated.data as Record<string, unknown>, {
+      skipFields: [APP_USER_FIELD],
+    });
+    if (!rel.ok) {
+      return apiErrorJson("relation_invalid", 400, { detail: { missing: rel.missing } });
+    }
   }
   const appUserIdForRecord = requiresAppUser ? (validated.data?.[APP_USER_FIELD] as string | undefined) : undefined;
   const createOptions = requiresAppUser ? { appUserId: appUserIdForRecord ?? null } : undefined;

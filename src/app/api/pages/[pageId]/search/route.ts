@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import {
+  searchCalendar,
+  searchChat,
+  searchComments,
+  searchNotes,
+  searchTodos,
+} from "@/lib/page-search";
 
 type Params = { pageId: string };
 
@@ -29,7 +35,6 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     return NextResponse.json({ results: [] });
   }
 
-  const pattern = `%${q.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
   const results: Array<{
     type: string;
     id: string;
@@ -39,90 +44,64 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
   }> = [];
 
   if (type === "all" || type === "comments") {
-    const comments = await prisma.comment.findMany({
-      where: { page_id: pageId, content: { contains: q, mode: "insensitive" } },
-      take: 20,
-      orderBy: { created_at: "desc" },
-      select: { id: true, content: true, created_at: true, node_id: true },
-    });
+    const comments = await searchComments(pageId, q, 20);
     for (const c of comments) {
       results.push({
         type: "comment",
         id: c.id,
-        snippet: c.content.slice(0, 200),
-        createdAt: c.created_at.toISOString(),
-        meta: c.node_id ? { nodeId: c.node_id } : undefined,
+        snippet: c.snippet,
+        createdAt: c.createdAt.toISOString(),
+        meta: c.meta,
       });
     }
   }
 
   if (type === "all" || type === "chat") {
-    const messages = await prisma.chatMessage.findMany({
-      where: { page_id: pageId, content: { contains: q, mode: "insensitive" } },
-      take: 20,
-      orderBy: { created_at: "desc" },
-      select: { id: true, content: true, created_at: true },
-    });
+    const messages = await searchChat(pageId, q, 20);
     for (const m of messages) {
       results.push({
         type: "chat",
         id: m.id,
-        snippet: m.content.slice(0, 200),
-        createdAt: m.created_at.toISOString(),
+        snippet: m.snippet,
+        createdAt: m.createdAt.toISOString(),
       });
     }
   }
 
   if (type === "all" || type === "todos") {
-    const todos = await prisma.todo.findMany({
-      where: { page_id: pageId, title: { contains: q, mode: "insensitive" } },
-      take: 20,
-      orderBy: { updated_at: "desc" },
-      select: { id: true, title: true, done: true, created_at: true },
-    });
+    const todos = await searchTodos(pageId, q, 20);
     for (const t of todos) {
       results.push({
         type: "todo",
         id: t.id,
-        snippet: t.title,
-        createdAt: t.created_at.toISOString(),
-        meta: { done: t.done },
+        snippet: t.snippet,
+        createdAt: t.createdAt.toISOString(),
+        meta: t.meta,
       });
     }
   }
 
   if (type === "all" || type === "notes") {
-    const note = await prisma.note.findUnique({
-      where: { page_id: pageId },
-      select: { id: true, content: true, updated_at: true },
-    });
-    if (note && note.content.toLowerCase().includes(q.toLowerCase())) {
-      const idx = note.content.toLowerCase().indexOf(q.toLowerCase());
-      const start = Math.max(0, idx - 50);
-      const snippet = note.content.slice(start, start + 200);
+    const notes = await searchNotes(pageId, q);
+    for (const note of notes) {
       results.push({
         type: "note",
         id: note.id,
-        snippet,
-        createdAt: note.updated_at.toISOString(),
+        snippet: note.snippet,
+        createdAt: note.createdAt.toISOString(),
       });
     }
   }
 
   if (type === "all" || type === "calendar") {
-    const events = await prisma.calendarEvent.findMany({
-      where: { page_id: pageId, title: { contains: q, mode: "insensitive" } },
-      take: 20,
-      orderBy: { start_at: "desc" },
-      select: { id: true, title: true, start_at: true },
-    });
+    const events = await searchCalendar(pageId, q, 20);
     for (const e of events) {
       results.push({
         type: "calendar",
         id: e.id,
-        snippet: e.title,
-        createdAt: e.start_at.toISOString(),
-        meta: { startAt: e.start_at.toISOString() },
+        snippet: e.snippet,
+        createdAt: e.createdAt.toISOString(),
+        meta: e.meta,
       });
     }
   }

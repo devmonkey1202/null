@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { resolveAnonUserId } from "@/lib/anon";
 import { prisma } from "@/lib/db";
 import { logAppAudit } from "@/lib/app-audit";
+import { isAppActionAllowed } from "@/lib/app-permissions";
 
 async function getToken(pageId: string, req: Request): Promise<string | undefined> {
   const authHeader = req.headers.get("authorization");
@@ -28,7 +29,7 @@ async function requireAdminOrOwner(pageId: string, req: Request) {
   const token = await getToken(pageId, req);
   if (!token) return { ok: false };
   const user = await getAppUserByToken(token);
-  if (!user || user.role !== "admin") return { ok: false };
+  if (!user || !isAppActionAllowed(user.role, "manage_users")) return { ok: false };
   return { ok: true };
 }
 

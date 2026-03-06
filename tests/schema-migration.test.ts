@@ -11,12 +11,17 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     update: vi.fn(),
     deleteMany: vi.fn(),
+    findFirst: vi.fn(),
+  },
+  appRecordVersion: {
+    create: vi.fn(),
+    findMany: vi.fn(),
   },
 }));
 
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
-import { setSchema } from "@/lib/app-data";
+import { setSchema, rollbackSchemaMigration } from "@/lib/app-data";
 
 describe("schema migrations", () => {
   beforeEach(() => {
@@ -26,6 +31,9 @@ describe("schema migrations", () => {
     prismaMock.appRecord.findMany.mockReset();
     prismaMock.appRecord.update.mockReset();
     prismaMock.appRecord.deleteMany.mockReset();
+    prismaMock.appRecord.findFirst.mockReset();
+    prismaMock.appRecordVersion.create.mockReset();
+    prismaMock.appRecordVersion.findMany.mockReset();
   });
 
   it("applies rename/delete/default migrations", async () => {
@@ -59,5 +67,40 @@ describe("schema migrations", () => {
     expect(updateArgs?.data?.data?.new).toBe("v1");
     expect(updateArgs?.data?.data?.added).toBe(1);
     expect(updateArgs?.data?.data?.remove).toBeUndefined();
+  });
+
+  it("rolls back schema migrations using recorded versions", async () => {
+    prismaMock.appRecordVersion.findMany
+      .mockResolvedValueOnce([
+        {
+          id: "v1",
+          record_id: "r1",
+          collection_slug: "posts",
+          data: { title: "old" },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    prismaMock.appRecord.findFirst.mockResolvedValue({ id: "r1" });
+    prismaMock.appRecord.update.mockResolvedValue({ id: "r1" });
+
+    const result = await rollbackSchemaMigration("page1", "mig123", { batchSize: 50 });
+    expect(result.restored).toBe(1);
+    expect(prismaMock.appRecord.update).toHaveBeenCalledWith({
+      where: { id: "r1" },
+      data: { data: { title: "old" }, updated_at: expect.any(Date) },
+    });
+    expect(prismaMock.appRecordVersion.create).toHaveBeenCalledWith({
+      data: {
+        page_id: "page1",
+        record_id: "r1",
+        collection_slug: "posts",
+        action: "schema_rollback:mig123",
+        data: { title: "old" },
+        actor_user_id: null,
+        actor_app_user_id: null,
+        actor_anon_id: null,
+      },
+    });
   });
 });

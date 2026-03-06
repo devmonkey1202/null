@@ -2,7 +2,14 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
-import { getCollections, setSchema, type AppCollectionDef, type SchemaMode, type AppSchemaMigrations } from "@/lib/app-data";
+import {
+  getCollections,
+  setSchema,
+  rollbackSchemaMigration,
+  type AppCollectionDef,
+  type SchemaMode,
+  type AppSchemaMigrations,
+} from "@/lib/app-data";
 import { logAppAudit } from "@/lib/app-audit";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
@@ -74,7 +81,7 @@ export async function PUT(req: Request, context: { params: Promise<Params> }) {
   const mode = parsed.data.mode as SchemaMode | undefined;
   const migrations = parsed.data.migrations as AppSchemaMigrations | undefined;
   const batchSize = parsed.data.batchSize as number | undefined;
-  await setSchema(pageId, collections, { mode, migrations, batchSize });
+  const result = await setSchema(pageId, collections, { mode, migrations, batchSize, recordRollback: true });
   await logAppAudit({
     pageId,
     action: "schema_update",
@@ -84,9 +91,54 @@ export async function PUT(req: Request, context: { params: Promise<Params> }) {
       collections: collections.map((c) => c.slug),
       mode: mode ?? "preserve",
       migrations: Boolean(migrations),
+      migration_id: result.migrationId ?? null,
     },
     actor: { userId: user.id, anonId: anonUserId },
   });
   const list = await getCollections(pageId);
-  return NextResponse.json({ ok: true, collections: list });
+  return NextResponse.json({ ok: true, collections: list, migration_id: result.migrationId ?? null });
+}
+
+/** POST: 스키마 마이그레이션 롤백 (소유자만) */
+export async function POST(req: Request, context: { params: Promise<Params> }) {
+  const anonUserId = await resolveAnonUserId(req);
+  if (!anonUserId) return apiErrorJson("anon_required", 401);
+
+  const { pageId } = await context.params;
+  if (!pageId) return apiErrorJson("bad_page_id", 400);
+
+  const user = await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } });
+  if (!user) return apiErrorJson("user_not_found", 404);
+
+  const page = await prisma.page.findFirst({
+    where: { id: pageId, owner_id: user.id, is_deleted: false },
+    select: { id: true },
+  });
+  if (!page) return apiErrorJson("not_found", 404);
+
+  const parsed = await parseJsonBody(
+    req,
+    z
+      .object({
+        migration_id: z.string().min(4),
+        batchSize: z.number().int().min(20).max(1000).optional(),
+      })
+      .passthrough()
+  );
+  if (parsed.error) return parsed.error;
+
+  const result = await rollbackSchemaMigration(pageId, parsed.data.migration_id, {
+    batchSize: parsed.data.batchSize,
+  });
+
+  await logAppAudit({
+    pageId,
+    action: "schema_rollback",
+    targetType: "schema",
+    targetId: pageId,
+    meta: { migration_id: parsed.data.migration_id, restored: result.restored },
+    actor: { userId: user.id, anonId: anonUserId },
+  });
+
+  return NextResponse.json({ ok: true, restored: result.restored, migration_id: result.migrationId });
 }

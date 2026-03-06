@@ -616,6 +616,10 @@ model AppUser {
   avatar_url    String?
   role          String   @default("user")
   metadata      Json?
+  otp_enabled   Boolean  @default(false)
+  otp_secret    String?
+  otp_backup_codes Json?
+  otp_last_used_at DateTime?
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 

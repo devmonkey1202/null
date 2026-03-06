@@ -1,0 +1,12 @@
+{
+  "platform": "ios",
+  "hostType": "capacitor",
+  "appId": "com.null.l2",
+  "appName": "NULL L2",
+  "serverUrl": "https://example.local",
+  "version": "1.0.0",
+  "buildNumber": 100,
+  "dryRun": true,
+  "generatedAt": "2026-03-06T12:24:38.847Z",
+  "notes": "L2 dry run"
+}

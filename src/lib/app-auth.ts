@@ -4,6 +4,7 @@
 
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword, normalizeEmail, isValidPassword } from "@/lib/auth";
+import { consumeBackupCode, normalizeBackupCode, normalizeOtpToken, verifyTotp } from "@/lib/otp";
 import { randomBytes } from "crypto";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -20,6 +21,60 @@ export type AppUserPublic = {
   metadata: unknown;
   created_at: Date;
 };
+
+type AppUserOtpState = {
+  id: string;
+  otp_enabled: boolean;
+  otp_secret: string | null;
+  otp_backup_codes: unknown | null;
+  otp_last_used_at: Date | null;
+};
+
+type AppUserOtpInput = {
+  otp?: string;
+  otpBackup?: string;
+};
+
+function parseBackupCodes(raw: unknown) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is string => typeof value === "string");
+}
+
+export async function enforceAppUserOtp(state: AppUserOtpState, input: AppUserOtpInput, opts?: { now?: Date }) {
+  if (!state.otp_enabled) return;
+  if (!state.otp_secret) throw new Error("otp_not_setup");
+
+  const otp = normalizeOtpToken(input.otp);
+  const backup = normalizeBackupCode(input.otpBackup);
+  const now = opts?.now ?? new Date();
+
+  if (otp) {
+    const verified = verifyTotp({ secret: state.otp_secret, token: otp, timestamp: now.getTime(), window: 1 });
+    if (!verified.valid) throw new Error("otp_invalid");
+    const lastStep = state.otp_last_used_at
+      ? Math.floor(state.otp_last_used_at.getTime() / 1000 / 30)
+      : null;
+    if (lastStep !== null && verified.counter <= lastStep) throw new Error("otp_reused");
+    await prisma.appUser.update({
+      where: { id: state.id },
+      data: { otp_last_used_at: now },
+    });
+    return;
+  }
+
+  if (backup) {
+    const hashes = parseBackupCodes(state.otp_backup_codes);
+    const consumed = consumeBackupCode(hashes, backup);
+    if (!consumed.ok) throw new Error("otp_invalid");
+    await prisma.appUser.update({
+      where: { id: state.id },
+      data: { otp_backup_codes: consumed.remaining, otp_last_used_at: now },
+    });
+    return;
+  }
+
+  throw new Error("otp_required");
+}
 
 function toPublic(u: {
   id: string;
@@ -84,7 +139,12 @@ export async function registerAppUser(
   return { user: toPublic(user), token };
 }
 
-export async function loginAppUser(pageId: string, email: string, password: string) {
+export async function loginAppUser(
+  pageId: string,
+  email: string,
+  password: string,
+  input?: { otp?: string; otpBackup?: string }
+) {
   email = normalizeEmail(email);
   if (!email || !password) throw new Error("Email and password are required.");
 
@@ -94,6 +154,17 @@ export async function loginAppUser(pageId: string, email: string, password: stri
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new Error("Invalid email or password.");
   }
+
+  await enforceAppUserOtp(
+    {
+      id: user.id,
+      otp_enabled: Boolean(user.otp_enabled),
+      otp_secret: user.otp_secret ?? null,
+      otp_backup_codes: user.otp_backup_codes ?? null,
+      otp_last_used_at: user.otp_last_used_at ?? null,
+    },
+    { otp: input?.otp, otpBackup: input?.otpBackup }
+  );
 
   const token = generateToken();
   await prisma.appSession.create({
