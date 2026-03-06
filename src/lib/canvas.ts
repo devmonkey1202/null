@@ -37,6 +37,20 @@ export type CanvasNode = {
   hidden?: boolean;
   action?: BuilderAction;
   bind?: { key?: string };
+  componentId?: string;
+  componentInstanceId?: string;
+  componentVariantId?: string;
+  componentNodeId?: string;
+  constraints?: {
+    pinLeft?: boolean;
+    pinRight?: boolean;
+    pinTop?: boolean;
+    pinBottom?: boolean;
+    centerX?: boolean;
+    centerY?: boolean;
+    scaleX?: boolean;
+    scaleY?: boolean;
+  };
 };
 
 export type CanvasDocument = {

@@ -1,29 +1,31 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { Prisma, type PageStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
 async function requireOwner(pageId: string, req: Request) {
   const anonUserId = await resolveAnonUserId(req);
-  if (!anonUserId) return { userId: null as null, error: apiErrorJson("anon_required", 401) };
+  if (!anonUserId) return { userId: null as null, anonId: null as string | null, error: apiErrorJson("anon_required", 401) };
   const user = await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } });
-  if (!user) return { userId: null as null, error: apiErrorJson("user_not_found", 404) };
+  if (!user) return { userId: null as null, anonId: null as string | null, error: apiErrorJson("user_not_found", 404) };
   const page = await prisma.page.findFirst({
     where: { id: pageId, owner_id: user.id, is_deleted: false },
     select: { id: true },
   });
-  if (!page) return { userId: null as null, error: apiErrorJson("not_found", 404) };
-  return { userId: user.id, error: null };
+  if (!page) return { userId: null as null, anonId: null as string | null, error: apiErrorJson("not_found", 404) };
+  return { userId: user.id, anonId: anonUserId, error: null };
 }
 
 export async function GET(req: Request, context: { params: Promise<Params> }) {
   const { pageId } = await context.params;
   if (!pageId) return apiErrorJson("bad_page_id", 400);
-  const { error } = await requireOwner(pageId, req);
+  const { error, userId, anonId } = await requireOwner(pageId, req);
   if (error) return error;
 
   const page = await prisma.page.findFirst({ where: { id: pageId, is_deleted: false } });
@@ -63,6 +65,15 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     prisma.chatMessage.findMany({ where: { page_id: pageId } }),
   ]);
 
+  await logPageAudit({
+    pageId,
+    action: "backup_export",
+    targetType: "page_backup",
+    targetId: pageId,
+    meta: { counts: { versions: versions.length, records: records.length, secrets: secrets.length } },
+    actor: { userId: userId ?? null, anonId: anonId ?? null },
+  });
+
   return NextResponse.json({
     ok: true,
     backup_version: 1,
@@ -93,7 +104,7 @@ const restoreSchema = z.object({
 export async function POST(req: Request, context: { params: Promise<Params> }) {
   const { pageId } = await context.params;
   if (!pageId) return apiErrorJson("bad_page_id", 400);
-  const { error } = await requireOwner(pageId, req);
+  const { error, userId, anonId } = await requireOwner(pageId, req);
   if (error) return error;
 
   const parsed = await parseJsonBody(req, restoreSchema);
@@ -156,9 +167,10 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     await tx.pageSetting.deleteMany({ where: { page_id: pageId } });
     await tx.pageVersion.deleteMany({ where: { page_id: pageId } });
 
+    const pageStatus = (page.status as PageStatus | undefined) ?? "draft";
     const pageUpdate = {
       title: (page.title as string | null) ?? null,
-      status: (page.status as string | undefined) ?? "draft",
+      status: pageStatus,
       live_started_at: page.live_started_at ? new Date(String(page.live_started_at)) : null,
       live_expires_at: page.live_expires_at ? new Date(String(page.live_expires_at)) : null,
       deployed_at: page.deployed_at ? new Date(String(page.deployed_at)) : null,
@@ -192,7 +204,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
         data: versions.map((v) => ({
           id: String(v.id),
           page_id: pageId,
-          content_json: v.content_json,
+          content_json: (v.content_json ?? {}) as Prisma.InputJsonValue,
           created_at: v.created_at ? new Date(String(v.created_at)) : new Date(),
         })),
       });
@@ -204,7 +216,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
           id: String(s.id),
           page_id: pageId,
           key: String(s.key),
-          value: s.value,
+          value: (s.value ?? {}) as Prisma.InputJsonValue,
           updated_at: s.updated_at ? new Date(String(s.updated_at)) : new Date(),
         })),
       });
@@ -218,7 +230,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
           slug: String(c.slug),
           name: String(c.name),
           strict: Boolean(c.strict ?? false),
-          fields: c.fields ?? [],
+          fields: (c.fields ?? []) as Prisma.InputJsonValue,
           created_at: c.created_at ? new Date(String(c.created_at)) : new Date(),
           updated_at: c.updated_at ? new Date(String(c.updated_at)) : new Date(),
         })),
@@ -231,7 +243,8 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
           id: String(r.id),
           page_id: pageId,
           collection_slug: String(r.collection_slug),
-          data: r.data ?? {},
+          data: (r.data ?? {}) as Prisma.InputJsonValue,
+          app_user_id: r.app_user_id ? String(r.app_user_id) : null,
           updated_at: r.updated_at ? new Date(String(r.updated_at)) : new Date(),
         })),
       });
@@ -256,8 +269,8 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
           id: String(w.id),
           page_id: pageId,
           name: String(w.name),
-          trigger: w.trigger ?? {},
-          steps: w.steps ?? [],
+          trigger: (w.trigger ?? {}) as Prisma.InputJsonValue,
+          steps: (w.steps ?? []) as Prisma.InputJsonValue,
           enabled: Boolean(w.enabled ?? true),
           created_at: w.created_at ? new Date(String(w.created_at)) : new Date(),
           updated_at: w.updated_at ? new Date(String(w.updated_at)) : new Date(),
@@ -275,7 +288,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
           display_name: (u.display_name as string | null) ?? null,
           avatar_url: (u.avatar_url as string | null) ?? null,
           role: String(u.role ?? "user"),
-          metadata: u.metadata ?? null,
+          metadata: u.metadata == null ? Prisma.DbNull : (u.metadata as Prisma.InputJsonValue),
           created_at: u.created_at ? new Date(String(u.created_at)) : new Date(),
           updated_at: u.updated_at ? new Date(String(u.updated_at)) : new Date(),
         })),
@@ -306,7 +319,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
           id: String(s.id),
           page_id: pageId,
           name: String(s.name),
-          conditions: s.conditions ?? {},
+          conditions: (s.conditions ?? {}) as Prisma.InputJsonValue,
           created_at: s.created_at ? new Date(String(s.created_at)) : new Date(),
           updated_at: s.updated_at ? new Date(String(s.updated_at)) : new Date(),
         })),
@@ -336,7 +349,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
           start_at: e.start_at ? new Date(String(e.start_at)) : new Date(),
           end_at: e.end_at ? new Date(String(e.end_at)) : null,
           all_day: Boolean(e.all_day ?? false),
-          meta: e.meta ?? null,
+          meta: e.meta == null ? Prisma.DbNull : (e.meta as Prisma.InputJsonValue),
           created_at: e.created_at ? new Date(String(e.created_at)) : new Date(),
           updated_at: e.updated_at ? new Date(String(e.updated_at)) : new Date(),
         })),
@@ -405,6 +418,15 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
         data: { current_version_id: currentVersionId },
       });
     }
+  });
+
+  await logPageAudit({
+    pageId,
+    action: "backup_restore",
+    targetType: "page_backup",
+    targetId: pageId,
+    meta: { restored: true },
+    actor: { userId: userId ?? null, anonId: anonId ?? null },
   });
 
   return NextResponse.json({ ok: true });

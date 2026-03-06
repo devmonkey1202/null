@@ -725,6 +725,8 @@ const GROUPS: GroupDef[] = [
     title: "상거래/결제+",
     variant: "commerce",
     ids: [
+      "asset-commerce-catalog",
+      "asset-commerce-inventory",
       "asset-commerce-cart",
       "asset-commerce-payment-method",
       "asset-commerce-price-table",
@@ -852,6 +854,8 @@ const ASSET_DESCRIPTIONS: Record<string, string> = {
   "asset-input-masking": "전화번호·날짜 포맷 마스킹",
   "asset-upload-dropzone": "파일 드롭존 + 업로드",
   "asset-address-search": "주소 검색 결과 목록",
+  "asset-commerce-catalog": "상품 카드/카테고리/재고 표시가 포함된 카탈로그 화면",
+  "asset-commerce-inventory": "출고/배송 상태와 재고 현황을 함께 보는 운영 화면",
   "asset-commerce-cart": "장바구니 아이템 + 결제",
   "asset-commerce-payment-method": "결제 수단 목록",
   "asset-commerce-price-table": "Starter·Pro·Team 가격표",
@@ -947,6 +951,8 @@ const ASSET_LABELS: Record<string, string> = {
   "asset-input-masking": "입력 마스킹",
   "asset-upload-dropzone": "업로드 드롭존",
   "asset-address-search": "주소 검색",
+  "asset-commerce-catalog": "상품 카탈로그",
+  "asset-commerce-inventory": "배송/재고",
   "asset-commerce-cart": "장바구니",
   "asset-commerce-payment-method": "결제 수단",
   "asset-commerce-price-table": "가격표",
@@ -1038,6 +1044,8 @@ function getSizeForAsset(variant: AssetVariant, id: string): Size {
     return SIZE_PANEL;
   }
   if (variant === "commerce") {
+    if (id === "asset-commerce-catalog") return { w: 960, h: 560 };
+    if (id === "asset-commerce-inventory") return { w: 960, h: 520 };
     if (id === "asset-commerce-cart") return { w: 520, h: 520 };
     if (id === "asset-commerce-payment-method") return { w: 420, h: 420 };
     if (id === "asset-commerce-price-table") return { w: 960, h: 360 };
@@ -1803,7 +1811,46 @@ function buildCommercePreset(id: string, title: string, origin: { x: number; y: 
   const contentW = size.w - 32;
   const children: Node[] = [];
 
-  if (id.includes("cart")) {
+  if (id.includes("catalog")) {
+    children.push(makeHeaderRow(ctx, "상품 카탈로그", contentW, "새 상품"));
+    const filters = makeStack(ctx, "필터", { w: contentW, h: 34 }, "row", { gap: 8, align: "center" });
+    ctx.attach(filters, [
+      makeChip(ctx, "전체", { fill: COLORS.primaryLight, text: COLORS.primary }),
+      makeChip(ctx, "재고 있음"),
+      makeChip(ctx, "프로모션"),
+      makeChip(ctx, "품절", { fill: COLORS.warningLight, text: COLORS.warning }),
+    ]);
+    const search = makeInput(ctx, "상품명/카테고리 검색", contentW, 42, { name: "catalog-search" });
+    const row1 = makeStack(ctx, "상품 행 1", { w: contentW, h: 210 }, "row", { gap: 12, align: "center" });
+    ctx.attach(row1, [
+      makeContentCard(ctx, 220, 200, "스니커즈", "₩129,000 · 재고 24"),
+      makeContentCard(ctx, 220, 200, "후디", "₩79,000 · 재고 8"),
+      makeContentCard(ctx, 220, 200, "백팩", "₩159,000 · 재고 3"),
+    ]);
+    const row2 = makeStack(ctx, "상품 행 2", { w: contentW, h: 210 }, "row", { gap: 12, align: "center" });
+    ctx.attach(row2, [
+      makeContentCard(ctx, 220, 200, "모자", "₩29,000 · 재고 40"),
+      makeContentCard(ctx, 220, 200, "양말", "₩9,900 · 재고 120"),
+      makeContentCard(ctx, 220, 200, "트랙 팬츠", "₩69,000 · 재고 15"),
+    ]);
+    children.push(filters, search, row1, row2);
+  } else if (id.includes("inventory")) {
+    children.push(makeHeaderRow(ctx, "배송/재고", contentW, "출고 처리"));
+    const stats = makeStack(ctx, "재고 요약", { w: contentW, h: 100 }, "row", { gap: 12, align: "center" });
+    ctx.attach(stats, [
+      makeStatCard(ctx, "재고 부족", "6개", { w: 200, h: 90 }),
+      makeStatCard(ctx, "배송중", "18건", { w: 200, h: 90 }),
+      makeStatCard(ctx, "오늘 출고", "24건", { w: 200, h: 90 }),
+    ]);
+    const table = makeTablePlaceholder(ctx, contentW, 240, 6);
+    const list = makeStack(ctx, "배송 리스트", { w: contentW, h: 180 }, "column", { gap: 8 });
+    ctx.attach(list, [
+      makeListItem(ctx, "주문 #1024", "배송중 · 2건", contentW, "icon"),
+      makeListItem(ctx, "주문 #1025", "준비중 · 1건", contentW, "icon"),
+      makeListItem(ctx, "주문 #1026", "완료 · 3건", contentW, "icon"),
+    ]);
+    children.push(stats, table, list);
+  } else if (id.includes("cart")) {
     children.push(makeHeaderRow(ctx, "장바구니", contentW, "편집"));
     const list = makeStack(ctx, "아이템", { w: contentW, h: 240 }, "column", { gap: 10 });
     ctx.attach(list, [makeListItem(ctx, "상품 A", "1개", contentW, "icon"), makeListItem(ctx, "상품 B", "2개", contentW, "icon")]);
@@ -1842,45 +1889,27 @@ function buildCommercePreset(id: string, title: string, origin: { x: number; y: 
 function buildAppAuthPreset(id: string, title: string, origin: { x: number; y: number }, ctx: BuildCtx, size: Size) {
   const root = makeRoot(ctx, title, origin, size);
   if (id === "asset-auth-login") {
-    const heading = ctx.add(makeTextNode("로그인", { x: 0, y: 0, w: size.w - 48, h: 28, rotation: 0 }, { fontSize: 20, fontWeight: 700, align: "center" }));
+    const heading = ctx.add(makeTextNode("로그인", "로그인", { x: 0, y: 0, w: size.w - 48, h: 28, rotation: 0 }, { size: 20, weight: 700, align: "center" }));
     const emailInput = makeInput(ctx, "이메일", size.w - 48, 44, { name: "email" });
     const pwInput = makeInput(ctx, "비밀번호", size.w - 48, 44, { name: "password" });
     const loginBtn = makeButton(ctx, "로그인", size.w - 48, "primary");
-    const submitInteraction = {
-      id: ctx.nextId("ia"),
-      trigger: "click" as const,
-      action: { type: "appAuth" as const, action: "login" as const },
-    };
-    const btnNode = ctx.nodes[loginBtn];
-    if (btnNode) btnNode.prototype = { interactions: [submitInteraction] };
-    ctx.parent(root, [heading, emailInput.rootId, pwInput.rootId, loginBtn]);
+    addClickAction(loginBtn, { type: "appAuth", action: "login" });
+    ctx.attach(root, [heading, emailInput, pwInput, loginBtn]);
   } else if (id === "asset-auth-register") {
-    const heading = ctx.add(makeTextNode("회원가입", { x: 0, y: 0, w: size.w - 48, h: 28, rotation: 0 }, { fontSize: 20, fontWeight: 700, align: "center" }));
+    const heading = ctx.add(makeTextNode("회원가입", "회원가입", { x: 0, y: 0, w: size.w - 48, h: 28, rotation: 0 }, { size: 20, weight: 700, align: "center" }));
     const nameInput = makeInput(ctx, "이름", size.w - 48, 44, { name: "display_name" });
     const emailInput = makeInput(ctx, "이메일", size.w - 48, 44, { name: "email" });
     const pwInput = makeInput(ctx, "비밀번호", size.w - 48, 44, { name: "password" });
     const registerBtn = makeButton(ctx, "가입하기", size.w - 48, "primary");
-    const submitInteraction = {
-      id: ctx.nextId("ia"),
-      trigger: "click" as const,
-      action: { type: "appAuth" as const, action: "register" as const },
-    };
-    const btnNode = ctx.nodes[registerBtn];
-    if (btnNode) btnNode.prototype = { interactions: [submitInteraction] };
-    ctx.parent(root, [heading, nameInput.rootId, emailInput.rootId, pwInput.rootId, registerBtn]);
+    addClickAction(registerBtn, { type: "appAuth", action: "register" });
+    ctx.attach(root, [heading, nameInput, emailInput, pwInput, registerBtn]);
   } else if (id === "asset-auth-profile") {
-    const heading = ctx.add(makeTextNode("내 프로필", { x: 0, y: 0, w: size.w - 48, h: 28, rotation: 0 }, { fontSize: 20, fontWeight: 700, align: "center" }));
-    const emailLabel = ctx.add(makeTextNode("$app_user.email", { x: 0, y: 0, w: size.w - 48, h: 20, rotation: 0 }, { fontSize: 14, fontWeight: 400, align: "center", color: COLORS.textSecondary }));
-    const nameLabel = ctx.add(makeTextNode("$app_user.display_name", { x: 0, y: 0, w: size.w - 48, h: 20, rotation: 0 }, { fontSize: 14, fontWeight: 400, align: "center", color: COLORS.textSecondary }));
-    const logoutBtn = makeButton(ctx, "로그아웃", size.w - 48, "outline");
-    const logoutInteraction = {
-      id: ctx.nextId("ia"),
-      trigger: "click" as const,
-      action: { type: "appAuth" as const, action: "logout" as const },
-    };
-    const lBtnNode = ctx.nodes[logoutBtn];
-    if (lBtnNode) lBtnNode.prototype = { interactions: [logoutInteraction] };
-    ctx.parent(root, [heading, emailLabel, nameLabel, logoutBtn]);
+    const heading = ctx.add(makeTextNode("내 프로필", "내 프로필", { x: 0, y: 0, w: size.w - 48, h: 28, rotation: 0 }, { size: 20, weight: 700, align: "center" }));
+    const emailLabel = ctx.add(makeTextNode("$app_user.email", "$app_user.email", { x: 0, y: 0, w: size.w - 48, h: 20, rotation: 0 }, { size: 14, weight: 400, align: "center", color: COLORS.textSecondary }));
+    const nameLabel = ctx.add(makeTextNode("$app_user.display_name", "$app_user.display_name", { x: 0, y: 0, w: size.w - 48, h: 20, rotation: 0 }, { size: 14, weight: 400, align: "center", color: COLORS.textSecondary }));
+    const logoutBtn = makeButton(ctx, "로그아웃", size.w - 48, "ghost");
+    addClickAction(logoutBtn, { type: "appAuth", action: "logout" });
+    ctx.attach(root, [heading, emailLabel, nameLabel, logoutBtn]);
   }
   return root;
 }
@@ -2016,4 +2045,3 @@ export const ASSET_LIBRARY_PRESET_GROUPS: Array<{ title: string; icon?: string; 
   icon: CATEGORY_ICONS[group.title],
   items: group.ids.map((id) => ASSET_PRESETS[id] ?? makeFallbackPreset(id)),
 }));
-

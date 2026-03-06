@@ -1,4 +1,3 @@
-import type { CapacitorConfig } from "@capacitor/cli";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -28,7 +27,7 @@ const serverUrl =
 const allowCleartext =
   typeof host.allowCleartext === "boolean" ? host.allowCleartext : serverUrl.startsWith("http://");
 
-const config: CapacitorConfig = {
+const config = {
   appId: host.appId?.trim() || "com.null.host",
   appName: host.appName?.trim() || "NULL Host",
   webDir: "www",
@@ -36,16 +35,16 @@ const config: CapacitorConfig = {
     url: serverUrl,
     cleartext: allowCleartext,
   },
+  ...(host.statusBarStyle || host.statusBarColor
+    ? {
+        plugins: {
+          StatusBar: {
+            style: host.statusBarStyle ?? "default",
+            backgroundColor: host.statusBarColor || undefined,
+          },
+        },
+      }
+    : {}),
 };
-
-if (host.statusBarStyle || host.statusBarColor) {
-  config.plugins = {
-    ...(config.plugins ?? {}),
-    StatusBar: {
-      style: host.statusBarStyle ?? "default",
-      backgroundColor: host.statusBarColor || undefined,
-    },
-  };
-}
 
 export default config;

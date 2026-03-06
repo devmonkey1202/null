@@ -4,6 +4,7 @@ import { resolveAnonUserId } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { withErrorHandler, safeParseBody } from "@/lib/api-handler";
 import { addPlugins, getPlugins, removePlugin, setPlugins, type PluginManifest } from "@/lib/app-plugins";
+import { logAppAudit } from "@/lib/app-audit";
 
 type Params = { pageId: string };
 
@@ -16,6 +17,13 @@ async function getPageAndOwner(pageId: string, req: Request) {
   const anonUserId = await resolveAnonUserId(req);
   const isOwner = !!anonUserId && page.owner.anon_id === anonUserId;
   return { page, isOwner };
+}
+
+async function resolveActor(req: Request) {
+  const anonUserId = await resolveAnonUserId(req);
+  if (!anonUserId) return { userId: null as string | null, anonId: null as string | null };
+  const user = await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } });
+  return { userId: user?.id ?? null, anonId: anonUserId };
 }
 
 export const GET = withErrorHandler(
@@ -55,6 +63,15 @@ export const POST = withErrorHandler(
     if (!pluginsRaw.length) return apiErrorJson("plugins_required", 400);
 
     const plugins = await addPlugins(pageId, pluginsRaw);
+    const actor = await resolveActor(req);
+    await logAppAudit({
+      pageId,
+      action: "plugin_add",
+      targetType: "plugin",
+      targetId: pluginsRaw[0]?.id ?? null,
+      meta: { count: pluginsRaw.length },
+      actor: { userId: actor.userId, anonId: actor.anonId },
+    });
     return NextResponse.json({ ok: true, plugins });
   }
 );
@@ -73,6 +90,15 @@ export const PUT = withErrorHandler(
 
     const pluginsRaw = Array.isArray(body.plugins) ? (body.plugins as PluginManifest[]) : [];
     const plugins = await setPlugins(pageId, pluginsRaw);
+    const actor = await resolveActor(req);
+    await logAppAudit({
+      pageId,
+      action: "plugin_set",
+      targetType: "plugin",
+      targetId: null,
+      meta: { count: pluginsRaw.length },
+      actor: { userId: actor.userId, anonId: actor.anonId },
+    });
     return NextResponse.json({ ok: true, plugins });
   }
 );
@@ -91,6 +117,15 @@ export const DELETE = withErrorHandler(
     if (!id) return apiErrorJson("id_required", 400);
 
     const plugins = await removePlugin(pageId, id);
+    const actor = await resolveActor(req);
+    await logAppAudit({
+      pageId,
+      action: "plugin_remove",
+      targetType: "plugin",
+      targetId: id,
+      meta: null,
+      actor: { userId: actor.userId, anonId: actor.anonId },
+    });
     return NextResponse.json({ ok: true, plugins });
   }
 );

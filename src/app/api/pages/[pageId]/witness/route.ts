@@ -122,7 +122,7 @@ export async function GET(_req: Request, context: { params: Promise<Params> }) {
 
     // "Temporal density"
     density, // 0..1 (duration-weighted)
-    bucket_counts: counts, // raw counts (for future UI / TODO)
+    bucket_counts: counts, // raw counts (for future UI)
     window_hours: 24,
     bucket_minutes: 60,
 

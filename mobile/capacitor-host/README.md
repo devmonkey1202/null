@@ -6,27 +6,13 @@ and routes `nativeCall` commands to them automatically.
 
 ## Quick Start
 
-1. Edit `mobile/capacitor-host/host.config.json` and set `serverUrl` to your NULL deployment.
-2. Install dependencies:
+1. From the repo root, run:
 
 ```bash
-npm install
+npm run mobile:cap:prepare -- --server-url https://your-null-host.example --platform all --open
 ```
 
-3. Add platform(s):
-
-```bash
-npx cap add android
-npx cap add ios
-```
-
-4. Sync and open:
-
-```bash
-npx cap sync
-npx cap open android
-npx cap open ios
-```
+2. (Optional) You can still edit `mobile/capacitor-host/host.config.json` directly if you prefer.
 
 ## Built-in Command Mapping
 

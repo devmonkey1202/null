@@ -86,7 +86,7 @@ export function getPageContentBounds(doc: Doc, pageId?: string | null): Bounds |
   return bounds ?? getPageBounds(doc, pageId);
 }
 
-/** 노드와 모든 자손의 바운딩 박스(노드 로컬 좌표계, 원점 0,0). */
+  /** Returns bounds of all descendants in local node space (node local origin at 0,0). */
 function getNodeBoundsLocal(doc: Doc, nodeId: string): Bounds {
   const node = doc.nodes[nodeId];
   if (!node || node.hidden) return { x: 0, y: 0, w: 0, h: 0 };
@@ -107,7 +107,7 @@ function getNodeBoundsLocal(doc: Doc, nodeId: string): Bounds {
   return bounds;
 }
 
-/** 노드의 직계 자식들(및 그 자손)의 합집합 바운딩 박스(부모 노드 로컬 좌표계). overflow 스크롤용. */
+  /** Bounds of direct children (and their descendants) in parent-local coordinates. */
 export function getNodeChildrenBounds(doc: Doc, nodeId: string): Bounds {
   const node = doc.nodes[nodeId];
   if (!node || node.hidden || !node.children.length) return { x: 0, y: 0, w: 0, h: 0 };

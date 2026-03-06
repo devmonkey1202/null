@@ -5,20 +5,21 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
+import { logAppAudit } from "@/lib/app-audit";
 
 type Params = { pageId: string };
 
 async function requireOwner(pageId: string, req: Request) {
   const anonUserId = await resolveAnonUserId(req);
-  if (!anonUserId) return { page: null as null, userId: null as null, error: apiErrorJson("anon_required", 401) };
+  if (!anonUserId) return { page: null as null, userId: null as null, anonUserId: null as string | null, error: apiErrorJson("anon_required", 401) };
   const user = await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } });
-  if (!user) return { page: null as null, userId: null as null, error: apiErrorJson("user_not_found", 404) };
+  if (!user) return { page: null as null, userId: null as null, anonUserId: null as string | null, error: apiErrorJson("user_not_found", 404) };
   const page = await prisma.page.findFirst({
     where: { id: pageId, owner_id: user.id, is_deleted: false },
     select: { id: true },
   });
-  if (!page) return { page: null as null, userId: null as null, error: apiErrorJson("not_found", 404) };
-  return { page, userId: user.id, error: null };
+  if (!page) return { page: null as null, userId: null as null, anonUserId: null as string | null, error: apiErrorJson("not_found", 404) };
+  return { page, userId: user.id, anonUserId, error: null };
 }
 
 async function loadSecret(pageId: string) {
@@ -48,7 +49,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
 export async function PUT(req: Request, context: { params: Promise<Params> }) {
   const { pageId } = await context.params;
   if (!pageId) return apiErrorJson("bad_page_id", 400);
-  const { error } = await requireOwner(pageId, req);
+  const { error, userId, anonUserId } = await requireOwner(pageId, req);
   if (error) return error;
 
   const parsed = await parseJsonBody(
@@ -72,17 +73,34 @@ export async function PUT(req: Request, context: { params: Promise<Params> }) {
     update: { value: secret },
   });
 
+  await logAppAudit({
+    pageId,
+    action: "webhook_secret_set",
+    targetType: "webhook_secret",
+    targetId: fingerprint(secret),
+    meta: { rotated: Boolean(parsed.data.rotate) },
+    actor: { userId: userId!, anonId: anonUserId! },
+  });
+
   return NextResponse.json({ ok: true, secret, fingerprint: fingerprint(secret) });
 }
 
 export async function DELETE(req: Request, context: { params: Promise<Params> }) {
   const { pageId } = await context.params;
   if (!pageId) return apiErrorJson("bad_page_id", 400);
-  const { error } = await requireOwner(pageId, req);
+  const { error, userId, anonUserId } = await requireOwner(pageId, req);
   if (error) return error;
 
   await prisma.pageSetting.delete({
     where: { page_id_key: { page_id: pageId, key: "webhook_secret" } },
   }).catch(() => null);
+  await logAppAudit({
+    pageId,
+    action: "webhook_secret_delete",
+    targetType: "webhook_secret",
+    targetId: null,
+    meta: null,
+    actor: { userId: userId!, anonId: anonUserId! },
+  });
   return NextResponse.json({ ok: true });
 }

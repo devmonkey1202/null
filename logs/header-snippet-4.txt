@@ -1,0 +1,7 @@
+12599:             </div>
+12600:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-xs" onClick={doUndo} disabled={undoStackLen === 0} title="Undo (Ctrl+Z)" aria-label="Undo">Undo</button>
+12601:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-xs" onClick={doRedo} disabled={redoStackLen === 0} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">Redo</button>
+12602:             <span className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600" title="Plan limits (buttons/texts/images)">
+12603:               Plan limits: Buttons {constraintCounts.buttons}/{planFeatures?.maxButtons ?? 3} | Texts {constraintCounts.texts}/{planFeatures?.maxTexts ?? 6} | Images {constraintCounts.images}/{planFeatures?.maxImages ?? 1}
+12604:             </span>
+12605:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={groupSelected}>Group</button>

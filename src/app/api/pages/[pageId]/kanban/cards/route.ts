@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
@@ -85,6 +86,15 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
       body: parsed.data.body ?? undefined,
       sort_order,
     },
+  });
+
+  await logPageAudit({
+    pageId,
+    action: "kanban_card_create",
+    targetType: "kanban_card",
+    targetId: card.id,
+    meta: { title: card.title, column_id: card.column_id },
+    actor: { userId: user.id, anonId: anonUserId },
   });
 
   return NextResponse.json({

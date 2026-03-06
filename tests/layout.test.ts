@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDoc, createNode, addNode } from "../src/advanced/doc/scene";
-import { layoutDoc } from "../src/advanced/layout/engine";
+import { layoutDoc, applyConstraintsOnResize } from "../src/advanced/layout/engine";
 
 describe("L1 Auto layout 엣지 케이스", () => {
   it("자식이 없으면 layoutDoc 오류 없이 동작", () => {
@@ -122,5 +122,74 @@ describe("Q6 레이아웃·렌더 엣지 (clip·overflow·극단값)", () => {
     const laidOut = layoutDoc(doc);
     expect(laidOut.nodes[rect.id].frame.x).toBe(0);
     expect(laidOut.nodes[rect.id].frame.y).toBe(0);
+  });
+});
+
+describe("L1 auto layout wrap and align", () => {
+  it("wraps items to next row when width exceeded", () => {
+    const doc = createDoc();
+    const pageId = doc.pages[0].rootId;
+    const frame = createNode("frame", {
+      frame: { x: 0, y: 0, w: 120, h: 200, rotation: 0 },
+      layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 0, r: 0, b: 0, l: 0 }, align: "start", wrap: true },
+    });
+    addNode(doc, frame, pageId);
+    const a = createNode("rect", { frame: { x: 0, y: 0, w: 60, h: 30, rotation: 0 } });
+    const b = createNode("rect", { frame: { x: 0, y: 0, w: 60, h: 30, rotation: 0 } });
+    addNode(doc, a, frame.id);
+    addNode(doc, b, frame.id);
+    const laidOut = layoutDoc(doc);
+    const first = laidOut.nodes[a.id].frame;
+    const second = laidOut.nodes[b.id].frame;
+    expect(second.y).toBeGreaterThan(first.y);
+  });
+
+  it("align center positions items on cross axis", () => {
+    const doc = createDoc();
+    const pageId = doc.pages[0].rootId;
+    const frame = createNode("frame", {
+      frame: { x: 0, y: 0, w: 200, h: 100, rotation: 0 },
+      layout: { mode: "auto", dir: "row", gap: 0, padding: { t: 0, r: 0, b: 0, l: 0 }, align: "center", wrap: false },
+    });
+    addNode(doc, frame, pageId);
+    const rect = createNode("rect", { frame: { x: 0, y: 0, w: 40, h: 20, rotation: 0 } });
+    addNode(doc, rect, frame.id);
+    const laidOut = layoutDoc(doc);
+    const y = laidOut.nodes[rect.id].frame.y;
+    expect(y).toBe(40);
+  });
+});
+
+describe("L1 responsive constraints", () => {
+  it("respects left+right constraints on resize", () => {
+    const doc = createDoc();
+    const pageId = doc.pages[0].rootId;
+    const frame = createNode("frame", { frame: { x: 0, y: 0, w: 100, h: 100, rotation: 0 } });
+    addNode(doc, frame, pageId);
+    const rect = createNode("rect", {
+      frame: { x: 10, y: 10, w: 20, h: 20, rotation: 0 },
+      constraints: { left: true, right: true },
+    });
+    addNode(doc, rect, frame.id);
+    const next = applyConstraintsOnResize(doc, frame.id, frame.frame, { ...frame.frame, w: 200, h: 100 });
+    const updated = next.nodes[rect.id].frame;
+    expect(updated.x).toBe(10);
+    expect(updated.w).toBe(120);
+  });
+
+  it("centers nodes with hCenter/vCenter constraints", () => {
+    const doc = createDoc();
+    const pageId = doc.pages[0].rootId;
+    const frame = createNode("frame", { frame: { x: 0, y: 0, w: 200, h: 200, rotation: 0 } });
+    addNode(doc, frame, pageId);
+    const rect = createNode("rect", {
+      frame: { x: 70, y: 80, w: 60, h: 40, rotation: 0 },
+      constraints: { hCenter: true, vCenter: true },
+    });
+    addNode(doc, rect, frame.id);
+    const next = applyConstraintsOnResize(doc, frame.id, frame.frame, { ...frame.frame, w: 300, h: 300 });
+    const updated = next.nodes[rect.id].frame;
+    expect(updated.x).toBe(120);
+    expect(updated.y).toBe(130);
   });
 });

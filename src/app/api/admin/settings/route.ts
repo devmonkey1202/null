@@ -58,7 +58,7 @@ export async function POST(req: Request) {
 
     if (rule.type === "number") {
       if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-      let next = rule.integer ? Math.round(raw) : raw;
+      const next = rule.integer ? Math.round(raw) : raw;
       if (Array.isArray(rule.allowed) && !rule.allowed.includes(next)) continue;
       if (typeof rule.min === "number" && next < rule.min) continue;
       if (typeof rule.max === "number" && next > rule.max) continue;

@@ -41,6 +41,53 @@ function pickFill(props: Record<string, unknown>, fallback: string) {
   // accept both so style controls remain stable.
   return s(props.fill, s(props.background, fallback));
 }
+type FillStop = { color: string; pos: number };
+
+function normalizeStops(props: Record<string, unknown>, fallback: string): FillStop[] {
+  const raw = Array.isArray(props.fillStops) ? (props.fillStops as FillStop[]) : [];
+  if (raw.length > 0) {
+    return raw.map((stop) => ({
+      color: s(stop.color, fallback),
+      pos: Math.max(0, Math.min(100, Number(stop.pos) || 0)),
+    }));
+  }
+  const from = s(props.fillFrom, fallback);
+  const to = s(props.fillTo, "#111111");
+  return [
+    { color: from, pos: 0 },
+    { color: to, pos: 100 },
+  ];
+}
+
+function buildCssGradient(props: Record<string, unknown>, fallback: string) {
+  const type = s(props.fillType, "linear");
+  const angle = n(props.fillAngle, 135);
+  const cx = n(props.fillCenterX, 50);
+  const cy = n(props.fillCenterY, 50);
+  const stops = normalizeStops(props, fallback).sort((a, b) => a.pos - b.pos);
+  const stopStr = stops.map((stop) => `${stop.color} ${stop.pos}%`).join(", ");
+  if (type === "radial") return `radial-gradient(circle at ${cx}% ${cy}%, ${stopStr})`;
+  if (type === "conic") return `conic-gradient(from ${angle}deg at ${cx}% ${cy}%, ${stopStr})`;
+  return `linear-gradient(${angle}deg, ${stopStr})`;
+}
+
+function resolveFill(props: Record<string, unknown>, fallback: string) {
+  const mode = s(props.fillMode, "solid");
+  if (mode === "gradient") {
+    const gradient = buildCssGradient(props, fallback);
+    return {
+      value: gradient,
+      gradient: {
+        type: s(props.fillType, "linear"),
+        angle: n(props.fillAngle, 135),
+        centerX: n(props.fillCenterX, 50),
+        centerY: n(props.fillCenterY, 50),
+        stops: normalizeStops(props, fallback),
+      },
+    };
+  }
+  return { value: pickFill(props, fallback), gradient: null as null };
+}
 function pickStroke(props: Record<string, unknown>, fallback = "") {
   return s(props.stroke, s(props.borderColor, s(props.border, fallback)));
 }
@@ -118,13 +165,58 @@ function applyEffects(props: Record<string, unknown>, isText = false) {
   const shadow = pickShadow(props);
   const blend = pickBlendMode(props);
   const blur = pickBlur(props);
+  const brightness = n(props.filterBrightness, 100);
+  const contrast = n(props.filterContrast, 100);
+  const saturate = n(props.filterSaturate, 100);
+  const hue = n(props.filterHue, 0);
+  const grayscale = n(props.filterGrayscale, 0);
   if (shadow) {
     if (isText) style.textShadow = shadow;
     else style.boxShadow = shadow;
   }
   if (blend) style.mixBlendMode = blend as React.CSSProperties["mixBlendMode"];
-  if (blur > 0) style.filter = `blur(${blur}px)`;
+  const filters: string[] = [];
+  if (blur > 0) filters.push(`blur(${blur}px)`);
+  if (Number.isFinite(brightness) && brightness !== 100) filters.push(`brightness(${brightness}%)`);
+  if (Number.isFinite(contrast) && contrast !== 100) filters.push(`contrast(${contrast}%)`);
+  if (Number.isFinite(saturate) && saturate !== 100) filters.push(`saturate(${saturate}%)`);
+  if (Number.isFinite(hue) && hue !== 0) filters.push(`hue-rotate(${hue}deg)`);
+  if (Number.isFinite(grayscale) && grayscale !== 0) filters.push(`grayscale(${grayscale}%)`);
+  if (filters.length > 0) style.filter = filters.join(" ");
   return style;
+}
+
+function renderSvgGradient(
+  id: string,
+  gradient: { type: string; angle: number; centerX: number; centerY: number; stops: FillStop[] },
+) {
+  const stops = gradient.stops.sort((a, b) => a.pos - b.pos);
+  if (gradient.type === "radial") {
+    const cx = gradient.centerX / 100;
+    const cy = gradient.centerY / 100;
+    return (
+      <radialGradient id={id} cx={cx} cy={cy} r={0.5}>
+        {stops.map((stop, idx) => (
+          <stop key={`${id}-stop-${idx}`} offset={`${stop.pos}%`} stopColor={stop.color} />
+        ))}
+      </radialGradient>
+    );
+  }
+  if (gradient.type === "conic") return null;
+  const rad = ((gradient.angle ?? 0) - 90) * (Math.PI / 180);
+  const vx = Math.cos(rad);
+  const vy = Math.sin(rad);
+  const x1 = 0.5 - 0.5 * vx;
+  const y1 = 0.5 - 0.5 * vy;
+  const x2 = 0.5 + 0.5 * vx;
+  const y2 = 0.5 + 0.5 * vy;
+  return (
+    <linearGradient id={id} x1={x1} y1={y1} x2={x2} y2={y2}>
+      {stops.map((stop, idx) => (
+        <stop key={`${id}-stop-${idx}`} offset={`${stop.pos}%`} stopColor={stop.color} />
+      ))}
+    </linearGradient>
+  );
 }
 function n(v: unknown, fallback = 0) {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
@@ -182,6 +274,15 @@ function applyAction(runtime: Runtime | undefined, action: BuilderAction | undef
 }
 
 export default function CanvasRender({ doc, className, showGrid = false, interactive = false, runtime }: Props) {
+  const svgGradients = doc.nodes
+    .filter((node) => node.type === "path" && !node.hidden)
+    .map((node) => {
+      const fillInfo = resolveFill(node.props, "none");
+      if (!fillInfo.gradient || fillInfo.gradient.type === "conic") return null;
+      return { id: `grad-${node.id}`, gradient: fillInfo.gradient };
+    })
+    .filter(Boolean) as Array<{ id: string; gradient: { type: string; angle: number; centerX: number; centerY: number; stops: FillStop[] } }>;
+
   return (
     <div
       className={[
@@ -201,6 +302,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
     >
       {/* Vector layer: line/path */}
       <svg className="absolute inset-0" width={doc.width} height={doc.height} viewBox={`0 0 ${doc.width} ${doc.height}`} aria-hidden>
+        {svgGradients.length > 0 ? <defs>{svgGradients.map((g) => renderSvgGradient(g.id, g.gradient))}</defs> : null}
         {doc.nodes.map((node) => {
           if (node.hidden) return null;
 
@@ -247,7 +349,12 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
             const dash = s(node.props.dash, "");
             const lineCap = pickLineCap(node.props, "round");
             const lineJoin = pickLineJoin(node.props, "round");
-            const fill = s(node.props.fill, "none");
+            const fillInfo = resolveFill(node.props, "none");
+            const fill = fillInfo.gradient
+              ? fillInfo.gradient.type !== "conic"
+                ? `url(#grad-${node.id})`
+                : fillInfo.gradient.stops[0]?.color ?? "none"
+              : fillInfo.value;
             const opacity = typeof node.opacity === "number" ? node.opacity : 1;
             const rotation = typeof node.rotation === "number" ? node.rotation : 0;
             const cx = node.x + node.w / 2;
@@ -279,7 +386,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
         const pe = interactive && !locked ? "auto" : "none";
 
         if (node.type === "box" || node.type === "frame") {
-          const fill = pickFill(node.props, node.type === "frame" ? "#FFFFFF" : "#F5F5F5");
+          const fill = resolveFill(node.props, node.type === "frame" ? "#FFFFFF" : "#F5F5F5").value;
           const radius = n(node.props.radius, 12);
           const stroke = pickStroke(node.props, "");
           const strokeWidth = pickStrokeWidth(node.props, 0);
@@ -301,7 +408,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
         }
 
         if (node.type === "shape_rect") {
-          const fill = pickFill(node.props, "#EDEDED");
+          const fill = resolveFill(node.props, "#EDEDED").value;
           const radius = n(node.props.radius, 16);
           const stroke = pickStroke(node.props, "#111111");
           const strokeWidth = pickStrokeWidth(node.props, 0);
@@ -323,7 +430,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
         }
 
         if (node.type === "shape_ellipse") {
-          const fill = pickFill(node.props, "#EDEDED");
+          const fill = resolveFill(node.props, "#EDEDED").value;
           const stroke = pickStroke(node.props, "#111111");
           const strokeWidth = pickStrokeWidth(node.props, 0);
           const borderStyle = pickBorderStyle(node.props, "solid");
@@ -389,7 +496,10 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
           const url = s(node.props.url, "");
           const radius = n(node.props.radius, 12);
           const fit = s(node.props.fit, "cover");
-          const objectFit = ["cover", "contain", "fill", "scale-down"].includes(fit) ? fit : "cover";
+          const objectFitOptions = ["cover", "contain", "fill", "scale-down"] as const;
+          const objectFit = objectFitOptions.includes(fit as (typeof objectFitOptions)[number])
+            ? (fit as (typeof objectFitOptions)[number])
+            : "cover";
           const stroke = pickStroke(node.props, "");
           const strokeWidth = pickStrokeWidth(node.props, 0);
           const borderStyle = pickBorderStyle(node.props, "solid");
@@ -437,7 +547,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
 
         if (node.type === "badge") {
           const label = s(node.props.label, "배지");
-          const fill = pickFill(node.props, "#F1F1F1");
+          const fill = resolveFill(node.props, "#F1F1F1").value;
           const color = s(node.props.color, "#111111");
           const radius = n(node.props.radius, 999);
           const fontSize = pickFontSize(node.props, 10);
@@ -473,7 +583,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
         if (node.type === "button") {
           const label = s(node.props.label, "버튼");
           const variant = s(node.props.variant, "primary");
-          const fill = pickFill(node.props, "#111111");
+          const fill = resolveFill(node.props, "#111111").value;
           const color = s(node.props.color, "#FFFFFF");
           const radius = n(node.props.radius, 999);
           const fontSize = pickFontSize(node.props, 13);
@@ -542,7 +652,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
         if (node.type === "link") {
           const label = s(node.props.label, "링크");
           const border = s(node.props.border, s(node.props.borderColor, "#3B82F6"));
-          const background = s(node.props.background, "rgba(59,130,246,0.10)");
+          const background = resolveFill(node.props, "rgba(59,130,246,0.10)").value;
           const color = s(node.props.color, border);
           const radius = n(node.props.radius, 12);
           const href = s(node.props.href, "");
@@ -593,7 +703,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
         // ---- Forms ----
         if (node.type === "input" || node.type === "textarea") {
           const placeholder = s(node.props.placeholder, "입력");
-          const fill = s(node.props.fill, "#FFFFFF");
+          const fill = resolveFill(node.props, "#FFFFFF").value;
           const stroke = pickStroke(node.props, "#E5E5E5");
           const strokeWidth = pickStrokeWidth(node.props, 1);
           const borderStyle = pickBorderStyle(node.props, "solid");
@@ -699,7 +809,7 @@ export default function CanvasRender({ doc, className, showGrid = false, interac
 
         if (node.type === "select") {
           const options = safeArrayOfStrings(node.props.options);
-          const fill = s(node.props.fill, "#FFFFFF");
+          const fill = resolveFill(node.props, "#FFFFFF").value;
           const stroke = pickStroke(node.props, "#E5E5E5");
           const strokeWidth = pickStrokeWidth(node.props, 1);
           const borderStyle = pickBorderStyle(node.props, "solid");

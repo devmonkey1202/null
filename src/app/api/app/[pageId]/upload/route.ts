@@ -4,6 +4,7 @@ import { resolveAnonUserId } from "@/lib/anon";
 import { logApiError } from "@/lib/logger";
 import { apiErrorJson } from "@/lib/api-error";
 import { saveUpload } from "@/lib/storage";
+import { logAppAudit } from "@/lib/app-audit";
 
 type Params = { pageId: string };
 
@@ -34,6 +35,14 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
 
   try {
     const result = await saveUpload(pageId, file);
+    await logAppAudit({
+      pageId,
+      action: "upload_file",
+      targetType: "file",
+      targetId: result.key,
+      meta: { name: file.name, size: file.size, type: file.type },
+      actor: { userId: user.id, anonId: anonUserId },
+    });
     return NextResponse.json({ ok: true, url: result.url, id: result.key, backend: result.backend });
   } catch (e) {
     logApiError(req, "upload write error", e);

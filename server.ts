@@ -5,6 +5,7 @@ import { parse } from "url";
 import { initSocket } from "./src/server/socket";
 import { startEventSyncToPg } from "./src/server/eventSync";
 import { startInternalWorkflowScheduler } from "./src/server/cron-scheduler";
+import { startBackgroundWorker } from "./src/server/background-worker";
 import { prisma } from "./src/lib/db";
 import { resolveDomainRoute } from "./src/server/domain-router";
 import { registerSystemLogHandlers, logSystemEvent } from "./src/lib/system-log";
@@ -76,6 +77,7 @@ async function main() {
   initSocket(server);
   startEventSyncToPg(prisma);
   startInternalWorkflowScheduler();
+  startBackgroundWorker();
 
   server.listen(port, hostname, () => {
     console.log(`> Ready on http://${hostname}:${port}`);

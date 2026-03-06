@@ -3,6 +3,14 @@
  */
 
 import { prisma } from "@/lib/db";
+import {
+  buildListCacheKey,
+  buildRecordCacheKey,
+  bumpCollectionCacheVersion,
+  getCachedValue,
+  getCollectionCacheVersion,
+  setCachedValue,
+} from "@/lib/app-data-cache";
 
 export type AppFieldType = "string" | "number" | "boolean" | "date" | "json" | "relation";
 
@@ -38,6 +46,12 @@ export type SetSchemaOptions = {
   mode?: SchemaMode;
   migrations?: AppSchemaMigrations;
   batchSize?: number;
+};
+
+export type AppRecordActor = {
+  userId?: string;
+  appUserId?: string;
+  anonId?: string;
 };
 
 export type FieldValidationError = {
@@ -336,6 +350,10 @@ export async function setSchema(
       await applyFieldMigrations(pageId, slug, options.migrations, batchSize);
     }
   }
+
+  for (const slug of slugs) {
+    await bumpCollectionCacheVersion(pageId, slug);
+  }
 }
 
 export async function getCollectionBySlug(pageId: string, slug: string) {
@@ -347,45 +365,110 @@ export async function getCollectionBySlug(pageId: string, slug: string) {
 export async function listRecords(
   pageId: string,
   collectionSlug: string,
-  options?: { limit?: number; offset?: number; orderBy?: "created_at" | "updated_at"; orderDir?: "asc" | "desc" }
+  options?: {
+    limit?: number;
+    offset?: number;
+    orderBy?: "created_at" | "updated_at";
+    orderDir?: "asc" | "desc";
+    appUserId?: string | null;
+  }
 ) {
   const limit = Math.min(Math.max(options?.limit ?? 50, 1), 200);
   const offset = Math.max(options?.offset ?? 0, 0);
   const orderBy = options?.orderBy ?? "created_at";
   const orderDir = options?.orderDir ?? "desc";
+  const where: { page_id: string; collection_slug: string; app_user_id?: string } = {
+    page_id: pageId,
+    collection_slug: collectionSlug,
+  };
+  if (options?.appUserId) where.app_user_id = options.appUserId;
+
+  const version = await getCollectionCacheVersion(pageId, collectionSlug);
+  const cacheKey = buildListCacheKey(
+    pageId,
+    collectionSlug,
+    version,
+    limit,
+    offset,
+    orderBy,
+    orderDir,
+    options?.appUserId ?? null,
+  );
+  const cached = await getCachedValue<unknown>(cacheKey);
+  if (cached) return cached as { items: unknown[]; total: number; limit: number; offset: number };
 
   const [items, total] = await Promise.all([
     prisma.appRecord.findMany({
-      where: { page_id: pageId, collection_slug: collectionSlug },
+      where,
       orderBy: { [orderBy]: orderDir },
       take: limit,
       skip: offset,
-      select: { id: true, data: true, created_at: true, updated_at: true },
+      select: { id: true, data: true, created_at: true, updated_at: true, app_user_id: true },
     }),
-    prisma.appRecord.count({ where: { page_id: pageId, collection_slug: collectionSlug } }),
+    prisma.appRecord.count({ where }),
   ]);
 
-  return { items, total, limit, offset };
+  const result = { items, total, limit, offset };
+  await setCachedValue(cacheKey, result);
+  return result;
 }
 
-export async function getRecord(pageId: string, collectionSlug: string, id: string) {
-  return prisma.appRecord.findFirst({
-    where: { id, page_id: pageId, collection_slug: collectionSlug },
+export async function getRecord(pageId: string, collectionSlug: string, id: string, options?: { appUserId?: string | null }) {
+  const where: { id: string; page_id: string; collection_slug: string; app_user_id?: string } = {
+    id,
+    page_id: pageId,
+    collection_slug: collectionSlug,
+  };
+  if (options?.appUserId) where.app_user_id = options.appUserId;
+  const version = await getCollectionCacheVersion(pageId, collectionSlug);
+  const cacheKey = buildRecordCacheKey(pageId, collectionSlug, version, id, options?.appUserId ?? null);
+  const cached = await getCachedValue<unknown>(cacheKey);
+  if (cached) return cached as Awaited<ReturnType<typeof prisma.appRecord.findFirst>>;
+  const record = await prisma.appRecord.findFirst({ where });
+  if (record) await setCachedValue(cacheKey, record);
+  return record;
+}
+
+async function logRecordVersion(
+  pageId: string,
+  collectionSlug: string,
+  recordId: string,
+  action: "created" | "updated" | "deleted",
+  data: Record<string, unknown>,
+  actor?: AppRecordActor,
+) {
+  await prisma.appRecordVersion.create({
+    data: {
+      page_id: pageId,
+      record_id: recordId,
+      collection_slug: collectionSlug,
+      action,
+      data: data as object,
+      actor_user_id: actor?.userId ?? null,
+      actor_app_user_id: actor?.appUserId ?? null,
+      actor_anon_id: actor?.anonId ?? null,
+    },
   });
 }
 
 export async function createRecord(
   pageId: string,
   collectionSlug: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  actor?: AppRecordActor,
+  options?: { appUserId?: string | null }
 ) {
-  return prisma.appRecord.create({
+  const record = await prisma.appRecord.create({
     data: {
       page_id: pageId,
       collection_slug: collectionSlug,
       data: data as object,
+      ...(options?.appUserId !== undefined ? { app_user_id: options.appUserId } : {}),
     },
   });
+  await logRecordVersion(pageId, collectionSlug, record.id, "created", record.data as Record<string, unknown>, actor);
+  await bumpCollectionCacheVersion(pageId, collectionSlug);
+  return record;
 }
 
 export async function updateRecord(
@@ -393,7 +476,8 @@ export async function updateRecord(
   collectionSlug: string,
   id: string,
   data: Partial<Record<string, unknown>>,
-  options?: { replace?: boolean }
+  options?: { replace?: boolean; appUserId?: string | null },
+  actor?: AppRecordActor,
 ) {
   const existing = await prisma.appRecord.findFirst({
     where: { id, page_id: pageId, collection_slug: collectionSlug },
@@ -402,16 +486,44 @@ export async function updateRecord(
   const merged = options?.replace
     ? { ...(data as Record<string, unknown>) }
     : { ...(existing.data as Record<string, unknown>), ...data };
-  return prisma.appRecord.update({
+  const record = await prisma.appRecord.update({
     where: { id },
-    data: { data: merged as object, updated_at: new Date() },
+    data: {
+      data: merged as object,
+      updated_at: new Date(),
+      ...(options?.appUserId !== undefined ? { app_user_id: options.appUserId } : {}),
+    },
   });
+  await logRecordVersion(pageId, collectionSlug, record.id, "updated", record.data as Record<string, unknown>, actor);
+  await bumpCollectionCacheVersion(pageId, collectionSlug);
+  return record;
 }
 
-export async function deleteRecord(pageId: string, collectionSlug: string, id: string) {
+export async function deleteRecord(
+  pageId: string,
+  collectionSlug: string,
+  id: string,
+  actor?: AppRecordActor,
+) {
   const existing = await prisma.appRecord.findFirst({
     where: { id, page_id: pageId, collection_slug: collectionSlug },
   });
   if (!existing) return null;
-  return prisma.appRecord.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    await tx.appRecordVersion.create({
+      data: {
+        page_id: pageId,
+        record_id: existing.id,
+        collection_slug: collectionSlug,
+        action: "deleted",
+        data: existing.data as object,
+        actor_user_id: actor?.userId ?? null,
+        actor_app_user_id: actor?.appUserId ?? null,
+        actor_anon_id: actor?.anonId ?? null,
+      },
+    });
+    await tx.appRecord.delete({ where: { id } });
+  });
+  await bumpCollectionCacheVersion(pageId, collectionSlug);
+  return existing;
 }

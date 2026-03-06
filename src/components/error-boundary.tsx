@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { reportClientError } from "@/lib/client-errors";
 
 type Props = {
   children: ReactNode;
@@ -12,7 +13,7 @@ type State = {
   error: Error | null;
 };
 
-/** §29.10 에러 바운더리 — 렌더 오류 시 폴백 UI */
+/** 에러 바운더리: 기본 폴백 UI 제공 */
 export default class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
@@ -25,6 +26,11 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("[ErrorBoundary]", error, errorInfo.componentStack);
+    reportClientError({
+      error,
+      componentStack: errorInfo.componentStack,
+      source: "error-boundary",
+    });
   }
 
   render() {
@@ -33,7 +39,7 @@ export default class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="flex min-h-[200px] flex-col items-center justify-center gap-4 rounded-[14px] border border-[#EAEAEA] bg-[#FAFAFA] p-8 text-center">
           <p className="text-sm font-medium text-[#111111]">문제가 발생했습니다.</p>
-          <p className="text-xs text-[#666666]">잠시 후 새로고침해 주세요.</p>
+          <p className="text-xs text-[#666666]">잠시 후 다시 시도해 주세요.</p>
           <button
             type="button"
             onClick={() => this.setState({ hasError: false, error: null })}

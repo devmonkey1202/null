@@ -1,15 +1,26 @@
 import { prisma } from "@/lib/db";
+import { parseSemver, isWithinRange } from "@/lib/semver";
+import pkg from "../../package.json";
+
+type PluginActionBase = {
+  id: string;
+  label: string;
+  params?: Record<string, unknown>;
+};
 
 export type PluginAction =
-  | { id: string; label: string; type: "macro"; steps: PluginAction[] }
-  | { id: string; label: string; type: "align" | "distribute" | "exportTokens" | "exportSelectionPng" | "exportSelectionSvg" | "toggleGrid" | "togglePixelGrid" | "toggleAudit" | "togglePerformance" }
-  | { id: string; label: string; type: "openUrl"; url: string }
-  | { id: string; label: string; type: string; params?: Record<string, unknown> };
+  | (PluginActionBase & { type: "macro"; steps: PluginAction[] })
+  | (PluginActionBase & { type: "align" | "distribute" | "exportTokens" | "exportSelectionPng" | "exportSelectionSvg" | "toggleGrid" | "togglePixelGrid" | "toggleAudit" | "togglePerformance" })
+  | (PluginActionBase & { type: "openUrl"; url: string })
+  | (PluginActionBase & { type: string });
 
 export type PluginManifest = {
   id: string;
   name: string;
   description?: string;
+  version?: string;
+  minAppVersion?: string;
+  maxAppVersion?: string;
   permissions?: string[];
   actions: PluginAction[];
 };
@@ -19,6 +30,8 @@ const MAX_PLUGIN_MANIFESTS = 50;
 const MAX_PLUGIN_ACTIONS = 200;
 const MAX_PLUGIN_STEPS = 50;
 const MAX_PLUGIN_DEPTH = 4;
+
+const APP_VERSION = typeof pkg?.version === "string" ? pkg.version : "0.1.0";
 
 const ALLOWED_PLUGIN_ACTIONS = new Set([
   "macro",
@@ -34,6 +47,27 @@ const ALLOWED_PLUGIN_ACTIONS = new Set([
   "openUrl",
 ]);
 
+const ALLOWED_PERMISSIONS = new Set([
+  "editor",
+  "export",
+  "network",
+  "ui",
+]);
+
+const ACTION_PERMISSION: Record<string, string | null> = {
+  align: "editor",
+  distribute: "editor",
+  exportTokens: "export",
+  exportSelectionPng: "export",
+  exportSelectionSvg: "export",
+  toggleGrid: "ui",
+  togglePixelGrid: "ui",
+  toggleAudit: "ui",
+  togglePerformance: "ui",
+  openUrl: "network",
+  macro: null,
+};
+
 function isSafeExternalUrl(raw: string): string | null {
   try {
     const url = new URL(raw);
@@ -44,12 +78,19 @@ function isSafeExternalUrl(raw: string): string | null {
   }
 }
 
-function normalizePluginAction(raw: unknown, depth: number, budget: { count: number }): PluginAction | null {
+function normalizePluginAction(
+  raw: unknown,
+  depth: number,
+  budget: { count: number },
+  permissions: Set<string>,
+): PluginAction | null {
   if (!raw || typeof raw !== "object") return null;
   if (depth > MAX_PLUGIN_DEPTH) return null;
   const input = raw as Record<string, unknown>;
   if (typeof input.id !== "string" || typeof input.label !== "string" || typeof input.type !== "string") return null;
   if (!ALLOWED_PLUGIN_ACTIONS.has(input.type)) return null;
+  const requiredPermission = ACTION_PERMISSION[input.type] ?? null;
+  if (requiredPermission && !permissions.has(requiredPermission)) return null;
   if (budget.count >= MAX_PLUGIN_ACTIONS) return null;
 
   const action: PluginAction = {
@@ -73,7 +114,7 @@ function normalizePluginAction(raw: unknown, depth: number, budget: { count: num
     const stepsRaw = Array.isArray(input.steps) ? input.steps : [];
     const steps: PluginAction[] = [];
     for (const step of stepsRaw) {
-      const normalized = normalizePluginAction(step, depth + 1, budget);
+      const normalized = normalizePluginAction(step, depth + 1, budget, permissions);
       if (normalized) steps.push(normalized);
       if (steps.length >= MAX_PLUGIN_STEPS) break;
     }
@@ -89,10 +130,19 @@ function normalizePluginManifest(raw: unknown): PluginManifest | null {
   const input = raw as Record<string, unknown>;
   if (typeof input.id !== "string" || typeof input.name !== "string") return null;
 
+  const permissions = Array.isArray(input.permissions)
+    ? input.permissions.filter((p) => typeof p === "string" && ALLOWED_PERMISSIONS.has(p))
+    : [];
+
+  const minVersion = parseSemver(typeof input.minAppVersion === "string" ? input.minAppVersion : "");
+  const maxVersion = parseSemver(typeof input.maxAppVersion === "string" ? input.maxAppVersion : "");
+  const appVersion = parseSemver(APP_VERSION);
+  if (appVersion && !isWithinRange(appVersion, minVersion, maxVersion)) return null;
+
   const budget = { count: 0 };
   const actionsRaw = Array.isArray(input.actions) ? input.actions : [];
   const actions = actionsRaw
-    .map((a) => normalizePluginAction(a, 0, budget))
+    .map((a) => normalizePluginAction(a, 0, budget, new Set(permissions)))
     .filter((a): a is PluginAction => Boolean(a));
 
   if (!actions.length) return null;
@@ -101,7 +151,10 @@ function normalizePluginManifest(raw: unknown): PluginManifest | null {
     id: String(input.id),
     name: String(input.name),
     description: typeof input.description === "string" ? input.description : undefined,
-    permissions: Array.isArray(input.permissions) ? input.permissions.filter((p) => typeof p === "string") : undefined,
+    version: typeof input.version === "string" ? input.version : undefined,
+    minAppVersion: typeof input.minAppVersion === "string" ? input.minAppVersion : undefined,
+    maxAppVersion: typeof input.maxAppVersion === "string" ? input.maxAppVersion : undefined,
+    permissions: permissions.length ? permissions : undefined,
     actions,
   };
 }

@@ -1,0 +1,70 @@
+12521:                 </button>
+12522:                 {toolbarOverflowOpen && typeof document !== "undefined"
+12523:                   ? createPortal(
+12524:                       <>
+12525:                         <div className="fixed inset-0 z-[9998]" aria-hidden onClick={() => setToolbarOverflowOpen(false)} />
+12526:                         <div
+12527:                           className="fixed z-[9999] min-w-[180px] rounded-md border border-neutral-200 bg-white py-1 shadow-lg text-xs"
+12528:                           style={{ left: toolbarOverflowRect.left, top: toolbarOverflowRect.top }}
+12529:                         >
+12530:                       <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">?êµ¬</div>
+12531:                       <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { setTool("comment"); setToolbarOverflowOpen(false); }}>
+12532:                         ì½ë©??
+12533:                         {comments.length > 0 ? <span className="rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] text-white" aria-label={`ì½ë©??${comments.length}ê±?}>{comments.length}</span> : null}
+12534:                       </button>
+12535:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { setTool("slice"); setToolbarOverflowOpen(false); }}>?¬ë¼?´ì¤</button>
+12536:                       <div className="my-1 h-px bg-neutral-200" />
+12537:                       <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">Boolean</div>
+12538:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length < 2} onClick={() => { runBooleanSelection("union"); setToolbarOverflowOpen(false); }}>?í ?©ì¹ê¸?(Union)</button>
+12539:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length < 2} onClick={() => { runBooleanSelection("subtract"); setToolbarOverflowOpen(false); }}>?í ë¹¼ê¸° (Subtract)</button>
+12540:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length < 2} onClick={() => { runBooleanSelection("intersect"); setToolbarOverflowOpen(false); }}>?í ê²¹ì¹¨ (Intersect)</button>
+12541:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length < 2} onClick={() => { runBooleanSelection("exclude"); setToolbarOverflowOpen(false); }}>?í ?ì¸ (Exclude)</button>
+12542:                       <div className="my-1 h-px bg-neutral-200" />
+12543:                       <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">Vector</div>
+12544:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={!canJoinSelection} onClick={() => { joinSelectionToPath(); setToolbarOverflowOpen(false); }}>Join to Path</button>
+12545:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={!canFlattenSelection} onClick={() => { flattenSelectionToPath(); setToolbarOverflowOpen(false); }}>Flatten to Path</button>
+12546:                       <div className="my-1 h-px bg-neutral-200" />
+12547:                       <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">ë§ì¤</div>
+12548:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length !== 1} onClick={() => { applyMaskSelection(); setToolbarOverflowOpen(false); }}>ë§ì¤?¬ë¡ ?¬ì©</button>
+12549:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length !== 1 || !selectedNode?.isMask} onClick={() => { releaseMaskSelection(); setToolbarOverflowOpen(false); }}>ë§ì¤???´ì </button>
+12550:                       <div className="my-1 h-px bg-neutral-200" />
+12551:                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { setFigmaImportOpen(true); setToolbarOverflowOpen(false); }}>Figma?ì ê°??¸ì¤ê¸</button>
+12552:                         </div>
+12553:                       </>,
+12554:                       document.body,
+12555:                     )
+12556:                 : null}
+12557:               </div>
+12558:             </div>
+12559:           </div>
+12560: 
+12561:           <div className="flex min-w-max shrink-0 flex-nowrap items-center gap-2 overflow-x-auto py-1">
+12562:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => align("l")}>?¼ìª½ ?ë ¬</button>
+12563:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => align("hc")}>ê°??´ë° ?ë ¬</button>
+12564:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => align("r")}>?¤ë¥¸ìª??ë ¬</button>
+12565:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => matchSelectionSize("w")}>ê°ì? ?ë¹</button>
+12566:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => matchSelectionSize("h")}>ê°ì? ?ì´</button>
+12567:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={snapSelectionToGrid}>?¤ë
+12568: </button>
+12569:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => flipSelection("h")}>ê°?ë¡??¤ì§ê¸</button>
+12570:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => flipSelection("v")}>?¸ë¡ ?¤ì§ê¸</button>
+12571:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => distribute("h")}>ê°?ë¡?ë¶ë°°</button>
+12572:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => distribute("v")}>?¸ë¡ ë¶ë°°</button>
+12573:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={clearSelection} disabled={!hasSelection}>? í ?´ì </button>
+12574:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={invertSelection}>? í ë°ì </button>
+12575:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={tidyUpSelection} disabled={selectedIds.length < 2}>?ë¦¬</button>
+12576:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={openRepeatGrid} disabled={!hasSelection}>ë°ë³µ ê·¸ë¦¬</button>
+12577:             <div className="flex shrink-0 items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-1 text-xs">
+12578:               <button type="button" className="px-2" onClick={fitSelectionToContent} disabled={!hasSelection}>?´ì© ë§ì¶¤</button>
+12579:               <button type="button" className="px-2" onClick={toggleSelectionHidden} disabled={!hasSelection}>
+12580:                 {selectionHidden ? "?¨ê? ?´ì " : "?¨ê?"}
+12581:               </button>
+12582:               <button type="button" className="px-2" onClick={toggleSelectionLocked} disabled={!hasSelection}>
+12583:                 {selectionLocked ? "Unlock selection" : "Lock selection"}
+12584:               </button>
+12585:             </div>
+12586:             <div className="flex shrink-0 items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-1 text-xs">
+12587:               <button type="button" className="px-1" onClick={() => zoomBy(-0.1)}>-</button>
+12588:               <button type="button" className="px-2" onClick={zoomReset}>{zoomPercent}%</button>
+12589:               <button type="button" className="px-1" onClick={() => zoomBy(0.1)}>+</button>
+12590:               <button type="button" className="px-2" onClick={zoomToSelection}>Fit selection</button>

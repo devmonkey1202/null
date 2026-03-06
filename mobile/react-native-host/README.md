@@ -5,14 +5,13 @@ Thin React Native WebView shell that loads a deployed NULL app and forwards
 
 ## Quick Start
 
-1. Edit `mobile/react-native-host/host.config.json` and set `serverUrl`.
-2. Install dependencies:
+1. From the repo root, run:
 
 ```bash
-npm install
+npm run mobile:rn:prepare -- --server-url https://your-null-host.example
 ```
 
-3. Run the app on a device or emulator as usual for React Native.
+2. Run the app on a device or emulator as usual for React Native.
 
 ## Supported Commands (Sample)
 

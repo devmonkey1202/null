@@ -56,6 +56,15 @@
     cap("statusBar.setBackgroundColor", plugins && plugins.StatusBar && typeof plugins.StatusBar.setBackgroundColor === "function", (plugins && plugins.StatusBar) ? "capacitor" : "web");
     cap("keyboard.hide", plugins && plugins.Keyboard && typeof plugins.Keyboard.hide === "function", (plugins && plugins.Keyboard) ? "capacitor" : "web");
     cap("keyboard.show", plugins && plugins.Keyboard && typeof plugins.Keyboard.show === "function", (plugins && plugins.Keyboard) ? "capacitor" : "web");
+    cap("ble.scan", (plugins && plugins.BluetoothLe && (typeof plugins.BluetoothLe.requestDevice === "function" || typeof plugins.BluetoothLe.requestLEScan === "function" || typeof plugins.BluetoothLe.scan === "function")) || !!(navigator.bluetooth && navigator.bluetooth.requestDevice), (plugins && plugins.BluetoothLe) ? "capacitor" : "web");
+    cap("ble.connect", plugins && plugins.BluetoothLe && typeof plugins.BluetoothLe.connect === "function", (plugins && plugins.BluetoothLe) ? "capacitor" : "web");
+    cap("ble.disconnect", plugins && plugins.BluetoothLe && typeof plugins.BluetoothLe.disconnect === "function", (plugins && plugins.BluetoothLe) ? "capacitor" : "web");
+    cap("ble.read", plugins && plugins.BluetoothLe && typeof plugins.BluetoothLe.read === "function", (plugins && plugins.BluetoothLe) ? "capacitor" : "web");
+    cap("ble.write", plugins && plugins.BluetoothLe && typeof plugins.BluetoothLe.write === "function", (plugins && plugins.BluetoothLe) ? "capacitor" : "web");
+    cap("nfc.read", (plugins && plugins.NFC && (typeof plugins.NFC.scan === "function" || typeof plugins.NFC.read === "function")) || !!window.NDEFReader, (plugins && plugins.NFC) ? "capacitor" : "web");
+    cap("nfc.write", (plugins && plugins.NFC && typeof plugins.NFC.write === "function") || !!window.NDEFReader, (plugins && plugins.NFC) ? "capacitor" : "web");
+    cap("sensor.motion", (plugins && plugins.Motion && typeof plugins.Motion.getCurrent === "function") || !!window.DeviceMotionEvent || !!window.Accelerometer, (plugins && plugins.Motion) ? "capacitor" : "web");
+    cap("sensor.orientation", (plugins && plugins.Motion && typeof plugins.Motion.getOrientation === "function") || !!window.DeviceOrientationEvent || !!window.AbsoluteOrientationSensor, (plugins && plugins.Motion) ? "capacitor" : "web");
     cap("vibrate", (plugins && plugins.Haptics) || !!navigator.vibrate, (plugins && plugins.Haptics) ? "capacitor" : "web");
     return { ok: true, data: { capabilities: caps, bridgeAvailable: hasNativeBridge() } };
   }
@@ -281,6 +290,89 @@
       if (name === "keyboard.show" && plugins.Keyboard && typeof plugins.Keyboard.show === "function") {
         return plugins.Keyboard.show().then(function () {
           return { ok: true, data: { shown: true } };
+        });
+      }
+      if (name === "ble.scan" && plugins.BluetoothLe) {
+        var ble = plugins.BluetoothLe;
+        var scanOpts = {};
+        if (Array.isArray(obj.filters)) scanOpts.filters = obj.filters;
+        if (Array.isArray(obj.optionalServices)) scanOpts.optionalServices = obj.optionalServices;
+        if (obj.acceptAllDevices === true) scanOpts.acceptAllDevices = true;
+        if (typeof ble.requestDevice === "function") {
+          return ble.requestDevice(scanOpts).then(function (device) {
+            return { ok: true, data: { device: device } };
+          });
+        }
+        if (typeof ble.requestLEScan === "function") {
+          return ble.requestLEScan(scanOpts).then(function (res) {
+            return { ok: true, data: res };
+          });
+        }
+        if (typeof ble.scan === "function") {
+          return ble.scan(scanOpts).then(function (res) {
+            return { ok: true, data: res };
+          });
+        }
+      }
+      if (name === "ble.connect" && plugins.BluetoothLe && typeof plugins.BluetoothLe.connect === "function") {
+        if (typeof obj.deviceId !== "string") return Promise.resolve({ ok: false, error: "device_id_required" });
+        return plugins.BluetoothLe.connect({ deviceId: obj.deviceId }).then(function (res) {
+          return { ok: true, data: res };
+        });
+      }
+      if (name === "ble.disconnect" && plugins.BluetoothLe && typeof plugins.BluetoothLe.disconnect === "function") {
+        if (typeof obj.deviceId !== "string") return Promise.resolve({ ok: false, error: "device_id_required" });
+        return plugins.BluetoothLe.disconnect({ deviceId: obj.deviceId }).then(function (res) {
+          return { ok: true, data: res };
+        });
+      }
+      if (name === "ble.read" && plugins.BluetoothLe && typeof plugins.BluetoothLe.read === "function") {
+        if (typeof obj.deviceId !== "string") return Promise.resolve({ ok: false, error: "device_id_required" });
+        if (typeof obj.service !== "string") return Promise.resolve({ ok: false, error: "service_required" });
+        if (typeof obj.characteristic !== "string") return Promise.resolve({ ok: false, error: "characteristic_required" });
+        return plugins.BluetoothLe.read({ deviceId: obj.deviceId, service: obj.service, characteristic: obj.characteristic }).then(function (res) {
+          return { ok: true, data: res };
+        });
+      }
+      if (name === "ble.write" && plugins.BluetoothLe && typeof plugins.BluetoothLe.write === "function") {
+        if (typeof obj.deviceId !== "string") return Promise.resolve({ ok: false, error: "device_id_required" });
+        if (typeof obj.service !== "string") return Promise.resolve({ ok: false, error: "service_required" });
+        if (typeof obj.characteristic !== "string") return Promise.resolve({ ok: false, error: "characteristic_required" });
+        if (typeof obj.value !== "string") return Promise.resolve({ ok: false, error: "value_required" });
+        return plugins.BluetoothLe.write({
+          deviceId: obj.deviceId,
+          service: obj.service,
+          characteristic: obj.characteristic,
+          value: obj.value,
+        }).then(function (res) {
+          return { ok: true, data: res };
+        });
+      }
+      if (name === "nfc.read" && plugins.NFC) {
+        if (typeof plugins.NFC.scan === "function") {
+          return plugins.NFC.scan(obj || {}).then(function (res) {
+            return { ok: true, data: res };
+          });
+        }
+        if (typeof plugins.NFC.read === "function") {
+          return plugins.NFC.read(obj || {}).then(function (res) {
+            return { ok: true, data: res };
+          });
+        }
+      }
+      if (name === "nfc.write" && plugins.NFC && typeof plugins.NFC.write === "function") {
+        return plugins.NFC.write(obj || {}).then(function (res) {
+          return { ok: true, data: res };
+        });
+      }
+      if (name === "sensor.motion" && plugins.Motion && typeof plugins.Motion.getCurrent === "function") {
+        return plugins.Motion.getCurrent().then(function (res) {
+          return { ok: true, data: res };
+        });
+      }
+      if (name === "sensor.orientation" && plugins.Motion && typeof plugins.Motion.getOrientation === "function") {
+        return plugins.Motion.getOrientation().then(function (res) {
+          return { ok: true, data: res };
         });
       }
       if (name === "vibrate" && plugins.Haptics) {
@@ -598,6 +690,106 @@
         multiple: true,
         resultType: typeof obj.resultType === "string" ? obj.resultType : "uri",
         limit: typeof obj.limit === "number" ? obj.limit : undefined,
+      });
+    }
+    if (name === "ble.scan") {
+      if (obj.mock === true) {
+        return Promise.resolve({ ok: true, data: { devices: [{ id: "ble_mock_1", name: "Mock BLE" }] } });
+      }
+      if (!navigator.bluetooth || typeof navigator.bluetooth.requestDevice !== "function") {
+        return Promise.resolve({ ok: false, error: "ble_unavailable" });
+      }
+      var bleOpts = {};
+      if (Array.isArray(obj.filters)) bleOpts.filters = obj.filters;
+      if (Array.isArray(obj.optionalServices)) bleOpts.optionalServices = obj.optionalServices;
+      if (obj.acceptAllDevices === true) bleOpts.acceptAllDevices = true;
+      return navigator.bluetooth.requestDevice(bleOpts).then(function (device) {
+        return { ok: true, data: { device: { id: device.id, name: device.name || "" } } };
+      }).catch(function (err) {
+        return { ok: false, error: (err && err.message) || "ble_failed" };
+      });
+    }
+    if (name === "ble.connect" || name === "ble.disconnect" || name === "ble.read" || name === "ble.write") {
+      if (obj.mock === true) return Promise.resolve({ ok: true, data: { mock: true } });
+      return Promise.resolve({ ok: false, error: "ble_unavailable" });
+    }
+    if (name === "nfc.read") {
+      if (obj.mock === true) return Promise.resolve({ ok: true, data: { listening: true, records: [] } });
+      if (typeof window.NDEFReader === "undefined") return Promise.resolve({ ok: false, error: "nfc_unavailable" });
+      try {
+        var reader = new window.NDEFReader();
+        return reader.scan().then(function () {
+          return { ok: true, data: { listening: true } };
+        }).catch(function (err) {
+          return { ok: false, error: (err && err.message) || "nfc_failed" };
+        });
+      } catch (err) {
+        return Promise.resolve({ ok: false, error: (err && err.message) || "nfc_failed" });
+      }
+    }
+    if (name === "nfc.write") {
+      if (obj.mock === true) return Promise.resolve({ ok: true, data: { written: true } });
+      if (typeof window.NDEFReader === "undefined") return Promise.resolve({ ok: false, error: "nfc_unavailable" });
+      try {
+        var writer = new window.NDEFReader();
+        if (typeof writer.write !== "function") return Promise.resolve({ ok: false, error: "nfc_write_unavailable" });
+        return writer.write(obj && obj.records ? obj.records : obj).then(function () {
+          return { ok: true, data: { written: true } };
+        }).catch(function (err) {
+          return { ok: false, error: (err && err.message) || "nfc_failed" };
+        });
+      } catch (err) {
+        return Promise.resolve({ ok: false, error: (err && err.message) || "nfc_failed" });
+      }
+    }
+    if (name === "sensor.motion") {
+      if (obj.mock === true) {
+        return Promise.resolve({ ok: true, data: { acceleration: { x: 0.01, y: 0.02, z: 9.8 }, rotationRate: { alpha: 0, beta: 0, gamma: 0 } } });
+      }
+      if (!window.DeviceMotionEvent && !window.Accelerometer) return Promise.resolve({ ok: false, error: "sensor_unavailable" });
+      return new Promise(function (resolve) {
+        var timeoutMs = typeof obj.timeoutMs === "number" ? obj.timeoutMs : 1200;
+        var done = false;
+        function finish(payload) {
+          if (done) return;
+          done = true;
+          resolve(payload);
+        }
+        function handler(ev) {
+          var acc = ev && ev.accelerationIncludingGravity ? ev.accelerationIncludingGravity : ev.acceleration;
+          var rot = ev && ev.rotationRate ? ev.rotationRate : null;
+          finish({ ok: true, data: { acceleration: acc || null, rotationRate: rot || null } });
+        }
+        if (window.DeviceMotionEvent) {
+          window.addEventListener("devicemotion", handler, { once: true });
+          setTimeout(function () { finish({ ok: false, error: "sensor_timeout" }); }, timeoutMs);
+          return;
+        }
+        finish({ ok: false, error: "sensor_unavailable" });
+      });
+    }
+    if (name === "sensor.orientation") {
+      if (obj.mock === true) {
+        return Promise.resolve({ ok: true, data: { alpha: 0, beta: 0, gamma: 0, absolute: false } });
+      }
+      if (!window.DeviceOrientationEvent && !window.AbsoluteOrientationSensor) return Promise.resolve({ ok: false, error: "sensor_unavailable" });
+      return new Promise(function (resolve) {
+        var timeoutMs = typeof obj.timeoutMs === "number" ? obj.timeoutMs : 1200;
+        var done = false;
+        function finish(payload) {
+          if (done) return;
+          done = true;
+          resolve(payload);
+        }
+        function handler(ev) {
+          finish({ ok: true, data: { alpha: ev.alpha, beta: ev.beta, gamma: ev.gamma, absolute: ev.absolute === true } });
+        }
+        if (window.DeviceOrientationEvent) {
+          window.addEventListener("deviceorientation", handler, { once: true });
+          setTimeout(function () { finish({ ok: false, error: "sensor_timeout" }); }, timeoutMs);
+          return;
+        }
+        finish({ ok: false, error: "sensor_unavailable" });
       });
     }
     if (name === "vibrate") {

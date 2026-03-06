@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 import React, { useCallback, useRef } from "react";
 import { Keyboard, Linking, Platform, SafeAreaView, Share, StatusBar, Vibration } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";

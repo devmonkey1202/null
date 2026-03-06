@@ -3,6 +3,8 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { withErrorHandler } from "@/lib/api-handler";
 import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
 import { prisma } from "@/lib/db";
+import { logAppAudit } from "@/lib/app-audit";
+import { resolveAnonUserId } from "@/lib/anon";
 
 type Params = { pageId: string; path?: string[] };
 
@@ -28,15 +30,15 @@ function normalizeSignature(signature: string) {
 }
 
 const SIGNATURE_ERROR_MESSAGES: Record<string, string> = {
-  signature_required: "서명 헤더가 필요합니다.",
-  invalid_timestamp: "타임스탬프 형식이 올바르지 않습니다.",
-  timestamp_out_of_range: "타임스탬프가 허용 범위를 벗어났습니다.",
-  signature_mismatch: "서명이 일치하지 않습니다.",
+  signature_required: "signature_required",
+  invalid_timestamp: "invalid_timestamp",
+  timestamp_out_of_range: "timestamp_out_of_range",
+  signature_mismatch: "signature_mismatch",
 };
 
 function signatureErrorMessage(code?: string | null) {
-  if (!code) return "서명 검증에 실패했습니다.";
-  return SIGNATURE_ERROR_MESSAGES[code] ?? "서명 검증에 실패했습니다.";
+  if (!code) return "signature_verification_failed";
+  return SIGNATURE_ERROR_MESSAGES[code] ?? "signature_verification_failed";
 }
 
 function verifySignature(secret: string, timestamp: string | null, rawBody: string, signature: string | null) {
@@ -59,7 +61,7 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
   const params = await context.params;
   const webhookPath = resolveWebhookPath(params);
   if (!webhookPath) {
-    return NextResponse.json({ error: "path_required", message: "웹훅 경로가 필요합니다." }, { status: 400 });
+    return NextResponse.json({ error: "path_required" }, { status: 400 });
   }
 
   const rawBody = await req.text();
@@ -67,6 +69,14 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
   if (secret) {
     const check = verifySignature(secret, req.headers.get("x-null-timestamp"), rawBody, req.headers.get("x-null-signature"));
     if (!check.ok) {
+      await logAppAudit({
+        pageId: params.pageId,
+        action: "webhook_rejected",
+        targetType: "webhook",
+        targetId: webhookPath,
+        meta: { error: check.error },
+        actor: { anonId: (await resolveAnonUserId(req)) ?? null },
+      });
       return NextResponse.json(
         { error: check.error, message: signatureErrorMessage(check.error) },
         { status: 401 }
@@ -87,6 +97,14 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
     { path: webhookPath },
     body ?? {}
   );
+  await logAppAudit({
+    pageId: params.pageId,
+    action: "webhook_received",
+    targetType: "webhook",
+    targetId: webhookPath,
+    meta: { triggered: results.length },
+    actor: { anonId: (await resolveAnonUserId(req)) ?? null },
+  });
   return NextResponse.json({ ok: true, results, signatureVerified: Boolean(secret) });
 });
 
@@ -94,13 +112,21 @@ export const GET = withErrorHandler(async (req: Request, context: { params: Prom
   const params = await context.params;
   const webhookPath = resolveWebhookPath(params);
   if (!webhookPath) {
-    return NextResponse.json({ error: "path_required", message: "웹훅 경로가 필요합니다." }, { status: 400 });
+    return NextResponse.json({ error: "path_required" }, { status: 400 });
   }
 
   const secret = await getWebhookSecret(params.pageId);
   if (secret) {
     const check = verifySignature(secret, req.headers.get("x-null-timestamp"), "", req.headers.get("x-null-signature"));
     if (!check.ok) {
+      await logAppAudit({
+        pageId: params.pageId,
+        action: "webhook_rejected",
+        targetType: "webhook",
+        targetId: webhookPath,
+        meta: { error: check.error },
+        actor: { anonId: (await resolveAnonUserId(req)) ?? null },
+      });
       return NextResponse.json(
         { error: check.error, message: signatureErrorMessage(check.error) },
         { status: 401 }
@@ -112,5 +138,13 @@ export const GET = withErrorHandler(async (req: Request, context: { params: Prom
     "webhook",
     { path: webhookPath }
   );
+  await logAppAudit({
+    pageId: params.pageId,
+    action: "webhook_received",
+    targetType: "webhook",
+    targetId: webhookPath,
+    meta: { triggered: results.length },
+    actor: { anonId: (await resolveAnonUserId(req)) ?? null },
+  });
   return NextResponse.json({ ok: true, results, signatureVerified: Boolean(secret) });
 });

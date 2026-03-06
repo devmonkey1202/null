@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import os from "node:os";
 import { prisma } from "@/lib/db";
-import { requireAdminSession } from "@/lib/admin-session";
+import { requireAdminAccess } from "@/lib/admin-session";
+import { logAvailability } from "@/lib/availability-log";
 
-export async function GET() {
-  const gate = await requireAdminSession();
+export async function GET(req: Request) {
+  const gate = await requireAdminAccess(req);
   if (!gate.ok) {
     return NextResponse.json({ ok: false, error: gate.code }, { status: 401 });
   }
 
+  const startedAt = Date.now();
   let dbOk = false;
   let dbError: string | null = null;
   try {
@@ -21,6 +23,14 @@ export async function GET() {
 
   const memory = process.memoryUsage();
   const load = os.loadavg();
+  logAvailability({
+    ts: new Date().toISOString(),
+    ok: dbOk,
+    db_ok: dbOk,
+    latency_ms: Date.now() - startedAt,
+    source: "ops",
+    meta: dbError ? { error: dbError } : undefined,
+  });
 
   return NextResponse.json({
     ok: true,

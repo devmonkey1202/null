@@ -166,6 +166,60 @@ export const NATIVE_COMMANDS: NativeCommandSpec[] = [
     description: "Hide keyboard.",
     argsExample: {},
   },
+  {
+    name: "ble.scan",
+    title: "BLE Scan",
+    description: "Scan Bluetooth Low Energy devices.",
+    argsExample: { acceptAllDevices: true, filters: [{ services: ["battery_service"] }] },
+  },
+  {
+    name: "ble.connect",
+    title: "BLE Connect",
+    description: "Connect to a BLE device.",
+    argsExample: { deviceId: "device-id" },
+  },
+  {
+    name: "ble.disconnect",
+    title: "BLE Disconnect",
+    description: "Disconnect BLE device.",
+    argsExample: { deviceId: "device-id" },
+  },
+  {
+    name: "ble.read",
+    title: "BLE Read",
+    description: "Read BLE characteristic value.",
+    argsExample: { deviceId: "device-id", service: "battery_service", characteristic: "battery_level" },
+  },
+  {
+    name: "ble.write",
+    title: "BLE Write",
+    description: "Write BLE characteristic value.",
+    argsExample: { deviceId: "device-id", service: "custom_service", characteristic: "custom_char", value: "01ff" },
+  },
+  {
+    name: "nfc.read",
+    title: "NFC Read",
+    description: "Start NFC scan and read tags.",
+    argsExample: { mode: "ndef" },
+  },
+  {
+    name: "nfc.write",
+    title: "NFC Write",
+    description: "Write NFC tag payload.",
+    argsExample: { records: [{ type: "text", data: "Hello" }] },
+  },
+  {
+    name: "sensor.motion",
+    title: "Motion Sensor",
+    description: "Sample motion sensor values.",
+    argsExample: { timeoutMs: 1200 },
+  },
+  {
+    name: "sensor.orientation",
+    title: "Orientation Sensor",
+    description: "Sample orientation sensor values.",
+    argsExample: { timeoutMs: 1200 },
+  },
 ];
 
 export function findNativeCommand(name?: string | null) {

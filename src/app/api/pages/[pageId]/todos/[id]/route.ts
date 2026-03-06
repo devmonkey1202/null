@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string; id: string };
 
@@ -45,6 +46,15 @@ export const PATCH = withErrorHandler(async (req: Request, context: { params: Pr
     },
   });
 
+  await logPageAudit({
+    pageId,
+    action: "todo_update",
+    targetType: "todo",
+    targetId: todo.id,
+    meta: { changed: Object.keys(parsed.data) },
+    actor: { userId: user.id, anonId: anonUserId },
+  });
+
   return NextResponse.json({
     todo: {
       id: todo.id,
@@ -77,5 +87,13 @@ export const DELETE = withErrorHandler(async (req: Request, context: { params: P
   if (!existing) return apiErrorJson("not_found", 404);
 
   await prisma.todo.delete({ where: { id } });
+  await logPageAudit({
+    pageId,
+    action: "todo_delete",
+    targetType: "todo",
+    targetId: id,
+    meta: null,
+    actor: { userId: user.id, anonId: anonUserId },
+  });
   return NextResponse.json({ ok: true });
 });

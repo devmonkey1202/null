@@ -49,7 +49,9 @@ export async function registerAppUser(
 ) {
   email = normalizeEmail(email);
   if (!email) throw new Error("Email is required.");
-  if (!isValidPassword(password)) throw new Error("Password must be at least 8 characters.");
+  if (!isValidPassword(password)) {
+    throw new Error("Password must be at least 8 characters and include upper/lowercase, number, and symbol.");
+  }
 
   const existing = await prisma.appUser.findUnique({
     where: { page_id_email: { page_id: pageId, email } },
@@ -124,6 +126,21 @@ export async function getAppUserByToken(token: string): Promise<AppUserPublic | 
   return toPublic(session.app_user);
 }
 
+export async function getAppUserByTokenForPage(pageId: string, token: string): Promise<AppUserPublic | null> {
+  if (!token) return null;
+  const session = await prisma.appSession.findUnique({
+    where: { token },
+    include: { app_user: true },
+  });
+  if (!session) return null;
+  if (session.page_id !== pageId) return null;
+  if (session.expires_at < new Date()) {
+    await prisma.appSession.delete({ where: { id: session.id } });
+    return null;
+  }
+  return toPublic(session.app_user);
+}
+
 export async function updateAppUserProfile(
   userId: string,
   data: { display_name?: string; avatar_url?: string; metadata?: unknown }
@@ -145,7 +162,9 @@ export async function changeAppUserPassword(userId: string, currentPassword: str
   if (!verifyPassword(currentPassword, user.password_hash)) {
     throw new Error("Current password is incorrect.");
   }
-  if (!isValidPassword(newPassword)) throw new Error("New password must be at least 8 characters.");
+  if (!isValidPassword(newPassword)) {
+    throw new Error("New password must be at least 8 characters and include upper/lowercase, number, and symbol.");
+  }
 
   await prisma.appUser.update({
     where: { id: userId },

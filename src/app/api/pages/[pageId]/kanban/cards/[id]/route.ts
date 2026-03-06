@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string; id: string };
 
@@ -53,6 +54,15 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     },
   });
 
+  await logPageAudit({
+    pageId,
+    action: "kanban_card_update",
+    targetType: "kanban_card",
+    targetId: card.id,
+    meta: { changed: Object.keys(parsed.data) },
+    actor: { userId: user.id, anonId: anonUserId },
+  });
+
   return NextResponse.json({
     card: {
       id: card.id,
@@ -86,5 +96,13 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
   if (!existing) return apiErrorJson("not_found", 404);
 
   await prisma.kanbanCard.delete({ where: { id } });
+  await logPageAudit({
+    pageId,
+    action: "kanban_card_delete",
+    targetType: "kanban_card",
+    targetId: id,
+    meta: null,
+    actor: { userId: user.id, anonId: anonUserId },
+  });
   return NextResponse.json({ ok: true });
 }

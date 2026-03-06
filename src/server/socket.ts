@@ -12,6 +12,10 @@ import { getPageState, removeSession, type SessionBuffer } from "@/server/liveSt
 import { resolvePlanFeatures } from "@/lib/plan";
 import { logWithThrottle } from "@/lib/logger";
 
+type PageWithOwner = Prisma.PageGetPayload<{
+  include: { owner: { include: { plan: true } } };
+}>;
+
 
 /** §5.1 move 샘플링: 10~15Hz(66~100ms), 속도 기반 적응(느리면 6Hz 166ms, 빠르면 15Hz 66ms) */
 
@@ -245,14 +249,14 @@ async function handleConnection(io: Server, socket: Socket) {
     return;
   }
 
-  let page: Awaited<ReturnType<typeof prisma.page.findUnique & { owner: { plan: unknown } }>> | null = null;
+  let page: PageWithOwner | null = null;
   try {
     page = await prisma.page.findUnique({
       where: { id: pageId },
       include: {
         owner: { include: { plan: true } },
       },
-    }) as typeof page;
+    });
   } catch (err) {
     console.warn("[socket] page lookup failed", pageId, err);
   }
@@ -1070,4 +1074,3 @@ async function handleConnection(io: Server, socket: Socket) {
   });
 
 }
-

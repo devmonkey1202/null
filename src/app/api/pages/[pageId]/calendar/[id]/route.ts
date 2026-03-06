@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string; id: string };
 
@@ -57,6 +58,15 @@ export const PATCH = withErrorHandler(async (req: Request, context: { params: Pr
     data,
   });
 
+  await logPageAudit({
+    pageId,
+    action: "calendar_update",
+    targetType: "calendar",
+    targetId: event.id,
+    meta: { changed: Object.keys(data) },
+    actor: { userId: user.id, anonId: anonUserId },
+  });
+
   return NextResponse.json({
     event: {
       id: event.id,
@@ -91,5 +101,13 @@ export const DELETE = withErrorHandler(async (req: Request, context: { params: P
   if (!existing) return apiErrorJson("not_found", 404);
 
   await prisma.calendarEvent.delete({ where: { id } });
+  await logPageAudit({
+    pageId,
+    action: "calendar_delete",
+    targetType: "calendar",
+    targetId: id,
+    meta: null,
+    actor: { userId: user.id, anonId: anonUserId },
+  });
   return NextResponse.json({ ok: true });
 });

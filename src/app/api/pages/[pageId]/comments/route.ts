@@ -6,6 +6,7 @@ import { resolveAnonUserId, ensureAnonUser } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
 import { getCollabInviteFromRequest, isCollabInviteValid } from "@/lib/collab";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
@@ -162,6 +163,15 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
       parent_id: parentId,
     },
     include: { user: { select: { id: true, anon_id: true, email: true } } },
+  });
+
+  await logPageAudit({
+    pageId,
+    action: "comment_create",
+    targetType: "comment",
+    targetId: comment.id,
+    meta: { node_id: nodeId, parent_id: parentId },
+    actor: { userId: user.id, anonId: anonUserId },
   });
 
   const author = comment.user.email ? comment.user.email : `Anonymous (${comment.user.anon_id.slice(0, 8)})`;

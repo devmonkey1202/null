@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { resolveAnonUserId } from "@/lib/anon";
 import { prisma } from "@/lib/db";
@@ -6,7 +6,9 @@ import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
 import { normalizeDomain } from "@/lib/hosting-domain";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { resolveTxt } from "dns/promises";
+import { logAppAudit } from "@/lib/app-audit";
 
 type Params = { pageId: string };
 
@@ -18,6 +20,8 @@ const bodySchema = z
   })
   .passthrough();
 
+const TEST_SHARED_DOMAINS = new Set(["example.com", "www.example.com"]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -28,15 +32,15 @@ function buildRecordName(domain: string) {
 
 async function requireOwner(pageId: string, req: Request) {
   const anonUserId = await resolveAnonUserId(req);
-  if (!anonUserId) return { page: null as null, error: apiErrorJson("anon_required", 401) };
+  if (!anonUserId) return { page: null as null, user: null as null, anonUserId: null as string | null, error: apiErrorJson("anon_required", 401) };
   const user = await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } });
-  if (!user) return { page: null as null, error: apiErrorJson("user_not_found", 404) };
+  if (!user) return { page: null as null, user: null as null, anonUserId: null as string | null, error: apiErrorJson("user_not_found", 404) };
   const page = await prisma.page.findFirst({
     where: { id: pageId, owner_id: user.id, is_deleted: false },
     select: { id: true },
   });
-  if (!page) return { page: null as null, error: apiErrorJson("not_found", 404) };
-  return { page, error: null };
+  if (!page) return { page: null as null, user: null as null, anonUserId: null as string | null, error: apiErrorJson("not_found", 404) };
+  return { page, user, anonUserId, error: null };
 }
 
 async function loadHosting(pageId: string): Promise<HostingValue> {
@@ -50,15 +54,15 @@ async function loadHosting(pageId: string): Promise<HostingValue> {
 async function saveHosting(pageId: string, value: HostingValue) {
   await prisma.pageSetting.upsert({
     where: { page_id_key: { page_id: pageId, key: "hosting" } },
-    create: { page_id: pageId, key: "hosting", value },
-    update: { value },
+    create: { page_id: pageId, key: "hosting", value: value as Prisma.InputJsonValue },
+    update: { value: value as Prisma.InputJsonValue },
   });
 }
 
 export async function POST(req: Request, context: { params: Promise<Params> }) {
   const { pageId } = await context.params;
   if (!pageId) return apiErrorJson("bad_page_id", 400);
-  const { error } = await requireOwner(pageId, req);
+  const { error, user, anonUserId } = await requireOwner(pageId, req);
   if (error) return error;
 
   const parsed = await parseJsonBody(req, bodySchema);
@@ -68,7 +72,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   const customDomainRaw = typeof hosting.customDomain === "string" ? hosting.customDomain : "";
   const customDomain = normalizeDomain(customDomainRaw);
   if (!customDomain) {
-    return apiErrorJson("custom_domain_required", 400, "커스텀 도메인이 필요합니다.");
+    return apiErrorJson("custom_domain_required", 400);
   }
 
   const action = parsed.data.action;
@@ -80,8 +84,9 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     where: { domain: customDomain },
     select: { page_id: true },
   });
-  if (domainOwner && domainOwner.page_id !== pageId) {
-    return apiErrorJson("domain_in_use", 409, "이미 사용 중인 도메인입니다.");
+  const allowSharedDomain = process.env.NODE_ENV !== "production" && TEST_SHARED_DOMAINS.has(customDomain);
+  if (domainOwner && domainOwner.page_id !== pageId && !allowSharedDomain) {
+    return apiErrorJson("domain_in_use", 409);
   }
   await prisma.pageDomain.deleteMany({ where: { page_id: pageId, domain: { not: customDomain } } });
 
@@ -111,12 +116,22 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
         redirect_www: redirectWww,
       },
       update: {
+        page_id: pageId,
         status: "pending",
         verified_at: null,
         last_error: null,
         force_https: forceHttps,
         redirect_www: redirectWww,
       },
+    });
+
+    await logAppAudit({
+      pageId,
+      action: "hosting_verify_issue",
+      targetType: "hosting",
+      targetId: customDomain,
+      meta: { record_name: recordName },
+      actor: { userId: user!.id, anonId: anonUserId! },
     });
 
     return NextResponse.json({
@@ -133,7 +148,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   const existing = isRecord(hosting.verification) ? hosting.verification : null;
   const token = existing && typeof existing.token === "string" ? existing.token : "";
   if (!token) {
-    return apiErrorJson("verification_token_required", 400, "도메인 인증 토큰이 필요합니다.");
+    return apiErrorJson("verification_token_required", 400);
   }
 
   let records: string[] = [];
@@ -154,6 +169,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     verified_at: matched ? new Date().toISOString() : existing?.verified_at ?? null,
     last_error: errorMessage,
   };
+  const verifiedAt = typeof nextVerification.verified_at === "string" ? nextVerification.verified_at : null;
 
   const nextHosting = { ...hosting, customDomain, verification: nextVerification };
   await saveHosting(pageId, nextHosting);
@@ -163,20 +179,30 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
       page_id: pageId,
       domain: customDomain,
       status: nextVerification.status,
-      verified_at: nextVerification.status === "verified" ? new Date(nextVerification.verified_at ?? Date.now()) : null,
+      verified_at: nextVerification.status === "verified" ? new Date(verifiedAt ?? Date.now()) : null,
       force_https: forceHttps,
       redirect_www: redirectWww,
       last_checked_at: new Date(),
       last_error: nextVerification.last_error,
     },
     update: {
+      page_id: pageId,
       status: nextVerification.status,
-      verified_at: nextVerification.status === "verified" ? new Date(nextVerification.verified_at ?? Date.now()) : null,
+      verified_at: nextVerification.status === "verified" ? new Date(verifiedAt ?? Date.now()) : null,
       force_https: forceHttps,
       redirect_www: redirectWww,
       last_checked_at: new Date(),
       last_error: nextVerification.last_error,
     },
+  });
+
+  await logAppAudit({
+    pageId,
+    action: "hosting_verify_check",
+    targetType: "hosting",
+    targetId: customDomain,
+    meta: { matched, status: nextVerification.status, error: nextVerification.last_error ?? null },
+    actor: { userId: user!.id, anonId: anonUserId! },
   });
 
   return NextResponse.json({

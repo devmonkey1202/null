@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { withErrorHandler } from "@/lib/api-handler";
 import { prisma } from "@/lib/db";
+import type { PageStatus } from "@prisma/client";
 
 /**
  * GET: upvote_count 기준 페이지 랭킹.
@@ -11,9 +12,9 @@ export const GET = withErrorHandler(async (req: Request) => {
   const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit")) || 20));
   const status = searchParams.get("status") || "live";
   const minUpvotes = Number(searchParams.get("min_upvotes"));
-  const validStatus = status === "live" || status === "draft" ? status : "live";
+  const validStatus = (status === "live" || status === "draft" ? status : "live") as PageStatus;
 
-  const where: { is_deleted: boolean; status: string; upvote_count?: { gte: number } } = {
+  const where: { is_deleted: boolean; status: PageStatus; upvote_count?: { gte: number } } = {
     is_deleted: false,
     status: validStatus,
   };

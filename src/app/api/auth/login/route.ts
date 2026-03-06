@@ -6,6 +6,7 @@ import { checkRateLimit, rateLimitHeaders } from "@/lib/rate-limit";
 import { logApiError } from "@/lib/logger";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
+import { logSecurityEvent } from "@/lib/security-log";
 
 const COOKIE_NAME = "anon_user_id";
 const LOGIN_MAX_PER_MINUTE = 10;
@@ -13,6 +14,10 @@ const LOGIN_MAX_PER_MINUTE = 10;
 export async function POST(req: Request) {
   const rl = await checkRateLimit(req, LOGIN_MAX_PER_MINUTE);
   if (!rl.allowed) {
+    logSecurityEvent({
+      action: "user_login_rate_limited",
+      req,
+    });
     return apiErrorJson("rate_limit_exceeded", 429, {
       message: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
       headers: rateLimitHeaders(rl),
@@ -41,16 +46,33 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findFirst({ where: { email } });
     if (!user || !user.password_hash) {
+      logSecurityEvent({
+        action: "user_login_invalid",
+        req,
+        meta: { email },
+      });
       return apiErrorJson("invalid_credentials", 401);
     }
 
     if (!verifyPassword(password, user.password_hash)) {
+      logSecurityEvent({
+        action: "user_login_invalid",
+        req,
+        actor: { userId: user.id },
+        meta: { email },
+      });
       return apiErrorJson("invalid_credentials", 401);
     }
 
     await prisma.user.update({
       where: { id: user.id },
       data: { last_login_at: new Date() },
+    });
+    logSecurityEvent({
+      action: "user_login_success",
+      req,
+      actor: { userId: user.id, anonId: user.anon_id },
+      meta: { email },
     });
 
     const response = NextResponse.json({

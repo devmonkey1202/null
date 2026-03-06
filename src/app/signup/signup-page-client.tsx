@@ -77,7 +77,7 @@ export default function SignupPageClient() {
           payload?.error === "email_in_use"
             ? "이미 사용 중인 이메일입니다."
             : payload?.error === "password_too_short"
-              ? "비밀번호는 8자 이상이어야 합니다."
+                ? "비밀번호는 8자 이상이며 대/소문자, 숫자, 특수문자를 포함해야 합니다."
               : payload?.error === "password_mismatch"
                 ? "비밀번호가 일치하지 않습니다."
                 : res.status === 429

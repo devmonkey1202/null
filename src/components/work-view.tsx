@@ -16,6 +16,7 @@ import { DEFAULT_CANVAS, normalizeContentToV2, pickScene, toDocument } from "@/l
 import { hydrateDoc, type SerializableDoc } from "@/advanced/doc/scene";
 import { layoutDoc } from "@/advanced/layout/engine";
 import { getPageContentBounds } from "@/advanced/runtime/bounds";
+import { installResourceTimingTracker, installRuntimeMetrics } from "@/lib/runtime-metrics";
 
 const LOOP_MS = 8000;
 const PULSE_MS = 4000;
@@ -475,76 +476,13 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
 
   useEffect(() => {
     if (standalone) return;
-    let sent = false;
-    const send = (lcpMs: number) => {
-      if (sent) return;
-      sent = true;
-      const track = (window as unknown as { __nullTrack?: (name: string, props?: Record<string, unknown>) => void }).__nullTrack;
-      if (typeof track === "function") track("web_vitals", { lcp_ms: Math.round(lcpMs), metric: "LCP" });
-    };
-    const onLCP = (list: PerformanceObserverEntryList) => {
-      const entries = list.getEntries();
-      const last = entries[entries.length - 1];
-      if (last && "renderTime" in last) send((last as { renderTime: number }).renderTime);
-      else if (last && "startTime" in last) send((last as { startTime: number }).startTime);
-    };
-    try {
-      const obs = new PerformanceObserver(onLCP);
-      obs.observe({ type: "largest-contentful-paint", buffered: true });
-      const t = setTimeout(() => {
-        obs.disconnect();
-        const entries = performance.getEntriesByType("largest-contentful-paint");
-        const last = entries[entries.length - 1];
-        if (last && !sent) {
-          const ms = "renderTime" in last ? (last as { renderTime: number }).renderTime : (last as { startTime: number }).startTime;
-          send(ms);
-        }
-      }, 6000);
-      return () => {
-        clearTimeout(t);
-        obs.disconnect();
-      };
-    } catch {
-      return undefined;
-    }
-  }, [standalone]);
-
-  useEffect(() => {
-    if (standalone) return;
     const track = (window as unknown as { __nullTrack?: (name: string, props?: Record<string, unknown>) => void }).__nullTrack;
-    const send = (name: string, props: Record<string, unknown>) => {
-      if (typeof track === "function") track(name, props);
-    };
-    const origFetch = window.fetch;
-    window.fetch = function (...args: Parameters<typeof fetch>) {
-      const url = typeof args[0] === "string" ? args[0] : (args[0] as Request)?.url ?? "";
-      return origFetch.apply(this, args).then(
-        (r) => r,
-        (err) => {
-          const domain = url ? url.replace(/^https?:\/\//, "").split("/")[0].slice(0, 64) : "";
-          send("resource_failed", { url_domain: domain, reason: err?.message?.slice(0, 100) ?? "fetch_error" });
-          throw err;
-        }
-      );
-    };
-    let obs: PerformanceObserver | null = null;
-    try {
-      obs = new PerformanceObserver((list) => {
-        for (const e of list.getEntries()) {
-          const entry = e as { duration: number; name?: string; initiatorType?: string };
-          if (entry.duration >= 3000) {
-            const url = entry.name?.replace(/^https?:\/\//, "").split("/")[0].slice(0, 64) ?? "";
-            send("resource_timing", { url_domain: url, duration_ms: Math.round(entry.duration), type: entry.initiatorType ?? "resource" });
-          }
-        }
-      });
-      obs.observe({ type: "resource", buffered: true });
-    } catch {
-      /* ignore */
-    }
+    if (typeof track !== "function") return;
+    const cleanupVitals = installRuntimeMetrics(track);
+    const cleanupResources = installResourceTimingTracker(track);
     return () => {
-      window.fetch = origFetch;
-      obs?.disconnect();
+      cleanupVitals?.();
+      cleanupResources?.();
     };
   }, [standalone]);
 

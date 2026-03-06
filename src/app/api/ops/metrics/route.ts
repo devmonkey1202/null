@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { requireAdminSession } from "@/lib/admin-session";
+import { requireAdminAccess } from "@/lib/admin-session";
 
-export async function GET() {
-  const gate = await requireAdminSession();
+export async function GET(req: Request) {
+  const gate = await requireAdminAccess(req);
   if (!gate.ok) {
     return NextResponse.json({ ok: false, error: gate.code }, { status: 401 });
   }

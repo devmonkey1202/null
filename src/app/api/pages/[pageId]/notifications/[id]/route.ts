@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string; id: string };
 
@@ -33,6 +34,14 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     await prisma.pageNotification.update({
       where: { id },
       data: { read_at: new Date() },
+    });
+    await logPageAudit({
+      pageId,
+      action: "notification_read",
+      targetType: "notification",
+      targetId: id,
+      meta: null,
+      actor: { userId: user.id, anonId: anonUserId },
     });
     return NextResponse.json({ ok: true, readAt: new Date().toISOString() });
   } catch (err) {

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -41,6 +41,8 @@ import {
   type ScrollTriggerConfig,
   type PathSegment,
   type NodeDataBinding,
+  type AutoLayout,
+  type ComponentVersion,
 } from "../doc/scene";
 
 import AdvancedRuntimeRenderer from "../runtime/renderer";
@@ -48,6 +50,7 @@ import AdvancedRuntimePlayer from "../runtime/player";
 import { NATIVE_COMMANDS, findNativeCommand, formatNativeArgsExample } from "../runtime/native-commands";
 import { applyConstraintsOnResize, layoutDoc } from "../layout/engine";
 import { getPageContentBounds } from "../runtime/bounds";
+import { findLayoutConflicts } from "../runtime/layout-conflicts";
 import {
   anchorsToPathData,
   pathDataToAnchors,
@@ -55,6 +58,7 @@ import {
   rectToPath,
   ellipseToPath,
   pathDataToPolygon,
+  polygonToPathD,
   translatePathD,
   snapDirection45,
   type PathAnchor,
@@ -102,165 +106,58 @@ const BLEND_MODE_OPTIONS: { value: BlendMode; label: string }[] = [
   { value: "lighten", label: "Lighten" },
 ];
 
+function buildPathFromNode(node: Node, abs: Rect): string | null {
+  switch (node.type) {
+    case "rect":
+      return rectToPath(abs);
+    case "ellipse":
+      return ellipseToPath(abs);
+    case "polygon": {
+      const sides = Math.max(3, Math.round(node.shape?.polygonSides ?? 6));
+      const cx = abs.x + abs.w / 2;
+      const cy = abs.y + abs.h / 2;
+      const r = Math.max(0, Math.min(abs.w, abs.h) / 2);
+      const ring = Array.from({ length: sides }).map((_, i) => {
+        const angle = (Math.PI * 2 * i) / sides - Math.PI / 2;
+        return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
+      });
+      return polygonToPathD(ring);
+    }
+    case "star": {
+      const spikes = Math.max(3, Math.round(node.shape?.starPoints ?? 5));
+      const innerRatio = Math.max(0.1, Math.min(0.9, node.shape?.starInnerRatio ?? 0.5));
+      const cx = abs.x + abs.w / 2;
+      const cy = abs.y + abs.h / 2;
+      const outer = Math.max(0, Math.min(abs.w, abs.h) / 2);
+      const inner = outer * innerRatio;
+      const ring: number[][] = [];
+      for (let i = 0; i < spikes * 2; i += 1) {
+        const radius = i % 2 === 0 ? outer : inner;
+        const angle = (Math.PI * i) / spikes - Math.PI / 2;
+        ring.push([cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)]);
+      }
+      return polygonToPathD(ring);
+    }
+    case "line":
+    case "arrow":
+      return `M ${abs.x} ${abs.y} L ${abs.x + abs.w} ${abs.y + abs.h}`;
+    case "path": {
+      const raw = (node.shape?.pathData ?? "").trim();
+      const seg = node.shape?.segments?.[0]?.d?.trim();
+      const base = raw || seg;
+      if (!base) return rectToPath(abs);
+      return translatePathD(base, abs.x, abs.y);
+    }
+    default:
+      return null;
+  }
+}
+
 
 let textMeasureCanvas: HTMLCanvasElement | null = null;
 const ALL_PRESET_GROUPS = [...PRESET_GROUPS, ...ASSET_LIBRARY_PRESET_GROUPS];
 const SUSPICIOUS_PRESET_TEXT_RE = /\uFFFD|\?\?/;
-const PRESET_TOKEN_KO: Record<string, string> = {
-  asset: "",
-  onboarding: "온보딩",
-  swipe: "스와이프",
-  permission: "권한",
-  request: "요청",
-  profile: "프로필",
-  edit: "편집",
-  settings: "설정",
-  center: "센터",
-  search: "검색",
-  home: "홈",
-  notification: "알림",
-  help: "도움말",
-  faq: "FAQ",
-  consent: "동의",
-  policy: "정책",
-  otp: "OTP",
-  subscription: "구독",
-  upgrade: "업그레이드",
-  ui: "UI",
-  header: "헤더",
-  tabbar: "탭바",
-  sidebar: "사이드바",
-  drawer: "드로어",
-  breadcrumb: "브레드크럼",
-  sticky: "고정",
-  cta: "CTA",
-  section: "섹션",
-  modal: "모달",
-  sheet: "바텀시트",
-  select: "선택",
-  tabs: "탭",
-  pagination: "페이지네이션",
-  date: "날짜",
-  slider: "슬라이더",
-  content: "콘텐츠",
-  feed: "피드",
-  detail: "상세",
-  comment: "댓글",
-  thread: "스레드",
-  user: "사용자",
-  card: "카드",
-  cards: "카드",
-  tag: "태그",
-  bookmark: "북마크",
-  ranking: "랭킹",
-  report: "신고",
-  chat: "채팅",
-  list: "리스트",
-  room: "룸",
-  attachment: "첨부",
-  mention: "멘션",
-  group: "그룹",
-  channel: "채널",
-  call: "통화",
-  todo: "할 일",
-  calendar: "캘린더",
-  note: "노트",
-  member: "멤버",
-  role: "권한",
-  approval: "승인",
-  flow: "플로우",
-  kanban: "칸반",
-  gantt: "간트",
-  timeline: "타임라인",
-  media: "미디어",
-  upload: "업로드",
-  gallery: "갤러리",
-  lightbox: "라이트박스",
-  player: "플레이어",
-  story: "스토리",
-  live: "라이브",
-  dashboard: "대시보드",
-  kpi: "핵심지표",
-  charts: "차트",
-  chart: "차트",
-  panel: "패널",
-  data: "데이터",
-  table: "테이블",
-  admin: "관리",
-  audit: "감사",
-  billing: "결제",
-  system: "시스템",
-  console: "콘솔",
-  states: "상태",
-  state: "상태",
-  skeleton: "스켈레톤",
-  loading: "로딩",
-  empty: "빈",
-  toast: "토스트",
-  confirm: "확인",
-  offline: "오프라인",
-  network: "네트워크",
-  error: "오류",
-  pages: "페이지",
-  form: "폼",
-  validation: "검증",
-  input: "입력",
-  masking: "마스킹",
-  address: "주소",
-  commerce: "커머스",
-  payment: "결제",
-  methods: "수단",
-  method: "수단",
-  price: "가격",
-  coupon: "쿠폰",
-  promotion: "프로모션",
-  templates: "템플릿",
-  template: "템플릿",
-  starter: "스타터",
-  blank: "빈",
-  landing: "랜딩",
-  community: "커뮤니티",
-  service: "서비스",
-  cart: "장바구니",
-  result: "결과",
-  dropzone: "드롭존",
-  kream: "KREAM",
-  auth: "인증",
-  login: "로그인",
-  signup: "회원가입",
-  logout: "로그아웃",
-  navbar: "네비게이션 바",
-  footer: "푸터",
-  button: "버튼",
-  checkbox: "체크박스",
-  textarea: "텍스트 영역",
-  inputfield: "입력",
-  container: "컨테이너",
-  stack: "스택",
-  account: "계정",
-  recovery: "복구",
-  security: "보안",
-  delete: "삭제",
-  locale: "지역",
-  region: "국가/지역",
-  currency: "통화",
-  matrix: "매트릭스",
-  accessibility: "접근성",
-  cookie: "쿠키",
-  privacy: "개인정보",
-  banner: "배너",
-  update: "업데이트",
-  import: "가져오기",
-  export: "내보내기",
-  monitoring: "모니터링",
-  summary: "요약",
-  focus: "포커스",
-  skip: "스킵",
-  keyboard: "키보드",
-  navigation: "네비게이션",
-  tooltip: "툴팁",
-  pattern: "패턴",
-};
+const PRESET_TOKEN_KO: Record<string, string> = {};
 
 function humanizePresetId(id: string) {
   const parts = id
@@ -294,17 +191,60 @@ function displayPresetLabel(label: string, id: string) {
 
 function displayPresetGroupTitle(title: string, fallbackId: string) {
   const trimmed = (title ?? "").trim();
-  if (!trimmed) return `${humanizePresetId(fallbackId)} 그룹`;
-  if (/^[?\s]+$/.test(trimmed)) return `${humanizePresetId(fallbackId)} 그룹`;
-  if (SUSPICIOUS_PRESET_TEXT_RE.test(trimmed)) return `${humanizePresetId(fallbackId)} 그룹`;
+  if (!trimmed) return `${humanizePresetId(fallbackId)} Group`;
+  if (/^[?\s]+$/.test(trimmed)) return `${humanizePresetId(fallbackId)} Group`;
+  if (SUSPICIOUS_PRESET_TEXT_RE.test(trimmed)) return `${humanizePresetId(fallbackId)} Group`;
   const questionCount = (trimmed.match(/\?/g) ?? []).length;
-  if (questionCount >= 2) return `${humanizePresetId(fallbackId)} 그룹`;
+  if (questionCount >= 2) return `${humanizePresetId(fallbackId)} Group`;
   const hasHangul = /[\uAC00-\uD7A3]/.test(trimmed);
   const hasLatin = /[A-Za-z]/.test(trimmed);
   const hasCjk = /[\u4E00-\u9FFF]/.test(trimmed);
-  if (hasCjk && !hasHangul && !hasLatin) return `${humanizePresetId(fallbackId)} 그룹`;
-  if (hasLatin && !hasHangul) return `${humanizePresetId(fallbackId)} 그룹`;
+  if (hasCjk && !hasHangul && !hasLatin) return `${humanizePresetId(fallbackId)} Group`;
+  if (hasLatin && !hasHangul) return `${humanizePresetId(fallbackId)} Group`;
   return trimmed;
+}
+
+function hashPresetLabel(value: string) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function isSuspiciousPresetLabel(value: string) {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) return true;
+  if (SUSPICIOUS_PRESET_TEXT_RE.test(trimmed)) return true;
+  const questionCount = (trimmed.match(/\?/g) ?? []).length;
+  if (questionCount >= 2) return true;
+  const hasHangul = /[\uAC00-\uD7A3]/.test(trimmed);
+  const hasLatin = /[A-Za-z]/.test(trimmed);
+  const hasCjk = /[\u4E00-\u9FFF]/.test(trimmed);
+  if (hasCjk && !hasHangul && !hasLatin) return true;
+  return false;
+}
+
+function normalizePresetLabel(value: string, fallbackPrefix: string) {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) return fallbackPrefix;
+  if (!isSuspiciousPresetLabel(trimmed)) return trimmed;
+  const ascii = trimmed.replace(/[^A-Za-z0-9]+/g, " ").trim();
+  const base = ascii || fallbackPrefix;
+  const hash = hashPresetLabel(trimmed).slice(0, 6);
+  return `${base} ${hash}`;
+}
+
+function sanitizePresetNodes(nodes: Record<string, Node>, prefix: string) {
+  Object.values(nodes).forEach((node) => {
+    node.name = normalizePresetLabel(node.name, `${prefix} Node`);
+    if (node.text?.value) node.text.value = normalizePresetLabel(node.text.value, `${prefix} Text`);
+  });
+}
+
+function sanitizeDescription(value?: string) {
+  if (!value) return "";
+  return normalizePresetLabel(value, "Description");
 }
 
 function getTextMeasureContext() {
@@ -317,11 +257,11 @@ const IMAGE_FILE_ACCEPT =
   "image/*,.png,.jpg,.jpeg,.webp,.gif,.svg,.svgz,.avif,.bmp,.tif,.tiff,.ico,.heic,.heif,.apng,.jfif,.pjpeg,.pjp";
 
 const BREAKPOINT_PRESETS: PageBreakpoint[] = [
-  { id: "mobile-375", name: "모바일", width: 375, height: 812 },
-  { id: "mobile-390", name: "모바일+", width: 390, height: 844 },
-  { id: "tablet-768", name: "태블릿", width: 768, height: 1024 },
-  { id: "laptop-1280", name: "노트북", width: 1280, height: 800 },
-  { id: "desktop-1440", name: "데스크탑", width: 1440, height: 900 },
+  { id: "mobile-375", name: "Mobile 375", width: 375, height: 812 },
+  { id: "mobile-390", name: "Mobile 390", width: 390, height: 844 },
+  { id: "tablet-768", name: "Tablet 768", width: 768, height: 1024 },
+  { id: "laptop-1280", name: "Laptop 1280", width: 1280, height: 800 },
+  { id: "desktop-1440", name: "Desktop 1440", width: 1440, height: 900 },
 ];
 
 type CollabPresence = {
@@ -353,10 +293,18 @@ type PluginManifest = {
   actions: PluginAction[];
 };
 
+type EditorEvent = {
+  id: string;
+  ts: number;
+  kind: "selection" | "tool" | "panel" | "page" | "zoom" | "action";
+  detail: string;
+};
+
 const MAX_PLUGIN_MANIFESTS = 50;
 const MAX_PLUGIN_ACTIONS = 200;
 const MAX_PLUGIN_STEPS = 50;
 const MAX_PLUGIN_DEPTH = 4;
+const MAX_EVENT_LOG = 200;
 const ALLOWED_PLUGIN_ACTIONS = new Set([
   "macro",
   "align",
@@ -461,6 +409,15 @@ function readFileAsDataUrl(file: File) {
     reader.onload = () => resolve(String(reader.result ?? ""));
     reader.onerror = () => reject(reader.error ?? new Error("file_read_failed"));
     reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("file_read_failed"));
+    reader.readAsText(file);
   });
 }
 
@@ -631,7 +588,7 @@ function getSelectionBounds(doc: Doc, ids: string[]) {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
-/** Step 8: 포인터 위치에서 가장 위에 있는 노드 id (이벤트 위임용) */
+/** Step 8: hit test for node selection (reverse z-order). */
 function getNodeIdAtPoint(doc: Doc, pageRoot: string, point: { x: number; y: number }, excludeIds: Set<string>): string | null {
   const ids = flattenIds(doc, pageRoot).filter((id) => id !== pageRoot && !excludeIds.has(id));
   for (let i = ids.length - 1; i >= 0; i--) {
@@ -645,7 +602,7 @@ function getNodeIdAtPoint(doc: Doc, pageRoot: string, point: { x: number; y: num
   return null;
 }
 
-/** Step 8: 노드 하나 렌더 (React.memo + 커스텀 비교) */
+/** Step 8: flatten tree ids (preorder). */
 function flattenIds(doc: Doc, parentId: string): string[] {
   const parent = doc.nodes[parentId];
   if (!parent) return [];
@@ -709,7 +666,7 @@ function ensureBasePage(doc: Doc) {
 function getNextPageName(pages: Doc["pages"]) {
   const used = new Set<number>();
   pages.forEach((page) => {
-    const match = page.name.match(/^페이지\s*(\d+)$/);
+    const match = page.name.match(/^Page\s*(\d+)$/i);
     if (match) {
       const value = Number(match[1]);
       if (Number.isFinite(value)) used.add(value);
@@ -717,7 +674,7 @@ function getNextPageName(pages: Doc["pages"]) {
   });
   let index = 1;
   while (used.has(index)) index += 1;
-  return `페이지 ${index}`;
+  return `Page ${index}`;
 }
 
 function toLabel(node: Node) {
@@ -965,31 +922,27 @@ function buildSpecLines(doc: Doc, node: Node) {
     `W ${Math.round(node.frame.w)} H ${Math.round(node.frame.h)}`,
     `Fill ${fill}`,
     `Stroke ${stroke.width}px ${stroke.color}`,
-    `Page ${Math.round(node.style.opacity * 100)}%`,
+    `Opacity ${Math.round(node.style.opacity * 100)}%`,
   ];
   if (typeof node.style.radius === "number") {
-    lines.push(`모서리 ${Math.round(node.style.radius)}px`);
+    lines.push(`Corner radius ${Math.round(node.style.radius)}px`);
   } else if (node.style.radius) {
-    lines.push(
-      `모서리 ${Math.round(node.style.radius.tl)}/${Math.round(node.style.radius.tr)}/${Math.round(node.style.radius.br)}/${Math.round(node.style.radius.bl)}`,
-    );
+    lines.push(`Corner radius ${Math.round(node.style.radius.tl)}/${Math.round(node.style.radius.tr)}/${Math.round(node.style.radius.br)}/${Math.round(node.style.radius.bl)}`);
   }
   if (node.type === "text") {
     const style = resolveTextStyle(doc, node);
     if (style) {
-      lines.push(`타이포 ${style.fontFamily} ${style.fontSize}px ${style.fontWeight}`);
-      lines.push(`행간 ${style.lineHeight} 자간 ${style.letterSpacing}`);
+      lines.push(`Font ${style.fontFamily} ${style.fontSize}px ${style.fontWeight}`);
+      lines.push(`Line height ${style.lineHeight} Letter spacing ${style.letterSpacing}`);
     }
   }
   if (node.layout?.mode === "auto") {
-      lines.push(
-        `자동 ${node.layout.dir} 간격 ${node.layout.gap} 패딩 ${node.layout.padding.t}/${node.layout.padding.r}/${node.layout.padding.b}/${node.layout.padding.l} ${node.layout.align} ${node.layout.wrap ? "wrap" : "nowrap"}`,
-      );
+    lines.push(`Auto layout ${node.layout.dir} gap ${node.layout.gap} padding ${node.layout.padding.t}/${node.layout.padding.r}/${node.layout.padding.b}/${node.layout.padding.l} ${node.layout.align} ${node.layout.wrap ? "wrap" : "nowrap"}`);
   } else {
-    lines.push("레이아웃 고정");
+    lines.push("Fixed layout");
   }
   if (node.layoutSizing) {
-    lines.push(`사이징 W ${node.layoutSizing.width} H ${node.layoutSizing.height}`);
+    lines.push(`Sizing W ${node.layoutSizing.width} H ${node.layoutSizing.height}`);
   }
   const constraintLabels: Array<[keyof NonNullable<Node["constraints"]>, string]> = [
     ["left", "L"],
@@ -1004,26 +957,26 @@ function buildSpecLines(doc: Doc, node: Node) {
   const activeConstraints = constraintLabels
     .filter(([key]) => node.constraints?.[key])
     .map(([, label]) => label);
-  if (activeConstraints.length) lines.push(`제약 ${activeConstraints.join(" ")}`);
-  if (fillStyleName) lines.push(`채우기 스타일 ${fillStyleName}`);
-  if (fillVarName) lines.push(`채우기 변수 ${fillVarName}`);
-  if (strokeStyleName) lines.push(`테두리 스타일 ${strokeStyleName}`);
-  if (textStyleName) lines.push(`텍스트 스타일 ${textStyleName}`);
-  if (node.type === "component") lines.push("컴포넌트 마스터");
-  if (node.type === "instance" && componentName) lines.push(`인스턴스 ${componentName}`);
+  if (activeConstraints.length) lines.push(`Constraints ${activeConstraints.join(" ")}`);
+  if (fillStyleName) lines.push(`Fill style ${fillStyleName}`);
+  if (fillVarName) lines.push(`Fill variable ${fillVarName}`);
+  if (strokeStyleName) lines.push(`Stroke style ${strokeStyleName}`);
+  if (textStyleName) lines.push(`Text style ${textStyleName}`);
+  if (node.type === "component") lines.push("Component root");
+  if (node.type === "instance" && componentName) lines.push(`Instance of ${componentName}`);
   return lines;
 }
 
 function buildSelectionAnnounceText(doc: Doc, ids: string[]): string {
-  if (!ids.length) return "선택 없음";
-  if (ids.length > 1) return `${ids.length}개 레이어 선택`;
+  if (!ids.length) return "No selection";
+  if (ids.length > 1) return `${ids.length} nodes selected`;
   const node = doc.nodes[ids[0]];
-  if (!node) return "선택 없음";
+  if (!node) return "No selection";
   const label = toLabel(node);
   const typeLabel = NODE_TYPE_LABELS[node.type] ?? node.type;
   const w = Math.round(node.frame.w);
   const h = Math.round(node.frame.h);
-  return `${label}, ${typeLabel}, 너비 ${w} 픽셀, 높이 ${h} 픽셀`;
+  return `${label}, ${typeLabel}, W ${w} H ${h}`;
 }
 
 function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; filterId?: string }) {
@@ -1231,7 +1184,7 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
       );
     }
     case "text": {
-      const text = resolveTextTokens(doc, node.text?.value ?? "텍스트");
+      const text = resolveTextTokens(doc, node.text?.value ?? "Text");
       const style = resolveTextStyle(doc, node) ?? DEFAULT_TEXT_STYLE;
       const fontSize = style.fontSize ?? 16;
       const align = style.align ?? "left";
@@ -1976,7 +1929,8 @@ export default function AdvancedEditor() {
   const collabInviteKey = pageId ? `${COLLAB_INVITE_STORAGE_PREFIX}${pageId}` : "";
   const [doc, setDoc] = useState<Doc>(() => createDoc());
   const [activePageId, setActivePageId] = useState<string | null>(null);
-  /** SSR 시 doc ID가 서버/클라이언트에서 달라 하이드레이션 오류가 나지 않도록, 런타임 렌더러는 마운트 후에만 렌더 */
+  /** SSR doc ID (client-only guard). */
+
   const [canvasMounted, setCanvasMounted] = useState(false);
   useEffect(() => {
     setCanvasMounted(true);
@@ -1991,6 +1945,10 @@ export default function AdvancedEditor() {
   const [title, setTitle] = useState<string>("");
   const [gridSnap, setGridSnap] = useState(true);
   const gridSnapRef = useRef(gridSnap);
+  const [guideSnap, setGuideSnap] = useState(true);
+  const guideSnapRef = useRef(guideSnap);
+  const [gridSize, setGridSize] = useState(GRID);
+  const gridSizeRef = useRef(gridSize);
   const [pixelSnap, setPixelSnap] = useState(false);
   const pixelSnapRef = useRef(pixelSnap);
   const [repeatGridOpen, setRepeatGridOpen] = useState(false);
@@ -2002,23 +1960,55 @@ export default function AdvancedEditor() {
     gridSnapRef.current = gridSnap;
   }, [gridSnap]);
   useEffect(() => {
+    guideSnapRef.current = guideSnap;
+  }, [guideSnap]);
+  useEffect(() => {
+    gridSizeRef.current = gridSize;
+  }, [gridSize]);
+  useEffect(() => {
     pixelSnapRef.current = pixelSnap;
   }, [pixelSnap]);
+  const snapValue = useCallback((value: number, gridEnabled: boolean, axis?: "x" | "y") => {
+    const gridValue = snap(value, gridEnabled, gridSizeRef.current);
+    if (!axis || !guideSnapRef.current) return gridValue;
+    const guides = axis === "x" ? docRef.current.view.guides?.x : docRef.current.view.guides?.y;
+    if (!guides || guides.length === 0) return gridValue;
+    const zoom = Math.max(0.05, docRef.current.view.zoom || 1);
+    const threshold = 6 / zoom;
+    let best = gridValue;
+    let bestDist = threshold + 1;
+    for (const guide of guides) {
+      const dist = Math.abs(guide - value);
+      if (dist <= threshold && dist < bestDist) {
+        best = guide;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }, []);
   const [layerQuery, setLayerQuery] = useState<string>("");
   const [layerExpandedIds, setLayerExpandedIds] = useState<Set<string>>(() => new Set());
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  /** 우클릭 메뉴 서브메뉴: "더 보기" 열림 여부 (8번) */
+  /** NOTE: comment removed (encoding issue). */
   const [contextMenuSubMenu, setContextMenuSubMenu] = useState<"more" | null>(null);
   const [newStyleName, setNewStyleName] = useState<string>("");
+  const [styleSearch, setStyleSearch] = useState<string>("");
+  const [styleTypeFilter, setStyleTypeFilter] = useState<"all" | "fill" | "stroke" | "text" | "effect">("all");
   const [styleApplyScope, setStyleApplyScope] = useState<"selection" | "page" | "document">("selection");
+  const [variableSearch, setVariableSearch] = useState<string>("");
+  const [variableTypeFilter, setVariableTypeFilter] = useState<"all" | VariableType>("all");
   const [newVariableName, setNewVariableName] = useState<string>("");
   const [newVariableType, setNewVariableType] = useState<VariableType>("color");
   const [newVariableValue, setNewVariableValue] = useState<string>("#111111");
   const [newVariableBool, setNewVariableBool] = useState<boolean>(false);
   const [newVariableModeName, setNewVariableModeName] = useState<string>("");
   const [swapComponentId, setSwapComponentId] = useState<string>("");
+  const [componentSearch, setComponentSearch] = useState<string>("");
   const [componentPropName, setComponentPropName] = useState<string>("");
   const [componentPropKind, setComponentPropKind] = useState<"text" | "boolean" | "instance">("text");
+  const [componentVersionName, setComponentVersionName] = useState<string>("");
+  const [variantEditId, setVariantEditId] = useState<string | null>(null);
+  const [variantEditName, setVariantEditName] = useState<string>("");
   const [bulkImageScope, setBulkImageScope] = useState<"selection" | "page" | "document">("page");
   const [bulkImageUrl, setBulkImageUrl] = useState<string>("");
   const [newBreakpointName, setNewBreakpointName] = useState<string>("");
@@ -2042,6 +2032,8 @@ export default function AdvancedEditor() {
   const [exportScale, setExportScale] = useState(1);
   const [exportScope, setExportScope] = useState<"page" | "selection">("page");
   const [exportContentOnly, setExportContentOnly] = useState(false);
+  const [tokenImportMode, setTokenImportMode] = useState<"merge" | "replace">("merge");
+  const tokenImportRef = useRef<HTMLInputElement | null>(null);
   const [radiusExpanded, setRadiusExpanded] = useState(false);
   const [devMeasure, setDevMeasure] = useState(true);
   const [devSpecOverlay, setDevSpecOverlay] = useState(true);
@@ -2061,7 +2053,7 @@ export default function AdvancedEditor() {
   const [versionRestoring, setVersionRestoring] = useState<string | null>(null);
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
   const [isOwner, setIsOwner] = useState(false);
-  /** H1: 버전별 노드 수(비교·diff 표시용). versionId -> nodeCount */
+  /** NOTE: comment removed (encoding issue). */
   const [versionPreviewNodeCount, setVersionPreviewNodeCount] = useState<Record<string, number>>({});
   const [versionPreviewNodeIds, setVersionPreviewNodeIds] = useState<Record<string, string[]>>({});
   const [versionPreviewNodeIdsTruncated, setVersionPreviewNodeIdsTruncated] = useState<Record<string, boolean>>({});
@@ -2121,14 +2113,30 @@ export default function AdvancedEditor() {
   const [auditMode, setAuditMode] = useState(false);
   const [auditScope, setAuditScope] = useState<"page" | "document">("page");
   const [auditFilter, setAuditFilter] = useState<"all" | "contrast" | "font-size" | "tiny" | "opacity">("all");
+  const [auditSearch, setAuditSearch] = useState<string>("");
+  const [eventLog, setEventLog] = useState<EditorEvent[]>([]);
+  const [eventLogFilter, setEventLogFilter] = useState<EditorEvent["kind"] | "all">("all");
+  const [eventLogPaused, setEventLogPaused] = useState(false);
   const [installedPlugins, setInstalledPlugins] = useState<PluginManifest[]>([]);
+  const eventLogPausedRef = useRef(eventLogPaused);
+  useEffect(() => {
+    eventLogPausedRef.current = eventLogPaused;
+  }, [eventLogPaused]);
+  const pushEditorEvent = useCallback((kind: EditorEvent["kind"], detail: string) => {
+    if (eventLogPausedRef.current) return;
+    setEventLog((prev) => {
+      const next: EditorEvent[] = [{ id: makeRuntimeId("evt"), ts: Date.now(), kind, detail }, ...prev];
+      if (next.length > MAX_EVENT_LOG) next.length = MAX_EVENT_LOG;
+      return next;
+    });
+  }, []);
   const [pluginJson, setPluginJson] = useState("");
   const [pluginError, setPluginError] = useState<string | null>(null);
 
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
-  /** §7.1 제약 카운터: 플랜별 Buttons/Text/Image 상한 */
+  /** NOTE: comment removed (encoding issue). */
   const [planFeatures, setPlanFeatures] = useState<{ maxButtons: number; maxTexts: number; maxImages: number } | null>(null);
-  /** §7.1 Undo/Redo 버튼 활성화용 스택 길이 */
+  /** NOTE: comment removed (encoding issue). */
   const [undoStackLen, setUndoStackLen] = useState(0);
   const [redoStackLen, setRedoStackLen] = useState(0);
   const [infiniteCanvasPages, setInfiniteCanvasPages] = useState<Record<string, boolean>>({});
@@ -2138,16 +2146,16 @@ export default function AdvancedEditor() {
   const [previewScaleMode, setPreviewScaleMode] = useState<"auto" | "manual">("auto");
   const [previewScaleManual, setPreviewScaleManual] = useState(1);
   const [leftSections, setLeftSections] = useState({ pages: true, elements: true, resources: true, layers: true });
-  /** 좌측 패널 탭: 페이지 | 레이어 | 자산 (8번 에디터 UI) */
+  /** NOTE: comment removed (encoding issue). */
   const [leftPanelTab, setLeftPanelTab] = useState<"pages" | "layers" | "assets">("layers");
-  /** 자산 탭 카테고리별 접이식(아코디언) 열림 상태. 키: PRESET_GROUPS[].title */
+  /** NOTE: comment removed (encoding issue). */
   const [assetsAccordionOpen, setAssetsAccordionOpen] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(ALL_PRESET_GROUPS.map((g) => [g.title, true])),
   );
   const toggleAssetsAccordion = useCallback((title: string) => {
     setAssetsAccordionOpen((prev) => ({ ...prev, [title]: !prev[title] }));
   }, []);
-  /** 우측 패널(디자인) 섹션 접기: 기하 | 채우기·테두리 | 레이아웃 | 텍스트 | 프로토타입 | 변수 */
+  /** NOTE: comment removed (encoding issue). */
   const [rightPanelSections, setRightPanelSections] = useState({
     geometry: true,
     fillStroke: true,
@@ -2159,7 +2167,7 @@ export default function AdvancedEditor() {
     dataBinding: true,
     variables: true,
   });
-  /** 툴바 그룹별 드롭다운 열림 (8번) */
+  /** NOTE: comment removed (encoding issue). */
   const [toolbarDropdown, setToolbarDropdown] = useState<string | null>(null);
   const toolbarDropdownRef = useRef<HTMLButtonElement | null>(null);
   const [toolbarDropdownRect, setToolbarDropdownRect] = useState({ left: 0, top: 0 });
@@ -2170,10 +2178,10 @@ export default function AdvancedEditor() {
     const r = el.getBoundingClientRect();
     setToolbarDropdownRect({ left: r.left, top: r.bottom + 4 });
   }, [toolbarDropdown]);
-  /** 툴바 오버플로우(…) 팝오버 열림 */
+  /** NOTE: comment removed (encoding issue). */
   const [toolbarOverflowOpen, setToolbarOverflowOpen] = useState(false);
   const toolbarOverflowRef = useRef<HTMLButtonElement | null>(null);
-  /** Figma 임포트 모달 */
+  /** NOTE: comment removed (encoding issue). */
   const [figmaImportOpen, setFigmaImportOpen] = useState(false);
   const [figmaImportFileKey, setFigmaImportFileKey] = useState("");
   const [figmaImportNodeId, setFigmaImportNodeId] = useState("");
@@ -2189,6 +2197,8 @@ export default function AdvancedEditor() {
     setToolbarOverflowRect({ left: r.right - 180, top: r.bottom + 4 });
   }, [toolbarOverflowOpen]);
   const [elementQuery, setElementQuery] = useState("");
+  const [templateQuery, setTemplateQuery] = useState("");
+  const [assetTagFilters, setAssetTagFilters] = useState<string[]>([]);
   const [resourceQuery, setResourceQuery] = useState("");
   const [layerTypeFilter, setLayerTypeFilter] = useState<string>("all");
   const [layerSort, setLayerSort] = useState<"tree" | "name">("tree");
@@ -2247,11 +2257,11 @@ export default function AdvancedEditor() {
   const livePreviewRef = useRef(false);
 
   const dragRef = useRef<DragState | null>(null);
-  /** Step 8: move 드래그 중 임시 오프셋만 반영, mouseUp 시점에만 commit */
+  /** NOTE: comment removed (encoding issue). */
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
   const dragDeltaRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
   const [marquee, setMarquee] = useState<Rect | null>(null);
-  /** 펜 도구: 패스 편집 중인 노드·앵커. addStart 있으면 다음 pointer up에서 새 앵커 추가(클릭=직선, 드래그=곡선) */
+  /** NOTE: comment removed (encoding issue). */
   const [pathEditState, setPathEditState] = useState<{
     nodeId: string;
     anchors: PathAnchor[];
@@ -2292,7 +2302,7 @@ export default function AdvancedEditor() {
     livePreviewRef.current = livePreview;
   }, [livePreview]);
 
-  /** §7.1 플랜 제약: /api/me → maxButtons, maxTexts, maxImages */
+  /** NOTE: comment removed (encoding issue). */
   useEffect(() => {
     fetch("/api/me", { credentials: "include" })
       .then((res) => (res.ok ? res.json() : null))
@@ -2309,7 +2319,7 @@ export default function AdvancedEditor() {
       .catch(() => null);
   }, []);
 
-  /** §7.1 제약 카운터: Buttons(인터랙션 있는 노드), Text, Image 개수 */
+  /** NOTE: comment removed (encoding issue). */
   const constraintCounts = useMemo(() => {
     const nodes = Object.values(doc.nodes);
     return {
@@ -2815,7 +2825,7 @@ export default function AdvancedEditor() {
         });
         const data = await res.json().catch(() => null);
         if (!res.ok) {
-          setMessage(data?.error ?? "restore_failed");
+        setMessage("Invalid image URL.");
           return;
         }
         setCurrentVersionId(versionId);
@@ -2860,7 +2870,7 @@ export default function AdvancedEditor() {
       .then(async (res) => {
         const data = await res.json().catch(() => null);
         if (!res.ok) {
-          setMessage(data?.error ?? "comment_failed");
+        setMessage("Invalid image URL.");
           return;
         }
         setPendingComment(null);
@@ -3039,10 +3049,62 @@ export default function AdvancedEditor() {
   const activeExportPageId = exportPageId ?? prototypeStartPageId;
   const activePreviewPage = doc.pages.find((page) => page.id === activePreviewPageId) ?? doc.pages[0];
   const activePreviewBreakpoints = activePreviewPage?.breakpoints ?? [];
+  const lastSelectionRef = useRef<string>("");
+  const lastToolRef = useRef<Tool | null>(null);
+  const lastPanelRef = useRef<typeof panelMode | null>(null);
+  const lastPageRef = useRef<string | null>(null);
+  const lastZoomRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setVariantEditId(null);
+    setVariantEditName("");
+  }, [selectedNode?.id]);
 
   const renderGrid = showGrid && !performanceMode;
   const renderPixelGrid = showPixelGrid && !performanceMode;
   const renderLayoutGrid = showLayoutGrid && !performanceMode;
+
+  useEffect(() => {
+    if (lastToolRef.current === tool) return;
+    lastToolRef.current = tool;
+    pushEditorEvent("tool", tool);
+  }, [tool, pushEditorEvent]);
+
+  useEffect(() => {
+    if (lastPanelRef.current === panelMode) return;
+    lastPanelRef.current = panelMode;
+    pushEditorEvent("panel", panelMode);
+  }, [panelMode, pushEditorEvent]);
+
+  useEffect(() => {
+    if (lastPageRef.current === activePageId) return;
+    lastPageRef.current = activePageId;
+    const page = doc.pages.find((p) => p.id === activePageId);
+    pushEditorEvent("page", page?.name ?? activePageId ?? "unknown");
+  }, [activePageId, doc.pages, pushEditorEvent]);
+
+  useEffect(() => {
+    if (lastSelectionRef.current === selectionSignature) return;
+    lastSelectionRef.current = selectionSignature;
+    if (!selectedIds.length) {
+      pushEditorEvent("selection", "none");
+      return;
+    }
+    const labels = selectedIds
+      .slice(0, 3)
+      .map((id) => doc.nodes[id])
+      .filter((node): node is Node => Boolean(node))
+      .map((node) => toLabel(node));
+    const extra = selectedIds.length > 3 ? ` +${selectedIds.length - 3}` : "";
+    pushEditorEvent("selection", `${selectedIds.length}: ${labels.join(", ")}${extra}`);
+  }, [selectionSignature, selectedIds, doc, pushEditorEvent]);
+
+  useEffect(() => {
+    const zoom = doc.view.zoom;
+    if (lastZoomRef.current === zoom) return;
+    lastZoomRef.current = zoom;
+    pushEditorEvent("zoom", `${Math.round(zoom * 100)}%`);
+  }, [doc.view.zoom, pushEditorEvent]);
 
   useEffect(() => {
     if (!collabEnabled) return;
@@ -3058,38 +3120,38 @@ export default function AdvancedEditor() {
     () => [
       {
         id: "builtin.layout",
-        name: "정렬/분배",
-        description: "정렬/분배 도구",
+        name: "Layout",
+        description: "Alignment and distribution tools",
         actions: [
-          { id: "align-left", label: "왼쪽 정렬", type: "align", params: { kind: "l" } },
-          { id: "align-center", label: "가로 가운데", type: "align", params: { kind: "hc" } },
-          { id: "align-right", label: "오른쪽 정렬", type: "align", params: { kind: "r" } },
-          { id: "align-top", label: "위쪽 정렬", type: "align", params: { kind: "t" } },
-          { id: "align-middle", label: "세로 가운데", type: "align", params: { kind: "vc" } },
-          { id: "align-bottom", label: "아래쪽 정렬", type: "align", params: { kind: "b" } },
-          { id: "distribute-h", label: "가로 분배", type: "distribute", params: { axis: "h" } },
-          { id: "distribute-v", label: "세로 분배", type: "distribute", params: { axis: "v" } },
+          { id: "align-left", label: "Align Left", type: "align", params: { kind: "l" } },
+          { id: "align-center", label: "Align Center", type: "align", params: { kind: "hc" } },
+          { id: "align-right", label: "Align Right", type: "align", params: { kind: "r" } },
+          { id: "align-top", label: "Align Top", type: "align", params: { kind: "t" } },
+          { id: "align-middle", label: "Align Middle", type: "align", params: { kind: "vc" } },
+          { id: "align-bottom", label: "Align Bottom", type: "align", params: { kind: "b" } },
+          { id: "distribute-h", label: "Distribute Horizontal", type: "distribute", params: { axis: "h" } },
+          { id: "distribute-v", label: "Distribute Vertical", type: "distribute", params: { axis: "v" } },
         ],
       },
       {
         id: "builtin.export",
-        name: "내보내기",
-        description: "토큰/선택 내보내기",
+        name: "Export",
+        description: "Export assets and tokens",
         actions: [
-          { id: "export-tokens", label: "토큰 JSON", type: "exportTokens" },
-          { id: "export-selection-png", label: "선택 PNG", type: "exportSelectionPng" },
-          { id: "export-selection-svg", label: "선택 SVG", type: "exportSelectionSvg" },
+          { id: "export-tokens", label: "Export Tokens", type: "exportTokens" },
+          { id: "export-selection-png", label: "Export Selection PNG", type: "exportSelectionPng" },
+          { id: "export-selection-svg", label: "Export Selection SVG", type: "exportSelectionSvg" },
         ],
       },
       {
         id: "builtin.view",
-        name: "보기/격자",
-        description: "보기 설정",
+        name: "View",
+        description: "Canvas view toggles",
         actions: [
-          { id: "toggle-grid", label: "그리드 표시", type: "toggleGrid" },
-          { id: "toggle-pixel", label: "픽셀 그리드", type: "togglePixelGrid" },
-          { id: "toggle-audit", label: "검수 모드", type: "toggleAudit" },
-          { id: "toggle-performance", label: "성능 모드", type: "togglePerformance" },
+          { id: "toggle-grid", label: "Toggle Grid", type: "toggleGrid" },
+          { id: "toggle-pixel", label: "Toggle Pixel Grid", type: "togglePixelGrid" },
+          { id: "toggle-audit", label: "Toggle Audit Overlay", type: "toggleAudit" },
+          { id: "toggle-performance", label: "Toggle Performance Overlay", type: "togglePerformance" },
         ],
       },
     ],
@@ -3105,6 +3167,77 @@ export default function AdvancedEditor() {
 
   const builtinPluginIds = useMemo(() => new Set(builtinPlugins.map((plugin) => plugin.id)), [builtinPlugins]);
 
+  type InteractionTimelineItem = {
+    id: string;
+    nodeId: string;
+    nodeName: string;
+    trigger: PrototypeTrigger;
+    actionLabel: string;
+    delayMs: number;
+    durationMs: number;
+    totalMs: number;
+  };
+  type InteractionTimelinePage = {
+    pageId: string;
+    pageName: string;
+    maxMs: number;
+    items: InteractionTimelineItem[];
+  };
+
+  const interactionTimeline = useMemo<InteractionTimelinePage[]>(() => {
+    const pageNameById = Object.fromEntries(doc.pages.map((p) => [p.id, p.name]));
+    return doc.pages
+      .map((page) => {
+        const rootId = page.rootId;
+        if (!rootId) return { pageId: page.id, pageName: page.name, items: [], maxMs: 0 };
+        const ids = flattenIds(doc, rootId);
+        const items: InteractionTimelineItem[] = [];
+        ids.forEach((id) => {
+          const node = doc.nodes[id];
+          const interactions = node?.prototype?.interactions ?? [];
+          interactions.forEach((interaction) => {
+            const action = interaction.action;
+            const delayMs = "delayMs" in action && typeof action.delayMs === "number" ? action.delayMs : 0;
+            const transition = "transition" in action ? action.transition : undefined;
+            const durationMs =
+              transition && transition.type !== "instant"
+                ? typeof transition.duration === "number"
+                  ? transition.duration
+                  : 300
+                : 0;
+            let actionLabel: string = action.type;
+            if (action.type === "navigate") actionLabel = `navigate -> ${pageNameById[action.targetPageId] ?? action.targetPageId}`;
+            if (action.type === "overlay") actionLabel = `overlay -> ${pageNameById[action.targetPageId] ?? action.targetPageId}`;
+            if (action.type === "back") actionLabel = "back";
+            if (action.type === "closeOverlay") actionLabel = "close overlay";
+            if (action.type === "url") actionLabel = "url";
+            if (action.type === "submit") actionLabel = "submit";
+            if (action.type === "setVariable") actionLabel = `set var: ${action.variableId}`;
+            if (action.type === "scrollTo") actionLabel = "scroll to";
+            if (action.type === "setVariant") actionLabel = `set variant: ${action.variantId}`;
+            if (action.type === "apiCall") actionLabel = "api call";
+            if (action.type === "nativeCall") actionLabel = `native: ${action.name}`;
+            if (action.type === "appAuth") actionLabel = `auth: ${action.action}`;
+            const totalMs = Math.max(0, delayMs + durationMs);
+            items.push({
+              id: interaction.id,
+              nodeId: node?.id ?? id,
+              nodeName: node ? toLabel(node) : id,
+              trigger: interaction.trigger,
+              actionLabel,
+              delayMs,
+              durationMs,
+              totalMs,
+            });
+          });
+        });
+        const maxMs = items.reduce((acc, item) => Math.max(acc, item.totalMs), 0);
+        const sorted = items.slice().sort((a, b) => a.totalMs - b.totalMs);
+        return { pageId: page.id, pageName: page.name, items: sorted, maxMs: Math.max(200, maxMs) };
+      })
+      .filter((entry) => entry.items.length);
+  }, [doc]);
+
   const interactionTree = useMemo(() => {
     const pageNameById = Object.fromEntries(doc.pages.map((p) => [p.id, p.name]));
     return doc.pages
@@ -3119,24 +3252,24 @@ export default function AdvancedEditor() {
           interactions.forEach((interaction) => {
             const action = interaction.action;
             let actionLabel: string = action.type;
-            if (action.type === "navigate") actionLabel = `페이지 이동: ${pageNameById[action.targetPageId] ?? action.targetPageId}`;
-            if (action.type === "overlay") actionLabel = `오버레이: ${pageNameById[action.targetPageId] ?? action.targetPageId}`;
-            if (action.type === "back") actionLabel = "뒤로";
-            if (action.type === "closeOverlay") actionLabel = "오버레이 닫기";
+            if (action.type === "navigate") actionLabel = "Label";
+            if (action.type === "overlay") actionLabel = "Label";
+            if (action.type === "back") actionLabel = "Label";
+            if (action.type === "closeOverlay") actionLabel = "Label";
             if (action.type === "url") actionLabel = `URL: ${action.url}`;
-            if (action.type === "submit") actionLabel = `전송: ${action.url}`;
-            if (action.type === "setVariable") actionLabel = `변수 설정: ${action.variableId}`;
-            if (action.type === "scrollTo") actionLabel = `스크롤 이동: ${action.targetNodeId}`;
-            if (action.type === "setVariant") actionLabel = `변형 설정: ${action.variantId}`;
-            if (action.type === "apiCall") actionLabel = `API 호출: ${action.url}`;
+            if (action.type === "submit") actionLabel = "Label";
+            if (action.type === "setVariable") actionLabel = "Label";
+            if (action.type === "scrollTo") actionLabel = "Label";
+            if (action.type === "setVariant") actionLabel = "Label";
+            if (action.type === "apiCall") actionLabel = "Label";
             if (action.type === "nativeCall") {
               const cmd = findNativeCommand(action.name);
               const label = cmd ? `${cmd.title} (${cmd.name})` : (action.name ?? "");
-              actionLabel = `네이티브 호출: ${label}`;
+              actionLabel = "Label";
             }
-            if (action.type === "appAuth") actionLabel = `앱 인증: ${action.action}`;
+            if (action.type === "appAuth") actionLabel = "Label";
             if ("condition" in action && action.condition?.variableId) {
-              actionLabel += ` (조건: ${action.condition.variableId})`;
+              actionLabel += " (Label)";
             }
             items.push({
               id: interaction.id,
@@ -3170,7 +3303,7 @@ export default function AdvancedEditor() {
           nodeId: id,
           kind: "opacity",
           severity: "warn",
-          message: `투명도 ${Math.round(opacity * 100)}%`,
+          message: `Opacity ${Math.round(opacity * 100)}%`,
           frame: { ...frame },
         });
       }
@@ -3180,7 +3313,7 @@ export default function AdvancedEditor() {
           nodeId: id,
           kind: "tiny",
           severity: "warn",
-          message: `작은 요소 ${Math.round(frame.w)}x${Math.round(frame.h)}`,
+          message: "Label",
           frame: { ...frame },
         });
       }
@@ -3193,7 +3326,7 @@ export default function AdvancedEditor() {
             nodeId: id,
             kind: "font-size",
             severity: "warn",
-            message: `글자 크기 ${Math.round(fontSize)}px`,
+            message: "Label",
             frame: { ...frame },
           });
         }
@@ -3209,7 +3342,7 @@ export default function AdvancedEditor() {
               nodeId: id,
               kind: "contrast",
               severity: "error",
-              message: `대비 ${ratio.toFixed(2)}`,
+              message: `Contrast ${ratio.toFixed(2)}`,
               frame: { ...frame },
             });
           }
@@ -3219,11 +3352,19 @@ export default function AdvancedEditor() {
     return issues;
   }, [doc, auditMode, auditScope, activePageId, pageRoot]);
 
+  const auditSearchText = auditSearch.trim().toLowerCase();
   const filteredAuditIssues = useMemo(() => {
     if (!auditMode) return [] as AuditIssue[];
-    if (auditFilter === "all") return auditIssues;
-    return auditIssues.filter((issue) => issue.kind === auditFilter);
-  }, [auditIssues, auditFilter, auditMode]);
+    const base = auditFilter === "all"
+      ? auditIssues
+      : auditIssues.filter((issue) => issue.kind === auditFilter);
+    if (!auditSearchText) return base;
+    return base.filter((issue) => {
+      const nodeName = doc.nodes[issue.nodeId]?.name ?? "";
+      return issue.message.toLowerCase().includes(auditSearchText) ||
+        nodeName.toLowerCase().includes(auditSearchText);
+    });
+  }, [auditIssues, auditFilter, auditMode, auditSearchText, doc.nodes]);
 
   const auditCounts = useMemo(() => {
     const base: Record<AuditIssue["kind"], number> = { contrast: 0, "font-size": 0, tiny: 0, opacity: 0 };
@@ -3325,7 +3466,7 @@ export default function AdvancedEditor() {
     return { x: xs, y: ys };
   }, [canvasSize.height, canvasSize.width, doc.view.panX, doc.view.panY, doc.view.zoom, showRulers]);
 
-  /** 뷰포트(문서 좌표) + 여유: 컬링·LOD용. EXECUTION_ORDER 7 */
+  /** NOTE: comment removed (encoding issue). */
   const viewportRect = useMemo(() => {
     const { panX, panY, zoom } = doc.view;
     const margin = 200;
@@ -3334,7 +3475,7 @@ export default function AdvancedEditor() {
     return { x: panX - margin, y: panY - margin, w, h };
   }, [canvasSize.width, canvasSize.height, doc.view.panX, doc.view.panY, doc.view.zoom]);
 
-  /** 뷰포트와 겹치는 노드 id + 선택 노드(항상 표시). 가상화(컬링) */
+  /** NOTE: comment removed (encoding issue). */
   const visibleNodeIds = useMemo(() => {
     const all = flattenIds(doc, pageRoot).filter((id) => id !== pageRoot);
     const inViewport = all.filter((id) => {
@@ -3417,7 +3558,7 @@ export default function AdvancedEditor() {
     setDoc(next);
   }, []);
 
-  /** §7.1 상단 Undo/Redo 버튼용 */
+  /** NOTE: comment removed (encoding issue). */
   const doUndo = useCallback(() => {
     const prev = undoRef.current.pop();
     if (prev) {
@@ -3712,8 +3853,8 @@ export default function AdvancedEditor() {
     const pt = svgPoint(e);
 
     const node = createNode(type);
-    node.frame.x = snap(pt.x, gridSnap);
-    node.frame.y = snap(pt.y, gridSnap);
+    node.frame.x = snapValue(pt.x, gridSnap, "x");
+    node.frame.y = snapValue(pt.y, gridSnap, "y");
     node.frame.w = 1;
     node.frame.h = 1;
 
@@ -3877,8 +4018,8 @@ export default function AdvancedEditor() {
       }
       const o = drag.origins[drag.ids[0]];
       if (o) {
-        const dx = snap(o.x + moveX, snapped) - o.x;
-        const dy = snap(o.y + moveY, snapped) - o.y;
+        const dx = snapValue(o.x + moveX, snapped, "x") - o.x;
+        const dy = snapValue(o.y + moveY, snapped, "y") - o.y;
         dragDeltaRef.current = { dx, dy };
         setDragDelta({ dx, dy });
         if (collabEnabled && !collabApplyingRemoteRef.current) {
@@ -3902,15 +4043,15 @@ export default function AdvancedEditor() {
       let w = origin.w;
       let h = origin.h;
 
-      if (drag.handle.includes("e")) w = snap(Math.max(20, origin.w + dx), gridSnap);
-      if (drag.handle.includes("s")) h = snap(Math.max(20, origin.h + dy), gridSnap);
+      if (drag.handle.includes("e")) w = snapValue(Math.max(20, origin.w + dx), gridSnap);
+      if (drag.handle.includes("s")) h = snapValue(Math.max(20, origin.h + dy), gridSnap);
       if (drag.handle.includes("w")) {
-        x = snap(origin.x + dx, gridSnap);
-        w = snap(Math.max(20, origin.w - dx), gridSnap);
+        x = snapValue(origin.x + dx, gridSnap, "x");
+        w = snapValue(Math.max(20, origin.w - dx), gridSnap);
       }
       if (drag.handle.includes("n")) {
-        y = snap(origin.y + dy, gridSnap);
-        h = snap(Math.max(20, origin.h - dy), gridSnap);
+        y = snapValue(origin.y + dy, gridSnap, "y");
+        h = snapValue(Math.max(20, origin.h - dy), gridSnap);
       }
 
       const keepRatio = e.shiftKey;
@@ -3918,20 +4059,20 @@ export default function AdvancedEditor() {
       if (keepRatio && origin.h !== 0) {
         const ratio = origin.w / origin.h;
         if (drag.handle.includes("e") || drag.handle.includes("w")) {
-          h = snap(Math.max(20, w / ratio), gridSnap);
-          y = snap(origin.y + (origin.h - h) / 2, gridSnap);
+          h = snapValue(Math.max(20, w / ratio), gridSnap);
+          y = snapValue(origin.y + (origin.h - h) / 2, gridSnap, "y");
         }
         if (drag.handle.includes("n") || drag.handle.includes("s")) {
-          w = snap(Math.max(20, h * ratio), gridSnap);
-          x = snap(origin.x + (origin.w - w) / 2, gridSnap);
+          w = snapValue(Math.max(20, h * ratio), gridSnap);
+          x = snapValue(origin.x + (origin.w - w) / 2, gridSnap, "x");
         }
       }
 
       if (fromCenter) {
         const cx = origin.x + origin.w / 2;
         const cy = origin.y + origin.h / 2;
-        x = snap(cx - w / 2, gridSnap);
-        y = snap(cy - h / 2, gridSnap);
+        x = snapValue(cx - w / 2, gridSnap, "x");
+        y = snapValue(cy - h / 2, gridSnap, "y");
       }
 
       const preview = updateFrames({ [drag.id]: { x, y, w, h, rotation: origin.rotation } }, false);
@@ -3971,10 +4112,10 @@ export default function AdvancedEditor() {
         {
           [drag.id]: {
             ...docRef.current.nodes[drag.id].frame,
-            x: snap(x, gridSnap),
-            y: snap(y, gridSnap),
-            w: snap(Math.max(4, w), gridSnap),
-            h: snap(Math.max(4, h), gridSnap),
+            x: snapValue(x, gridSnap, "x"),
+            y: snapValue(y, gridSnap, "y"),
+            w: snapValue(Math.max(4, w), gridSnap),
+            h: snapValue(Math.max(4, h), gridSnap),
           },
         },
         false,
@@ -4107,8 +4248,8 @@ export default function AdvancedEditor() {
       const state = pathEditStateRef.current;
       if (state && state.anchors.length > 0) {
         const snapped = gridSnapRef.current ?? false;
-        let x = snap(pt.x, snapped);
-        let y = snap(pt.y, snapped);
+        let x = snapValue(pt.x, snapped, "x");
+        let y = snapValue(pt.y, snapped, "y");
         if (e.shiftKey) {
           const last = state.anchors[state.anchors.length - 1];
           const dx = pt.x - last.x;
@@ -4229,7 +4370,7 @@ export default function AdvancedEditor() {
     const pt = svgPoint(e);
     const pageRoot = ensurePageRoot(docRef.current, activePageIdRef.current);
     const node = createNode("path");
-    const snapPt = { x: snap(pt.x, gridSnapRef.current ?? false), y: snap(pt.y, gridSnapRef.current ?? false) };
+    const snapPt = { x: snapValue(pt.x, gridSnapRef.current ?? false, "x"), y: snapValue(pt.y, gridSnapRef.current ?? false, "y") };
     node.frame.x = snapPt.x;
     node.frame.y = snapPt.y;
     node.frame.w = 1;
@@ -4317,7 +4458,7 @@ export default function AdvancedEditor() {
           return;
         }
         setPathEditState((prev) =>
-          prev ? { ...prev, addStart: { x: snap(pt.x, gridSnapRef.current ?? false), y: snap(pt.y, gridSnapRef.current ?? false) } } : null
+          prev ? { ...prev, addStart: { x: snapValue(pt.x, gridSnapRef.current ?? false, "x"), y: snapValue(pt.y, gridSnapRef.current ?? false, "y") } } : null
         );
         const capture = e.currentTarget as Element;
         capture.setPointerCapture(e.pointerId);
@@ -4478,7 +4619,7 @@ export default function AdvancedEditor() {
     if (!ids.length) return;
     const payload = buildClipboardPayload(docRef.current, ids);
     if (!payload) return;
-    const { nodes, rootIds } = cloneClipboardPayload(payload, { offset: GRID * 2 });
+    const { nodes, rootIds } = cloneClipboardPayload(payload, { offset: gridSizeRef.current * 2 });
     const next = cloneDoc(docRef.current);
     Object.assign(next.nodes, nodes);
     rootIds.forEach((id) => {
@@ -4547,8 +4688,8 @@ export default function AdvancedEditor() {
     const rootId = ensurePageRoot(draft, activePageId);
     const selection = Array.from(docRef.current.selection);
     const targetParent = selection.length ? draft.nodes[selection[0]]?.parentId ?? rootId : rootId;
-    const offset = GRID * 2 + pasteOffsetRef.current;
-    pasteOffsetRef.current += GRID * 2;
+    const offset = gridSizeRef.current * 2 + pasteOffsetRef.current;
+    pasteOffsetRef.current += gridSizeRef.current * 2;
     const { nodes, rootIds } = cloneClipboardPayload(payload, { offset, parentOverride: targetParent });
     Object.assign(draft.nodes, nodes);
     const parent = draft.nodes[targetParent];
@@ -4587,7 +4728,7 @@ export default function AdvancedEditor() {
     const dir = width >= height ? "row" : "column";
 
     const wrapper = makeFrameNode(
-      "오토 레이아웃",
+      "Label",
       { x: minX - parentAbs.x, y: minY - parentAbs.y, w: width, h: height, rotation: 0 },
       {
         fill: "#FFFFFF",
@@ -4674,7 +4815,7 @@ export default function AdvancedEditor() {
     const maxY = Math.max(...rects.map((r) => r.y + r.h));
 
     const group = createNode("group", {
-      name: "그룹",
+      name: "Label",
       frame: { x: minX - parentAbs.x, y: minY - parentAbs.y, w: maxX - minX, h: maxY - minY, rotation: 0 },
     });
 
@@ -4730,6 +4871,138 @@ export default function AdvancedEditor() {
     commit(next);
   }, [commit, activePageId]);
 
+  const flattenSelectionToPath = useCallback(() => {
+    const ids = Array.from(docRef.current.selection);
+    if (!ids.length) {
+      pushMessage("selection_required");
+      return;
+    }
+    const draft = cloneDoc(docRef.current);
+    const rootId = ensurePageRoot(draft, activePageId);
+    const converted: string[] = [];
+
+    ids.forEach((id) => {
+      const node = draft.nodes[id];
+      if (!node) return;
+      if (!["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(node.type)) return;
+      const abs = getAbsoluteFrame(draft, id);
+      if (!abs) return;
+      const d = buildPathFromNode(node, abs);
+      if (!d) return;
+      const bounds = pathDataToBounds(d, 0);
+      const parentId = node.parentId ?? rootId;
+      const parentAbs = parentId ? getAbsoluteFrame(draft, parentId) : null;
+      const relX = parentAbs ? bounds.x - parentAbs.x : bounds.x;
+      const relY = parentAbs ? bounds.y - parentAbs.y : bounds.y;
+      const localD = translatePathD(d, -bounds.x, -bounds.y);
+
+      const pathNode = createNode("path", {
+        name: node.name ?? "Path",
+        frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
+        shape: { pathData: localD },
+      });
+      pathNode.style = { ...cloneStyle(node.style), radius: undefined };
+      pathNode.layout = cloneLayout(node.layout);
+      pathNode.layoutSizing = node.layoutSizing ? { ...node.layoutSizing } : undefined;
+      pathNode.constraints = node.constraints ? { ...node.constraints } : undefined;
+      pathNode.data = node.data ? { ...node.data } : undefined;
+      pathNode.prototype = clonePrototype(node.prototype);
+      pathNode.locked = node.locked;
+      pathNode.hidden = node.hidden;
+      pathNode.clipContent = node.clipContent;
+
+      draft.nodes[pathNode.id] = pathNode;
+      pathNode.parentId = parentId;
+      const parent = draft.nodes[parentId];
+      if (parent) parent.children = parent.children.map((cid) => (cid === id ? pathNode.id : cid));
+      delete draft.nodes[id];
+      converted.push(pathNode.id);
+    });
+
+    if (!converted.length) {
+      pushMessage("vector_coming_soon");
+      return;
+    }
+    draft.selection = new Set(converted);
+    commit(draft);
+  }, [activePageId, commit, pushMessage]);
+
+  const joinSelectionToPath = useCallback(() => {
+    const ids = Array.from(docRef.current.selection);
+    const convertible = ids.filter((id) => {
+      const node = docRef.current.nodes[id];
+      return Boolean(node && ["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(node.type));
+    });
+    if (convertible.length < 2) {
+      pushMessage("selection_required");
+      return;
+    }
+    const draft = cloneDoc(docRef.current);
+    const rootId = ensurePageRoot(draft, activePageId);
+    const pathParts: string[] = [];
+    let styleSource: Node | null = null;
+
+    convertible.forEach((id) => {
+      const node = draft.nodes[id];
+      if (!node) return;
+      const abs = getAbsoluteFrame(draft, id);
+      if (!abs) return;
+      const d = buildPathFromNode(node, abs);
+      if (!d) return;
+      pathParts.push(d);
+      if (!styleSource) styleSource = node;
+    });
+
+    if (pathParts.length < 2) {
+      pushMessage("selection_required");
+      return;
+    }
+
+    const joined = pathParts.join(" ");
+    const bounds = pathDataToBounds(joined, 0);
+    const parentAbs = rootId ? getAbsoluteFrame(draft, rootId) : null;
+    const relX = parentAbs ? bounds.x - parentAbs.x : bounds.x;
+    const relY = parentAbs ? bounds.y - parentAbs.y : bounds.y;
+    const localD = translatePathD(joined, -bounds.x, -bounds.y);
+
+    const pathNode = createNode("path", {
+      name: "Joined Path",
+      frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
+      shape: { pathData: localD },
+    });
+    if (styleSource) {
+      const source = styleSource as Node;
+      pathNode.style = { ...cloneStyle(source.style), radius: undefined };
+      pathNode.layout = cloneLayout(source.layout);
+      pathNode.layoutSizing = source.layoutSizing ? { ...source.layoutSizing } : undefined;
+      pathNode.constraints = source.constraints ? { ...source.constraints } : undefined;
+      pathNode.data = source.data ? { ...source.data } : undefined;
+      pathNode.prototype = clonePrototype(source.prototype);
+      pathNode.locked = source.locked;
+      pathNode.hidden = source.hidden;
+      pathNode.clipContent = source.clipContent;
+    }
+
+    draft.nodes[pathNode.id] = pathNode;
+    pathNode.parentId = rootId;
+    const parent = draft.nodes[rootId];
+    if (parent) parent.children = [...parent.children, pathNode.id];
+
+    const removeIds = new Set(convertible);
+    removeIds.forEach((id) => {
+      const node = draft.nodes[id];
+      if (!node) return;
+      const parentId = node.parentId;
+      if (parentId && draft.nodes[parentId]) {
+        draft.nodes[parentId].children = draft.nodes[parentId].children.filter((cid) => cid !== id);
+      }
+      delete draft.nodes[id];
+    });
+
+    draft.selection = new Set([pathNode.id]);
+    commit(draft);
+  }, [activePageId, commit, pushMessage]);
+
   const runBooleanSelection = useCallback(
     (op: BooleanOp) => {
       const ids = Array.from(docRef.current.selection);
@@ -4739,7 +5012,7 @@ export default function AdvancedEditor() {
       const parentId = draft.nodes[ids[0]]?.parentId ?? rootId;
       const sameParent = ids.every((id) => draft.nodes[id]?.parentId === parentId);
       if (!sameParent) {
-        pushMessage("같은 부모에 있는 도형만 Boolean 연산할 수 있습니다.");
+        pushMessage("Label");
         return;
       }
       const BOOLEAN_TYPES = ["rect", "ellipse", "path"] as const;
@@ -4747,7 +5020,7 @@ export default function AdvancedEditor() {
         .map((id) => draft.nodes[id])
         .filter((n): n is Node => Boolean(n) && BOOLEAN_TYPES.includes(n.type as (typeof BOOLEAN_TYPES)[number]));
       if (nodes.length < 2) {
-        pushMessage("사각형·원·벡터(path)만 Boolean 연산할 수 있습니다.");
+        pushMessage("Label");
         return;
       }
       const rings: number[][][] = [];
@@ -4765,14 +5038,14 @@ export default function AdvancedEditor() {
         }
         const ring = pathDataToPolygon(d);
         if (!ring || ring.length < 3) {
-          pushMessage("일부 도형을 폴리곤으로 변환할 수 없습니다.");
+          pushMessage("Label");
           return;
         }
         rings.push(ring);
       }
       const resultD = runBooleanMultiple(rings, op);
       if (!resultD) {
-        pushMessage("Boolean 연산 결과가 없습니다.");
+        pushMessage("Label");
         return;
       }
       const bounds = pathDataToBounds(resultD, 0);
@@ -4834,7 +5107,7 @@ export default function AdvancedEditor() {
     const parentId = draft.nodes[ids[0]]?.parentId ?? rootId;
     const sameParent = ids.every((id) => draft.nodes[id]?.parentId === parentId);
     if (!sameParent) {
-      setMessage("같은 부모에 있는 레이어만 컴포넌트로 묶을 수 있습니다.");
+      setMessage("Label");
       return;
     }
 
@@ -4847,7 +5120,7 @@ export default function AdvancedEditor() {
     const parentAbs = parentId ? getParentOffset(draft, parentId) : { x: 0, y: 0 };
 
     const component = createNode("component", {
-      name: "컴포넌트",
+      name: "Component",
       frame: { x: minX - parentAbs.x, y: minY - parentAbs.y, w: maxX - minX, h: maxY - minY, rotation: 0 },
     });
     component.componentId = component.id;
@@ -4891,23 +5164,288 @@ export default function AdvancedEditor() {
     [updateNode],
   );
 
+  const updateSlotId = useCallback(
+    (nodeId: string, slotId: string | null) => {
+      updateNode(nodeId, { slotId: slotId && slotId.trim() ? slotId.trim() : undefined }, true);
+    },
+    [updateNode],
+  );
+
+  const updateInstanceSlotContents = useCallback(
+    (instanceId: string, slotId: string, ids: string[] | null) => {
+      const instance = docRef.current.nodes[instanceId];
+      if (!instance || instance.type !== "instance") return;
+      const current = (instance.overrides?.slotContents ?? {}) as Record<string, string[]>;
+      const next = { ...current };
+      if (!ids || ids.length === 0) delete next[slotId];
+      else next[slotId] = ids;
+      const hasSlots = Object.keys(next).length > 0;
+      const overrides = { ...(instance.overrides ?? {}), slotContents: hasSlots ? next : undefined };
+      updateNode(instanceId, { overrides }, true);
+    },
+    [updateNode],
+  );
+
+  const saveComponentVersion = useCallback(() => {
+    if (!selectedNode || selectedNode.type !== "component") return;
+    const rootId = selectedNode.id;
+    const nodes: Record<string, Node> = {};
+    snapshotSubtree(docRef.current, rootId, nodes);
+    const versions = docRef.current.componentVersions?.[rootId] ?? [];
+    const versionName = componentVersionName.trim() || `v${versions.length + 1}`;
+    const version: ComponentVersion = {
+      id: makeRuntimeId("cver"),
+      name: versionName,
+      createdAt: new Date().toISOString(),
+      rootId,
+      nodes,
+    };
+    const draft = cloneDoc(docRef.current);
+    const list = draft.componentVersions?.[rootId] ?? [];
+    draft.componentVersions = { ...(draft.componentVersions ?? {}), [rootId]: [version, ...list].slice(0, 20) };
+    commit(draft);
+    setComponentVersionName("");
+    pushEditorEvent("action", `component version saved: ${versionName}`);
+  }, [componentVersionName, commit, pushEditorEvent, selectedNode]);
+
+  const restoreComponentVersion = useCallback(
+    (versionId: string) => {
+      if (!selectedNode || selectedNode.type !== "component") return;
+      const rootId = selectedNode.id;
+      const versions = docRef.current.componentVersions?.[rootId] ?? [];
+      const version = versions.find((v) => v.id === versionId);
+      if (!version) return;
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[rootId];
+      if (!component) return;
+      const parentId = component.parentId ?? null;
+      const currentIds = new Set<string>();
+      collectSubtreeIds(draft, rootId, currentIds);
+      currentIds.forEach((id) => {
+        delete draft.nodes[id];
+      });
+
+      const reserved = new Set(Object.keys(draft.nodes));
+      const idMap: Record<string, string> = {};
+      Object.keys(version.nodes).forEach((id) => {
+        if (id === rootId) {
+          idMap[id] = id;
+          return;
+        }
+        if (reserved.has(id)) idMap[id] = makeRuntimeId("node");
+        else idMap[id] = id;
+      });
+      Object.entries(version.nodes).forEach(([oldId, node]) => {
+        const newId = idMap[oldId];
+        const clone = cloneNodeData(node);
+        clone.id = newId;
+        clone.parentId = node.parentId ? idMap[node.parentId] ?? null : null;
+        clone.children = node.children.map((childId) => idMap[childId]).filter(Boolean);
+        draft.nodes[newId] = clone;
+      });
+      const rootNode = draft.nodes[rootId];
+      if (rootNode) {
+        rootNode.parentId = parentId;
+        if (rootNode.variants?.length) {
+          rootNode.variants = rootNode.variants.map((v) => ({
+            ...v,
+            rootId: idMap[v.rootId] ?? v.rootId,
+          }));
+        }
+        if (rootNode.propertyDefinitions) {
+          const nextDefs: Record<string, { kind: "text" | "boolean" | "instance"; name: string }> = {};
+          Object.entries(rootNode.propertyDefinitions).forEach(([key, def]) => {
+            nextDefs[idMap[key] ?? key] = def;
+          });
+          rootNode.propertyDefinitions = nextDefs;
+        }
+        if (parentId && draft.nodes[parentId] && !draft.nodes[parentId].children.includes(rootId)) {
+          draft.nodes[parentId].children = [...draft.nodes[parentId].children, rootId];
+        }
+      }
+      draft.selection = new Set([rootId]);
+      commit(draft);
+      pushEditorEvent("action", `component version restored: ${version.name}`);
+    },
+    [commit, pushEditorEvent, selectedNode],
+  );
+
+  const deleteComponentVersion = useCallback(
+    (versionId: string) => {
+      if (!selectedNode || selectedNode.type !== "component") return;
+      const rootId = selectedNode.id;
+      const draft = cloneDoc(docRef.current);
+      const list = draft.componentVersions?.[rootId] ?? [];
+      const nextList = list.filter((v) => v.id !== versionId);
+      draft.componentVersions = { ...(draft.componentVersions ?? {}), [rootId]: nextList };
+      commit(draft);
+    },
+    [commit, selectedNode],
+  );
+
   const addComponentVariant = useCallback(
     (componentId: string) => {
       const draft = cloneDoc(docRef.current);
       const component = draft.nodes[componentId];
       if (!component || component.type !== "component") return;
       const newRoot = createNode("frame", {
-        name: "변형",
+        name: "Variant",
         frame: { x: 0, y: 0, w: component.frame.w, h: component.frame.h, rotation: 0 },
       });
       draft.nodes[newRoot.id] = newRoot;
       newRoot.parentId = componentId;
       component.children = [...component.children, newRoot.id];
       const variants = component.variants ?? [];
-      component.variants = [...variants, { id: makeId("variant"), name: `변형 ${variants.length + 1}`, rootId: newRoot.id }];
+      component.variants = [...variants, { id: makeId("variant"), name: `Variant ${variants.length + 1}`, rootId: newRoot.id }];
       commit(draft);
     },
     [commit],
+  );
+
+  const renameComponentVariant = useCallback(
+    (componentId: string, variantId: string, name: string) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      component.variants = component.variants.map((v) => (v.id === variantId ? { ...v, name } : v));
+      commit(draft);
+    },
+    [commit],
+  );
+
+  const finalizeVariantRename = useCallback(
+    (componentId: string, variantId: string) => {
+      const nextName = variantEditName.trim();
+      if (!nextName) {
+        pushMessage("Variant name is required.");
+        return;
+      }
+      renameComponentVariant(componentId, variantId, nextName);
+      setVariantEditId(null);
+      setVariantEditName("");
+    },
+    [pushMessage, renameComponentVariant, variantEditName],
+  );
+
+  const cancelVariantRename = useCallback(() => {
+    setVariantEditId(null);
+    setVariantEditName("");
+  }, []);
+
+  const setDefaultVariant = useCallback(
+    (componentId: string, variantId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      const target = component.variants.find((v) => v.id === variantId);
+      if (!target) return;
+      component.variants = [target, ...component.variants.filter((v) => v.id !== variantId)];
+      commit(draft);
+    },
+    [commit],
+  );
+
+  const moveComponentVariant = useCallback(
+    (componentId: string, variantId: string, direction: "up" | "down") => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      const index = component.variants.findIndex((v) => v.id === variantId);
+      if (index < 0) return;
+      const nextIndex = direction === "up" ? index - 1 : index + 1;
+      if (nextIndex < 0 || nextIndex >= component.variants.length) return;
+      const nextVariants = [...component.variants];
+      const tmp = nextVariants[index];
+      nextVariants[index] = nextVariants[nextIndex];
+      nextVariants[nextIndex] = tmp;
+      component.variants = nextVariants;
+      commit(draft);
+    },
+    [commit],
+  );
+
+  const duplicateComponentVariant = useCallback(
+    (componentId: string, variantId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component") return;
+      const variant = component.variants?.find((v) => v.id === variantId);
+      if (!variant || !draft.nodes[variant.rootId]) return;
+
+      const payload: ClipboardPayload = { rootIds: [variant.rootId], nodes: {}, rootParents: {} };
+      payload.rootParents[variant.rootId] = componentId;
+      snapshotSubtree(draft, variant.rootId, payload.nodes);
+
+      const sourceMap: Record<string, string> = {};
+      Object.entries(payload.nodes).forEach(([id, node]) => {
+        if (!node.sourceId) sourceMap[id] = id;
+      });
+
+      const cloned = cloneClipboardPayload(payload, { offset: { x: gridSizeRef.current * 2, y: gridSizeRef.current * 2 }, parentOverride: componentId, sourceMap });
+      Object.assign(draft.nodes, cloned.nodes);
+      const newRootId = cloned.rootIds[0];
+      if (!newRootId) return;
+      component.children = [...component.children, newRootId];
+      const name = `${variant.name} Copy`;
+      const nextVariant = { id: makeId("variant"), name, rootId: newRootId };
+      component.variants = [...(component.variants ?? []), nextVariant];
+      commit(draft);
+    },
+    [commit],
+  );
+
+  const deleteComponentVariant = useCallback(
+    (componentId: string, variantId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      if (component.variants.length <= 1) {
+        pushMessage("At least one variant is required.");
+        return;
+      }
+      const variant = component.variants.find((v) => v.id === variantId);
+      if (!variant) return;
+      const nextVariants = component.variants.filter((v) => v.id !== variantId);
+      const nextDefault = nextVariants[0]?.id;
+
+      const removeIds = new Set<string>();
+      collectSubtreeIds(draft, variant.rootId, removeIds);
+      removeIds.forEach((id) => {
+        delete draft.nodes[id];
+      });
+      component.children = component.children.filter((id) => id !== variant.rootId);
+      component.variants = nextVariants;
+
+      if (nextDefault) {
+        Object.values(draft.nodes)
+          .filter((node) => node.type === "instance" && node.instanceOf === componentId && node.variantId === variantId)
+          .forEach((instance) => {
+            const target = component.variants?.find((v) => v.id === nextDefault);
+            if (!target || !draft.nodes[target.rootId]) return;
+            const payload: ClipboardPayload = { rootIds: [target.rootId], nodes: {}, rootParents: {} };
+            payload.rootParents[target.rootId] = componentId;
+            snapshotSubtree(draft, target.rootId, payload.nodes);
+            const sourceMap: Record<string, string> = {};
+            Object.entries(payload.nodes).forEach(([id, node]) => {
+              if (!node.sourceId) sourceMap[id] = id;
+            });
+            const toRemove = flattenIds(draft, instance.id);
+            toRemove.forEach((id) => {
+              if (id !== instance.id) delete draft.nodes[id];
+            });
+            instance.children = [];
+            instance.variantId = target.id;
+            const srcRoot = draft.nodes[target.rootId];
+            instance.frame = { ...instance.frame, w: srcRoot?.frame.w ?? instance.frame.w, h: srcRoot?.frame.h ?? instance.frame.h };
+            const cloned = cloneClipboardPayload(payload, { offset: 0, parentOverride: instance.id, sourceMap });
+            instance.children = cloned.rootIds;
+            Object.assign(draft.nodes, cloned.nodes);
+          });
+      }
+
+      commit(draft);
+    },
+    [commit, pushMessage],
   );
 
   const createInstanceFromComponent = useCallback((componentId: string, variantId?: string) => {
@@ -4927,7 +5465,7 @@ export default function AdvancedEditor() {
     const instance = cloneNodeData(component);
     instance.id = makeRuntimeId("instance");
     instance.type = "instance";
-    instance.name = `${component.name} 인스턴스`;
+    instance.name = `${component.name} Instance`;
     instance.instanceOf = componentId;
     instance.sourceId = componentId;
     instance.componentId = undefined;
@@ -4937,8 +5475,8 @@ export default function AdvancedEditor() {
     const srcRoot = rootsToClone.length === 1 ? draft.nodes[rootsToClone[0]] : null;
     instance.frame = {
       ...instance.frame,
-      x: component.frame.x + GRID * 2,
-      y: component.frame.y + GRID * 2,
+      x: component.frame.x + gridSizeRef.current * 2,
+      y: component.frame.y + gridSizeRef.current * 2,
       w: srcRoot ? srcRoot.frame.w : component.frame.w,
       h: srcRoot ? srcRoot.frame.h : component.frame.h,
     };
@@ -4977,7 +5515,7 @@ export default function AdvancedEditor() {
     instance.sourceId = undefined;
     instance.variantId = undefined;
     delete instance.overrides;
-    instance.name = instance.name ? `${instance.name} (분리됨)` : "그룹";
+    instance.name = instance.name ? `${instance.name} (Label)` : "Label";
     commit(draft);
   }, [commit]);
 
@@ -5107,7 +5645,7 @@ export default function AdvancedEditor() {
       instance.children = [];
       instance.instanceOf = componentId;
       instance.sourceId = componentId;
-      instance.name = `${component.name} 인스턴스`;
+      instance.name = `${component.name} Instance`;
       delete instance.overrides;
       instance.frame = { ...component.frame, x: instance.frame.x, y: instance.frame.y };
       instance.style = cloneStyle(component.style);
@@ -5175,10 +5713,54 @@ export default function AdvancedEditor() {
     [updateNode],
   );
 
+  const clearInstanceSlotAssignments = useCallback(
+    (instanceId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const instance = draft.nodes[instanceId];
+      if (!instance || instance.type !== "instance") return;
+      if (!instance.overrides?.slotContents) return;
+      const overrides = { ...(instance.overrides ?? {}) };
+      delete overrides.slotContents;
+      instance.overrides = Object.keys(overrides).length ? overrides : undefined;
+      commit(draft);
+    },
+    [commit],
+  );
+
+  const resetInstanceOverrides = useCallback(
+    (instanceId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const instance = draft.nodes[instanceId];
+      if (!instance || instance.type !== "instance") return;
+      const ids = [instanceId, ...flattenIds(draft, instanceId)];
+      ids.forEach((id) => {
+        const node = draft.nodes[id];
+        if (!node) return;
+        if (node.overrides) delete node.overrides;
+        if (!node.sourceId) return;
+        const master = draft.nodes[node.sourceId];
+        if (!master) return;
+        if (node.type === "text") {
+          node.text = master.text ? cloneText(master.text) : undefined;
+        }
+        if (node.type === "image") {
+          node.image = master.image ? { ...master.image } : undefined;
+        }
+        if (node.type === "video") {
+          node.video = master.video ? { ...master.video } : undefined;
+        }
+      });
+      refreshOverridesForSubtree(draft, instanceId);
+      commit(draft);
+      pushMessage("Instance overrides cleared.");
+    },
+    [commit, pushMessage],
+  );
+
   const addStyleToken = useCallback((type: StyleToken["type"], value: StyleToken["value"]) => {
     const draft = cloneDoc(docRef.current);
     const baseName = newStyleName.trim();
-    const fallback = `${type === "fill" ? "채우기" : type === "stroke" ? "테두리" : type === "text" ? "텍스트" : "효과"} 스타일 ${draft.styles.length + 1}`;
+    const fallback = `${type === "fill" ? "Fill" : type === "stroke" ? "Stroke" : type === "text" ? "Text" : "Effect"} Style ${draft.styles.length + 1}`;
     const token: StyleToken = {
       id: makeRuntimeId("style"),
       name: baseName || fallback,
@@ -5210,14 +5792,14 @@ export default function AdvancedEditor() {
 
   const addVariable = useCallback(() => {
     const draft = cloneDoc(docRef.current);
-    const name = newVariableName.trim() || `${newVariableType === "color" ? "색상" : newVariableType === "number" ? "숫자" : newVariableType === "string" ? "문자" : "불리언"} 변수 ${draft.variables.length + 1}`;
+    const name = newVariableName.trim() || `Variable ${draft.variables.length + 1}`;
     let value: Variable["value"] = newVariableValue;
     if (newVariableType === "number") {
       const parsed = Number(newVariableValue);
       value = Number.isFinite(parsed) ? parsed : 0;
     }
     if (newVariableType === "boolean") value = newVariableBool;
-    const modes = draft.variableModes?.length ? draft.variableModes : ["기본"];
+    const modes = draft.variableModes?.length ? draft.variableModes : ["Label"];
     const modeValues = modes.length ? Object.fromEntries(modes.map((mode) => [mode, value])) : undefined;
     const variable: Variable = { id: makeRuntimeId("var"), name, type: newVariableType, value, modes: modeValues };
     draft.variables = [...draft.variables, variable];
@@ -5229,7 +5811,7 @@ export default function AdvancedEditor() {
     const name = newVariableModeName.trim();
     if (!name) return;
     const draft = cloneDoc(docRef.current);
-    const modes = draft.variableModes?.length ? [...draft.variableModes] : ["기본"];
+    const modes = draft.variableModes?.length ? [...draft.variableModes] : ["Label"];
     if (modes.includes(name)) return;
     modes.push(name);
     draft.variableModes = modes;
@@ -5248,7 +5830,7 @@ export default function AdvancedEditor() {
       const trimmed = nextMode.trim();
       if (!trimmed || trimmed === prevMode) return;
       const draft = cloneDoc(docRef.current);
-      const modes = draft.variableModes?.length ? [...draft.variableModes] : ["기본"];
+      const modes = draft.variableModes?.length ? [...draft.variableModes] : ["Label"];
       if (!modes.includes(prevMode) || modes.includes(trimmed)) return;
       draft.variableModes = modes.map((mode) => (mode === prevMode ? trimmed : mode));
       if (draft.variableMode === prevMode) draft.variableMode = trimmed;
@@ -5267,7 +5849,7 @@ export default function AdvancedEditor() {
   const removeVariableMode = useCallback(
     (name: string) => {
       const draft = cloneDoc(docRef.current);
-      const modes = draft.variableModes?.length ? [...draft.variableModes] : ["기본"];
+      const modes = draft.variableModes?.length ? [...draft.variableModes] : ["Label"];
       if (modes.length <= 1) return;
       const nextModes = modes.filter((mode) => mode !== name);
       if (!nextModes.length) return;
@@ -5499,7 +6081,7 @@ export default function AdvancedEditor() {
 
       const formPages = draft.pages
         .map((page) => {
-          const match = page.name.match(/^폼\s*(\d+)$/);
+          const match = page.name.match(/^Page\\s*(\\d+)$/);
           if (!match) return null;
           return { page, index: Number(match[1]) };
         })
@@ -5509,7 +6091,7 @@ export default function AdvancedEditor() {
       const nextIndex = formPages.length ? formPages[formPages.length - 1].index + 1 : 1;
       const prevPage = formPages.length ? formPages[formPages.length - 1].page : null;
 
-      const pageName = `폼 ${nextIndex}`;
+      const pageName = `Page ${nextIndex}`;
       const pageId = makeRuntimeId("page");
       const pageNode = createNode("frame", { id: pageId, name: pageName, parentId: draft.root });
       draft.nodes[pageId] = pageNode;
@@ -5524,7 +6106,7 @@ export default function AdvancedEditor() {
 
       const buildFormStep = (name: string, origin: { x: number; y: number }, prevPageId?: string, nextPageId?: string) => {
         const frame = makeFrameNode(
-          `${name} 폼`,
+          `${name} Step`,
           { x: origin.x, y: origin.y, w: 420, h: 420, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -5533,9 +6115,10 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "column", gap: 12, padding: { t: 20, r: 20, b: 20, l: 20 }, align: "stretch", wrap: false },
           },
         );
-        const title = makeTextNode("타이틀", name, { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 18, weight: 700 });
+        const title = makeTextNode("Label", name, { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 18, weight: 700 });
         const input = makeFrameNode(
-          "입력",
+          "Input",
+
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -5544,12 +6127,13 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
           },
         );
-        const placeholder = makeTextNode("플레이스홀더", `${name} 입력`, { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+        const placeholder = makeTextNode("Placeholder", `${name} (Placeholder)`, { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+
         input.children = [placeholder.id];
         placeholder.parentId = input.id;
 
         const buttons = makeFrameNode(
-          "폼 네비게이션",
+          "Label",
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -5567,7 +6151,7 @@ export default function AdvancedEditor() {
         };
 
         const nextBtn = makeFrameNode(
-          "다음 버튼",
+          "Next Button",
           { x: 0, y: 0, w: 120, h: 40, rotation: 0 },
           {
             fill: "#111827",
@@ -5576,7 +6160,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 6, padding: { t: 8, r: 12, b: 8, l: 12 }, align: "center", wrap: false },
           },
         );
-        const nextLabel = makeTextNode("버튼 텍스트", "다음", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { size: 13, weight: 600, color: "#FFFFFF", align: "center" });
+        const nextLabel = makeTextNode("Next Label", "Next", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { size: 13, weight: 600, color: "#FFFFFF", align: "center" });
         nextBtn.children = [nextLabel.id];
         nextLabel.parentId = nextBtn.id;
         nextBtn.prototype = {
@@ -5595,11 +6179,11 @@ export default function AdvancedEditor() {
 
         if (prevPageId) {
           const prevBtn = makeFrameNode(
-            "이전 버튼",
+            "Back Button",
             { x: 0, y: 0, w: 120, h: 40, rotation: 0 },
             { fill: "#FFFFFF", stroke: { color: "#111827", width: 1 }, radius: 10, layout: { mode: "auto", dir: "row", gap: 6, padding: { t: 8, r: 12, b: 8, l: 12 }, align: "center", wrap: false } },
           );
-          const prevLabel = makeTextNode("버튼 텍스트", "이전", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { size: 13, weight: 600, align: "center" });
+          const prevLabel = makeTextNode("Back Label", "Back", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { size: 13, weight: 600, align: "center" });
           prevBtn.children = [prevLabel.id];
           prevLabel.parentId = prevBtn.id;
           prevBtn.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: prevPageId } }] };
@@ -5630,7 +6214,7 @@ export default function AdvancedEditor() {
           const node = draft.nodes[id];
           const interactions = node?.prototype?.interactions ?? [];
           if (!node || !interactions.length) return;
-          if (node.name !== "다음 버튼") return;
+          if (node.name !== "Next Button") return;
           node.prototype = {
             interactions: interactions.map((interaction) =>
               interaction.action.type === "navigate"
@@ -5775,7 +6359,7 @@ export default function AdvancedEditor() {
           pushMessage("page_action_failed");
           return;
         }
-        const pageNameBase = `${page.name} 복제`;
+        const pageNameBase = `${page.name} (Label)`;
         const existing = new Set(draft.pages.map((item) => item.name));
         let name = pageNameBase;
         let count = 2;
@@ -5962,7 +6546,8 @@ export default function AdvancedEditor() {
         touchedPages.add(pageId);
       };
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) {
           markInfinite(existing.id);
@@ -5978,15 +6563,17 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const stagePage = ensurePage("테스트 스테이지");
-      const accountPage = ensurePage("계정");
+      const stagePage = ensurePage("Stage");
+
+      const accountPage = ensurePage("Account");
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: stagePage.id };
 
       const findPreset = (id: string) =>
         ALL_PRESET_GROUPS.flatMap((group) => group.items).find((item) => item.id === id);
       const pageHasNode = (pageId: string, nodeName: string) => {
         const ids = flattenIds(draft, pageId);
-        return ids.some((id) => draft.nodes[id]?.name === nodeName);
+        const targetName = normalizePresetLabel(nodeName, "Node");
+        return ids.some((id) => normalizePresetLabel(draft.nodes[id]?.name ?? "", "Node") === targetName);
       };
 
       const base = { x: 120, y: 120 };
@@ -6013,59 +6600,35 @@ export default function AdvancedEditor() {
         const def = findPreset(placement.id);
         if (!def) return;
         const built = def.build({ x: base.x + placement.offset.x, y: base.y + placement.offset.y });
+        const submitTargetPageId =
+          placement.id === "auth-logout" || placement.id.startsWith("test-link")
+            ? stagePage.id
+            : placement.id.startsWith("auth-") || placement.id === "payment-form"
+            ? accountPage.id
+            : null;
         Object.values(built.nodes).forEach((node) => {
-          if ((node.name === "로그인 버튼" || node.name === "로그인 테스트 버튼") && node.prototype?.interactions?.length) {
-            node.prototype = {
-              interactions: node.prototype.interactions.map((interaction) =>
-                interaction.action.type === "submit"
-                  ? { ...interaction, action: { ...interaction.action, nextPageId: accountPage.id } }
-                  : interaction,
-              ),
-            };
-          }
-          if (node.name === "회원가입 버튼" && node.prototype?.interactions?.length) {
-            node.prototype = {
-              interactions: node.prototype.interactions.map((interaction) =>
-                interaction.action.type === "submit"
-                  ? { ...interaction, action: { ...interaction.action, nextPageId: accountPage.id } }
-                  : interaction,
-              ),
-            };
-          }
-          if (node.name === "로그아웃 버튼" && node.prototype?.interactions?.length) {
-            node.prototype = {
-              interactions: node.prototype.interactions.map((interaction) =>
-                interaction.action.type === "submit"
-                  ? { ...interaction, action: { ...interaction.action, nextPageId: stagePage.id } }
-                  : interaction,
-              ),
-            };
-          }
+          const interactions = node.prototype?.interactions ?? [];
+          if (!submitTargetPageId || !interactions.length) return;
+          node.prototype = {
+            interactions: interactions.map((interaction) =>
+              interaction.action.type === "submit"
+                ? { ...interaction, action: { ...interaction.action, nextPageId: submitTargetPageId } }
+                : interaction,
+            ),
+          };
         });
+        sanitizePresetNodes(built.nodes, placement.id);
         Object.assign(draft.nodes, built.nodes);
-        const parent = draft.nodes[stagePage.rootId];
+        const pageRoot = draft.nodes[stagePage.rootId];
         const rootNode = draft.nodes[built.rootId];
-        if (parent) parent.children = [...parent.children, built.rootId];
+        if (pageRoot) pageRoot.children = [...pageRoot.children, built.rootId];
         if (rootNode) rootNode.parentId = stagePage.rootId;
         insertedRoots.push(built.rootId);
       });
 
-      if (!pageHasNode(accountPage.rootId, "관리자 패널")) {
-        const adminPreset = findPreset("admin-panel");
-        if (adminPreset) {
-          const builtAdmin = adminPreset.build({ x: 120, y: 120 });
-          Object.assign(draft.nodes, builtAdmin.nodes);
-          const parent = draft.nodes[accountPage.rootId];
-          const rootNode = draft.nodes[builtAdmin.rootId];
-          if (parent) parent.children = [...parent.children, builtAdmin.rootId];
-          if (rootNode) rootNode.parentId = accountPage.rootId;
-        }
-      }
-
       if (insertedRoots.length) {
-        draft.selection = new Set(insertedRoots);
+        draft.selection = new Set([insertedRoots[0]]);
       }
-
       commit(draft);
       if (touchedPages.size) {
         setInfiniteCanvasPages((prev) => {
@@ -6094,7 +6657,8 @@ export default function AdvancedEditor() {
         touchedPages.add(pageId);
       };
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) {
           markInfinite(existing.id);
@@ -6110,19 +6674,21 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const loginPage = ensurePage("로그인");
-      const form1Page = ensurePage("폼 1");
-      const form2Page = ensurePage("폼 2");
-      const form3Page = ensurePage("폼 3");
+      const loginPage = ensurePage("Login");
+      const form1Page = ensurePage("Form 1");
+      const form2Page = ensurePage("Form 2");
+      const form3Page = ensurePage("Form 3");
 
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: loginPage.id };
 
       const pageHasNode = (pageId: string, nodeName: string) => {
         const ids = flattenIds(draft, pageId);
-        return ids.some((id) => draft.nodes[id]?.name === nodeName);
+        const targetName = normalizePresetLabel(nodeName, "Node");
+        return ids.some((id) => normalizePresetLabel(draft.nodes[id]?.name ?? "", "Node") === targetName);
       };
 
       const placeOnPage = (pageId: string, nodes: Record<string, Node>, rootId: string) => {
+        sanitizePresetNodes(nodes, preset.id);
         Object.assign(draft.nodes, nodes);
         const pageRoot = draft.nodes[pageId];
         const rootNode = draft.nodes[rootId];
@@ -6132,7 +6698,7 @@ export default function AdvancedEditor() {
 
       const buildLoginFlow = (origin: { x: number; y: number }, nextPageId: string) => {
         const frame = makeFrameNode(
-          "로그인 폼 (플로우)",
+          "Label",
           { x: origin.x, y: origin.y, w: 360, h: 360, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6148,9 +6714,10 @@ export default function AdvancedEditor() {
             },
           },
         );
-        const title = makeTextNode("타이틀", "로그인", { x: 0, y: 0, w: 200, h: 28, rotation: 0 }, { size: 20, weight: 700 });
+        const title = makeTextNode("Title", "Login", { x: 0, y: 0, w: 200, h: 28, rotation: 0 }, { size: 20, weight: 700 });
         const email = makeFrameNode(
-          "이메일 입력",
+          "Email Field",
+
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6160,15 +6727,16 @@ export default function AdvancedEditor() {
           },
         );
         const emailPlaceholder = makeTextNode(
-          "플레이스홀더",
-          fieldPlaceholder("email", "이메일"),
+          "Label",
+          fieldPlaceholder("email", "Email"),
           { x: 0, y: 0, w: 160, h: 20, rotation: 0 },
           { color: "#9CA3AF", size: 14 },
         );
         email.children = [emailPlaceholder.id];
         emailPlaceholder.parentId = email.id;
         const password = makeFrameNode(
-          "비밀번호 입력",
+          "Password Field",
+
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6178,15 +6746,15 @@ export default function AdvancedEditor() {
           },
         );
         const passwordPlaceholder = makeTextNode(
-          "플레이스홀더",
-          fieldPlaceholder("password", "비밀번호"),
+          "Label",
+          fieldPlaceholder("password", "Label"),
           { x: 0, y: 0, w: 170, h: 20, rotation: 0 },
           { color: "#9CA3AF", size: 14 },
         );
         password.children = [passwordPlaceholder.id];
         passwordPlaceholder.parentId = password.id;
         const button = makeFrameNode(
-          "로그인 버튼",
+          "Label",
           { x: 0, y: 0, w: 160, h: 44, rotation: 0 },
           {
             fill: "#111827",
@@ -6195,7 +6763,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 18, b: 10, l: 18 }, align: "center", wrap: false },
           },
         );
-        const buttonLabel = makeTextNode("버튼 텍스트", "로그인", { x: 0, y: 0, w: 80, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
+        const buttonLabel = makeTextNode("Button Label", "Continue", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
         button.children = [buttonLabel.id];
         buttonLabel.parentId = button.id;
         button.prototype = {
@@ -6229,7 +6797,7 @@ export default function AdvancedEditor() {
 
       const buildFormStep = (name: string, origin: { x: number; y: number }, nextPageId?: string, prevPageId?: string) => {
         const frame = makeFrameNode(
-          `${name} 폼`,
+          `${name} Step`,
           { x: origin.x, y: origin.y, w: 420, h: 420, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6238,9 +6806,10 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "column", gap: 12, padding: { t: 20, r: 20, b: 20, l: 20 }, align: "stretch", wrap: false },
           },
         );
-        const title = makeTextNode("타이틀", name, { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 18, weight: 700 });
+        const title = makeTextNode("Label", name, { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 18, weight: 700 });
         const input = makeFrameNode(
-          "입력",
+          "Input",
+
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6249,12 +6818,13 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
           },
         );
-        const placeholder = makeTextNode("플레이스홀더", `${name} 입력`, { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+        const placeholder = makeTextNode("Placeholder", `${name} (Placeholder)`, { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+
         input.children = [placeholder.id];
         placeholder.parentId = input.id;
 
         const buttons = makeFrameNode(
-          "폼 네비게이션",
+          "Label",
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6273,11 +6843,11 @@ export default function AdvancedEditor() {
 
         if (prevPageId) {
           const prevBtn = makeFrameNode(
-            "이전 버튼",
+            "Label",
             { x: 0, y: 0, w: 120, h: 40, rotation: 0 },
             { fill: "#FFFFFF", stroke: { color: "#111827", width: 1 }, radius: 10, layout: { mode: "auto", dir: "row", gap: 6, padding: { t: 8, r: 12, b: 8, l: 12 }, align: "center", wrap: false } },
           );
-          const prevLabel = makeTextNode("버튼 텍스트", "이전", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { size: 13, weight: 600, align: "center" });
+          const prevLabel = makeTextNode("Back Label", "Back", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { size: 13, weight: 600, align: "center" });
           prevBtn.children = [prevLabel.id];
           prevLabel.parentId = prevBtn.id;
           prevBtn.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: prevPageId } }] };
@@ -6289,11 +6859,11 @@ export default function AdvancedEditor() {
 
         if (nextPageId) {
           const nextBtn = makeFrameNode(
-            "다음 버튼",
+            "Label",
             { x: 0, y: 0, w: 120, h: 40, rotation: 0 },
             { fill: "#111827", stroke: null, radius: 10, layout: { mode: "auto", dir: "row", gap: 6, padding: { t: 8, r: 12, b: 8, l: 12 }, align: "center", wrap: false } },
           );
-          const nextLabel = makeTextNode("버튼 텍스트", "다음", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 13, weight: 600, align: "center" });
+          const nextLabel = makeTextNode("Next Label", "Next", { x: 0, y: 0, w: 60, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 13, weight: 600, align: "center" });
           nextBtn.children = [nextLabel.id];
           nextLabel.parentId = nextBtn.id;
           nextBtn.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: nextPageId } }] };
@@ -6313,20 +6883,20 @@ export default function AdvancedEditor() {
 
       const origin = { x: 120, y: 120 };
 
-      if (!pageHasNode(loginPage.rootId, "로그인 폼 (플로우)")) {
+      if (!pageHasNode(loginPage.rootId, "Label")) {
         const built = buildLoginFlow(origin, form1Page.id);
         placeOnPage(loginPage.rootId, built.nodes, built.rootId);
       }
-      if (!pageHasNode(form1Page.rootId, "폼 1 폼")) {
-        const built = buildFormStep("폼 1", origin, form2Page.id, loginPage.id);
+      if (!pageHasNode(form1Page.rootId, "Form 1")) {
+        const built = buildFormStep("Form 1", origin, form2Page.id, loginPage.id);
         placeOnPage(form1Page.rootId, built.nodes, built.rootId);
       }
-      if (!pageHasNode(form2Page.rootId, "폼 2 폼")) {
-        const built = buildFormStep("폼 2", origin, form3Page.id, form1Page.id);
+      if (!pageHasNode(form2Page.rootId, "Form 2")) {
+        const built = buildFormStep("Form 2", origin, form3Page.id, form1Page.id);
         placeOnPage(form2Page.rootId, built.nodes, built.rootId);
       }
-      if (!pageHasNode(form3Page.rootId, "폼 3 폼")) {
-        const built = buildFormStep("폼 3", origin, undefined, form2Page.id);
+      if (!pageHasNode(form3Page.rootId, "Form 3")) {
+        const built = buildFormStep("Form 3", origin, undefined, form2Page.id);
         placeOnPage(form3Page.rootId, built.nodes, built.rootId);
       }
 
@@ -6358,7 +6928,8 @@ export default function AdvancedEditor() {
         touchedPages.add(pageId);
       };
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) {
           markInfinite(existing.id);
@@ -6374,16 +6945,18 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const pageA = ensurePage("데모 A");
-      const pageB = ensurePage("데모 B");
+      const pageA = ensurePage("Label");
+      const pageB = ensurePage("Label");
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: pageA.id };
 
       const pageHasNode = (pageId: string, nodeName: string) => {
         const ids = flattenIds(draft, pageId);
-        return ids.some((id) => draft.nodes[id]?.name === nodeName);
+        const targetName = normalizePresetLabel(nodeName, "Node");
+        return ids.some((id) => normalizePresetLabel(draft.nodes[id]?.name ?? "", "Node") === targetName);
       };
 
       const placeOnPage = (pageId: string, nodes: Record<string, Node>, rootId: string) => {
+        sanitizePresetNodes(nodes, preset.id);
         Object.assign(draft.nodes, nodes);
         const pageRoot = draft.nodes[pageId];
         const rootNode = draft.nodes[rootId];
@@ -6393,7 +6966,7 @@ export default function AdvancedEditor() {
 
       const buildNavCard = (titleText: string, targetPageId: string) => {
         const frame = makeFrameNode(
-          `${titleText} 카드`,
+          `${titleText} Card`,
           { x: 120, y: 120, w: 360, h: 240, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6402,15 +6975,10 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "column", gap: 12, padding: { t: 20, r: 20, b: 20, l: 20 }, align: "stretch", wrap: false },
           },
         );
-        const title = makeTextNode("타이틀", titleText, { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 18, weight: 700 });
-        const desc = makeTextNode(
-          "설명",
-          "버튼을 눌러 다른 페이지로 이동합니다.",
-          { x: 0, y: 0, w: 260, h: 40, rotation: 0 },
-          { size: 12, color: "#6B7280" },
-        );
+        const title = makeTextNode("Label", titleText, { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 18, weight: 700 });
+        const desc = makeTextNode("Description", "Tap to open the destination page.", { x: 0, y: 0, w: 260, h: 40, rotation: 0 }, { size: 12, color: "#6B7280" });
         const button = makeFrameNode(
-          "이동 버튼",
+          "Label",
           { x: 0, y: 0, w: 140, h: 40, rotation: 0 },
           {
             fill: "#111827",
@@ -6418,7 +6986,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 6, padding: { t: 8, r: 12, b: 8, l: 12 }, align: "center", wrap: false },
           },
         );
-        const buttonLabel = makeTextNode("버튼 텍스트", "다른 페이지로", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 12, weight: 600, align: "center" });
+        const buttonLabel = makeTextNode("Button Label", "Open", { x: 0, y: 0, w: 80, h: 18, rotation: 0 }, { color: "#FFFFFF", size: 12, weight: 600, align: "center" });
         button.children = [buttonLabel.id];
         buttonLabel.parentId = button.id;
         button.prototype = {
@@ -6440,12 +7008,12 @@ export default function AdvancedEditor() {
         };
       };
 
-      if (!pageHasNode(pageA.rootId, "데모 A 카드")) {
-        const built = buildNavCard("데모 A", pageB.id);
+      if (!pageHasNode(pageA.rootId, "Label")) {
+        const built = buildNavCard("Label", pageB.id);
         placeOnPage(pageA.rootId, built.nodes, built.rootId);
       }
-      if (!pageHasNode(pageB.rootId, "데모 B 카드")) {
-        const built = buildNavCard("데모 B", pageA.id);
+      if (!pageHasNode(pageB.rootId, "Label")) {
+        const built = buildNavCard("Label", pageA.id);
         placeOnPage(pageB.rootId, built.nodes, built.rootId);
       }
 
@@ -6476,7 +7044,8 @@ export default function AdvancedEditor() {
         touchedPages.add(pageId);
       };
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) {
           markInfinite(existing.id);
@@ -6492,16 +7061,18 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const basePage = ensurePage("오버레이 데모");
-      const overlayPage = ensurePage("툴팁 오버레이");
+      const basePage = ensurePage("Label");
+      const overlayPage = ensurePage("Label");
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: basePage.id };
 
       const pageHasNode = (pageId: string, nodeName: string) => {
         const ids = flattenIds(draft, pageId);
-        return ids.some((id) => draft.nodes[id]?.name === nodeName);
+        const targetName = normalizePresetLabel(nodeName, "Node");
+        return ids.some((id) => normalizePresetLabel(draft.nodes[id]?.name ?? "", "Node") === targetName);
       };
 
       const placeOnPage = (pageId: string, nodes: Record<string, Node>, rootId: string) => {
+        sanitizePresetNodes(nodes, preset.id);
         Object.assign(draft.nodes, nodes);
         const pageRoot = draft.nodes[pageId];
         const rootNode = draft.nodes[rootId];
@@ -6509,9 +7080,9 @@ export default function AdvancedEditor() {
         if (rootNode) rootNode.parentId = pageId;
       };
 
-      if (!pageHasNode(basePage.rootId, "호버 카드")) {
+      if (!pageHasNode(basePage.rootId, "Label")) {
         const card = makeFrameNode(
-          "호버 카드",
+          "Label",
           { x: 140, y: 160, w: 320, h: 200, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6520,9 +7091,10 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "column", gap: 10, padding: { t: 16, r: 16, b: 16, l: 16 }, align: "stretch", wrap: false },
           },
         );
-        const title = makeTextNode("타이틀", "호버 오버레이", { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 16, weight: 700 });
-        const desc = makeTextNode("설명", "카드 위에 마우스를 올리면 오버레이가 열립니다.", { x: 0, y: 0, w: 260, h: 40, rotation: 0 }, { size: 12, color: "#6B7280" });
-        const hint = makeTextNode("힌트", "Hover me", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { size: 12, color: "#111827", weight: 600 });
+        const title = makeTextNode("Label", "Label", { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 16, weight: 700 });
+        const desc = makeTextNode("Label", "Label", { x: 0, y: 0, w: 260, h: 40, rotation: 0 }, { size: 12, color: "#6B7280" });
+
+        const hint = makeTextNode("Label", "Hover me", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { size: 12, color: "#111827", weight: 600 });
         card.children = [title.id, desc.id, hint.id];
         title.parentId = card.id;
         desc.parentId = card.id;
@@ -6539,9 +7111,9 @@ export default function AdvancedEditor() {
         placeOnPage(basePage.rootId, { [card.id]: card, [title.id]: title, [desc.id]: desc, [hint.id]: hint }, card.id);
       }
 
-      if (!pageHasNode(overlayPage.rootId, "툴팁 카드")) {
+      if (!pageHasNode(overlayPage.rootId, "Label")) {
         const tooltip = makeFrameNode(
-          "툴팁 카드",
+          "Label",
           { x: 180, y: 120, w: 280, h: 140, rotation: 0 },
           {
             fill: "#111827",
@@ -6550,14 +7122,14 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "column", gap: 8, padding: { t: 14, r: 14, b: 14, l: 14 }, align: "stretch", wrap: false },
           },
         );
-        const title = makeTextNode("타이틀", "오버레이", { x: 0, y: 0, w: 160, h: 22, rotation: 0 }, { size: 14, weight: 700, color: "#FFFFFF" });
-        const body = makeTextNode("본문", "배경을 클릭하면 닫힙니다.", { x: 0, y: 0, w: 200, h: 32, rotation: 0 }, { size: 12, color: "#E5E7EB" });
+        const title = makeTextNode("Label", "Label", { x: 0, y: 0, w: 160, h: 22, rotation: 0 }, { size: 14, weight: 700, color: "#FFFFFF" });
+        const body = makeTextNode("Label", "Label", { x: 0, y: 0, w: 200, h: 32, rotation: 0 }, { size: 12, color: "#E5E7EB" });
         const close = makeFrameNode(
-          "닫기 버튼",
+          "Label",
           { x: 0, y: 0, w: 120, h: 32, rotation: 0 },
           { fill: "#FFFFFF", radius: 10, layout: { mode: "auto", dir: "row", gap: 6, padding: { t: 6, r: 10, b: 6, l: 10 }, align: "center", wrap: false } },
         );
-        const closeLabel = makeTextNode("버튼 텍스트", "닫기", { x: 0, y: 0, w: 80, h: 18, rotation: 0 }, { size: 12, weight: 600, color: "#111827", align: "center" });
+        const closeLabel = makeTextNode("Close Label", "Close", { x: 0, y: 0, w: 60, h: 18, rotation: 0 }, { color: "#111827", size: 12, weight: 600, align: "center" });
         close.children = [closeLabel.id];
         closeLabel.parentId = close.id;
         close.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "closeOverlay" } }] };
@@ -6595,7 +7167,8 @@ export default function AdvancedEditor() {
         touchedPages.add(pageId);
       };
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) {
           markInfinite(existing.id);
@@ -6611,11 +7184,11 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const onboardingPage = ensurePage("KREAM 온보딩");
-      const loginPage = ensurePage("KREAM 로그인");
-      const signupPage = ensurePage("KREAM 회원가입");
-      const mainPage = ensurePage("KREAM 메인");
-      const page2Page = ensurePage("KREAM 2페이지");
+      const onboardingPage = ensurePage("KREAM Onboarding");
+      const loginPage = ensurePage("KREAM Login");
+      const signupPage = ensurePage("KREAM Signup");
+      const mainPage = ensurePage("Label");
+      const page2Page = ensurePage("Label");
 
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: onboardingPage.id };
 
@@ -6623,9 +7196,11 @@ export default function AdvancedEditor() {
         ALL_PRESET_GROUPS.flatMap((group) => group.items).find((item) => item.id === id);
       const pageHasNode = (pageId: string, nodeName: string) => {
         const ids = flattenIds(draft, pageId);
-        return ids.some((id) => id !== pageId && draft.nodes[id]?.name === nodeName);
+        const targetName = normalizePresetLabel(nodeName, "Node");
+        return ids.some((id) => normalizePresetLabel(draft.nodes[id]?.name ?? "", "Node") === targetName);
       };
       const placeOnPage = (pageId: string, nodes: Record<string, Node>, rootId: string) => {
+        sanitizePresetNodes(nodes, preset.id);
         Object.assign(draft.nodes, nodes);
         const pageRoot = draft.nodes[pageId];
         const rootNode = draft.nodes[rootId];
@@ -6640,14 +7215,14 @@ export default function AdvancedEditor() {
         const contentW = frameW - marginX * 2;
 
         const frame = makeFrameNode(
-          "KREAM 메인",
+          "Label",
           { x: origin.x, y: origin.y, w: frameW, h: frameH, rotation: 0 },
           { fill: "#FFFFFF", stroke: null },
         );
-        const title = makeTextNode("타이틀", "KREAM 메인", { x: marginX, y: 56, w: 200, h: 24, rotation: 0 }, { size: 20, weight: 700, color: "#111111" });
+        const title = makeTextNode("Label", "Label", { x: marginX, y: 56, w: 200, h: 24, rotation: 0 }, { size: 20, weight: 700, color: "#111111" });
 
         const page2Btn = makeFrameNode(
-          "2페이지 이동 버튼",
+          "Label",
           { x: marginX, y: 120, w: contentW, h: 48, rotation: 0 },
           {
             fill: "#111111",
@@ -6656,13 +7231,13 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 12, r: 16, b: 12, l: 16 }, align: "center", wrap: false },
           },
         );
-        const page2Label = makeTextNode("버튼 텍스트", "2페이지 이동", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { size: 14, weight: 600, color: "#FFFFFF", align: "center" });
+        const page2Label = makeTextNode("Page 2 Label", "Go to Page 2", { x: 0, y: 0, w: 140, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
         page2Btn.children = [page2Label.id];
         page2Label.parentId = page2Btn.id;
         page2Btn.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: nextPageId } }] };
 
         const logoutBtn = makeFrameNode(
-          "로그아웃 버튼",
+          "Label",
           { x: marginX, y: 180, w: contentW, h: 48, rotation: 0 },
           {
             fill: "#111111",
@@ -6671,7 +7246,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 12, r: 16, b: 12, l: 16 }, align: "center", wrap: false },
           },
         );
-        const logoutLabel = makeTextNode("버튼 텍스트", "로그아웃", { x: 0, y: 0, w: 100, h: 20, rotation: 0 }, { size: 14, weight: 600, color: "#FFFFFF", align: "center" });
+        const logoutLabel = makeTextNode("Logout Label", "Logout", { x: 0, y: 0, w: 100, h: 20, rotation: 0 }, { size: 14, weight: 600, color: "#FFFFFF", align: "center" });
         logoutBtn.children = [logoutLabel.id];
         logoutLabel.parentId = logoutBtn.id;
         logoutBtn.prototype = {
@@ -6709,14 +7284,14 @@ export default function AdvancedEditor() {
         const contentW = frameW - marginX * 2;
 
         const frame = makeFrameNode(
-          "KREAM 2페이지",
+          "Label",
           { x: origin.x, y: origin.y, w: frameW, h: frameH, rotation: 0 },
           { fill: "#FFFFFF", stroke: null },
         );
-        const title = makeTextNode("타이틀", "KREAM 2페이지", { x: marginX, y: 56, w: 200, h: 24, rotation: 0 }, { size: 20, weight: 700, color: "#111111" });
+        const title = makeTextNode("Label", "Label", { x: marginX, y: 56, w: 200, h: 24, rotation: 0 }, { size: 20, weight: 700, color: "#111111" });
 
         const backBtn = makeFrameNode(
-          "메인 이동 버튼",
+          "Label",
           { x: marginX, y: 120, w: contentW, h: 48, rotation: 0 },
           {
             fill: "#111111",
@@ -6725,7 +7300,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 12, r: 16, b: 12, l: 16 }, align: "center", wrap: false },
           },
         );
-        const backLabel = makeTextNode("버튼 텍스트", "메인으로", { x: 0, y: 0, w: 100, h: 20, rotation: 0 }, { size: 14, weight: 600, color: "#FFFFFF", align: "center" });
+        const backLabel = makeTextNode("Back Label", "Back", { x: 0, y: 0, w: 100, h: 20, rotation: 0 }, { size: 14, weight: 600, color: "#FFFFFF", align: "center" });
         backBtn.children = [backLabel.id];
         backLabel.parentId = backBtn.id;
         backBtn.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: mainTargetId } }] };
@@ -6746,7 +7321,7 @@ export default function AdvancedEditor() {
       };
 
       const origin = { x: 120, y: 120 };
-      if (!pageHasNode(onboardingPage.rootId, "KREAM 온보딩")) {
+      if (!pageHasNode(onboardingPage.rootId, "KREAM Onboarding")) {
         const presetDef = findPreset("kream-onboarding");
         if (presetDef) {
           const built = presetDef.build(origin);
@@ -6760,12 +7335,12 @@ export default function AdvancedEditor() {
         }
       }
 
-      if (!pageHasNode(loginPage.rootId, "KREAM 로그인")) {
+      if (!pageHasNode(loginPage.rootId, "KREAM Login")) {
         const presetDef = findPreset("kream-login");
         if (presetDef) {
           const built = presetDef.build(origin);
           Object.values(built.nodes).forEach((node) => {
-            if (node.name === "로그인 버튼" && node.prototype?.interactions?.length) {
+            if (node.prototype?.interactions?.some((interaction) => interaction.action?.type === "submit")) {
               node.prototype = {
                 interactions: node.prototype.interactions.map((interaction) =>
                   interaction.action.type === "submit"
@@ -6774,10 +7349,10 @@ export default function AdvancedEditor() {
                 ),
               };
             }
-            if (node.type === "text" && node.text?.value === "이메일 가입") {
+            if (node.type === "text" && node.prototype?.interactions?.length) {
               node.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: signupPage.id } }] };
             }
-            if (node.name === "닫기") {
+            if (node.type !== "text" && node.prototype?.interactions?.some((interaction) => interaction.action?.type === "navigate")) {
               node.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: onboardingPage.id } }] };
             }
           });
@@ -6785,12 +7360,13 @@ export default function AdvancedEditor() {
         }
       }
 
-      if (!pageHasNode(signupPage.rootId, "KREAM 회원가입")) {
+      if (!pageHasNode(signupPage.rootId, "KREAM Signup")) {
         const presetDef = findPreset("kream-signup");
         if (presetDef) {
           const built = presetDef.build(origin);
           Object.values(built.nodes).forEach((node) => {
-            if (node.name === "가입하기 버튼" && node.prototype?.interactions?.length) {
+            if (node.prototype?.interactions?.some((interaction) => interaction.action?.type === "submit")) {
+
               node.prototype = {
                 interactions: node.prototype.interactions.map((interaction) =>
                   interaction.action.type === "submit"
@@ -6799,7 +7375,7 @@ export default function AdvancedEditor() {
                 ),
               };
             }
-            if (node.name === "뒤로") {
+            if (node.name === "Label") {
               node.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: loginPage.id } }] };
             }
           });
@@ -6807,15 +7383,15 @@ export default function AdvancedEditor() {
         }
       }
 
-      if (!pageHasNode(mainPage.rootId, "KREAM 메인")) {
+      if (!pageHasNode(mainPage.rootId, "Label")) {
         const mainPreset = findPreset("kream-main");
         if (mainPreset) {
           const built = mainPreset.build(origin);
           Object.values(built.nodes).forEach((node) => {
-            if (node.name === "메인 배너") {
+            if (node.name === "Label") {
               node.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: page2Page.id } }] };
             }
-            if (node.name === "탭 MY") {
+            if (node.name === "MY") {
               node.prototype = {
                 interactions: [
                   { id: makeRuntimeId("proto"), trigger: "click", action: { type: "submit", url: "/api/auth/logout", method: "POST", nextPageId: loginPage.id } },
@@ -6830,7 +7406,7 @@ export default function AdvancedEditor() {
         }
       }
 
-      if (!pageHasNode(page2Page.rootId, "KREAM 2페이지")) {
+      if (!pageHasNode(page2Page.rootId, "Label")) {
         const built = buildPage2(origin, mainPage.id);
         placeOnPage(page2Page.rootId, built.nodes, built.rootId);
       }
@@ -6863,7 +7439,8 @@ export default function AdvancedEditor() {
         touchedPages.add(pageId);
       };
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) {
           markInfinite(existing.id);
@@ -6879,17 +7456,20 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const loginPage = ensurePage("로그인");
-      const signupPage = ensurePage("회원가입");
-      const accountPage = ensurePage("계정");
+      const loginPage = ensurePage("Login");
+      const signupPage = ensurePage("Signup");
+      const accountPage = ensurePage("Account");
+
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: loginPage.id };
 
       const pageHasNode = (pageId: string, nodeName: string) => {
         const ids = flattenIds(draft, pageId);
-        return ids.some((id) => draft.nodes[id]?.name === nodeName);
+        const targetName = normalizePresetLabel(nodeName, "Node");
+        return ids.some((id) => normalizePresetLabel(draft.nodes[id]?.name ?? "", "Node") === targetName);
       };
 
       const placeOnPage = (pageId: string, nodes: Record<string, Node>, rootId: string) => {
+        sanitizePresetNodes(nodes, preset.id);
         Object.assign(draft.nodes, nodes);
         const pageRoot = draft.nodes[pageId];
         const rootNode = draft.nodes[rootId];
@@ -6899,8 +7479,8 @@ export default function AdvancedEditor() {
 
       const buildLoginFlow = (origin: { x: number; y: number }, signupTargetId: string, nextPageId: string) => {
         const frame = makeFrameNode(
-          "로그인 폼 (플로우)",
-          { x: origin.x, y: origin.y, w: 360, h: 380, rotation: 0 },
+          "Login Flow",
+          { x: origin.x, y: origin.y, w: 360, h: 420, rotation: 0 },
           {
             fill: "#FFFFFF",
             stroke: { color: "#E5E7EB", width: 1 },
@@ -6908,9 +7488,9 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "column", gap: 12, padding: { t: 20, r: 20, b: 20, l: 20 }, align: "stretch", wrap: false },
           },
         );
-        const title = makeTextNode("타이틀", "로그인", { x: 0, y: 0, w: 200, h: 28, rotation: 0 }, { size: 20, weight: 700 });
+        const title = makeTextNode("Title", "Login", { x: 0, y: 0, w: 200, h: 28, rotation: 0 }, { size: 20, weight: 700 });
         const email = makeFrameNode(
-          "이메일 입력",
+          "Email Field",
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6919,11 +7499,12 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
           },
         );
-        const emailPlaceholder = makeTextNode("플레이스홀더", fieldPlaceholder("email", "이메일"), { x: 0, y: 0, w: 160, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+        const emailPlaceholder = makeTextNode("Placeholder", "Email", { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
         email.children = [emailPlaceholder.id];
         emailPlaceholder.parentId = email.id;
+
         const password = makeFrameNode(
-          "비밀번호 입력",
+          "Password Field",
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -6932,11 +7513,12 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
           },
         );
-        const passwordPlaceholder = makeTextNode("플레이스홀더", fieldPlaceholder("password", "비밀번호"), { x: 0, y: 0, w: 170, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+        const passwordPlaceholder = makeTextNode("Placeholder", "Password", { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
         password.children = [passwordPlaceholder.id];
         passwordPlaceholder.parentId = password.id;
+
         const button = makeFrameNode(
-          "로그인 버튼",
+          "Login Button",
           { x: 0, y: 0, w: 180, h: 44, rotation: 0 },
           {
             fill: "#111827",
@@ -6945,7 +7527,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 18, b: 10, l: 18 }, align: "center", wrap: false },
           },
         );
-        const buttonLabel = makeTextNode("버튼 텍스트", "로그인", { x: 0, y: 0, w: 80, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
+        const buttonLabel = makeTextNode("Label", "Continue", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
         button.children = [buttonLabel.id];
         buttonLabel.parentId = button.id;
         button.prototype = {
@@ -6957,18 +7539,21 @@ export default function AdvancedEditor() {
             },
           ],
         };
-        const helper = makeTextNode("회원가입 안내", "아직 계정이 없나요? 회원가입", { x: 0, y: 0, w: 220, h: 18, rotation: 0 }, { size: 12, color: "#6B7280" });
+
+        const helper = makeTextNode("Helper Link", "Create account", { x: 0, y: 0, w: 200, h: 18, rotation: 0 }, { size: 12, color: "#2563EB" });
         helper.prototype = {
           interactions: [
             { id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: signupTargetId } },
           ],
         };
+
         frame.children = [title.id, email.id, password.id, button.id, helper.id];
         title.parentId = frame.id;
         email.parentId = frame.id;
         password.parentId = frame.id;
         button.parentId = frame.id;
         helper.parentId = frame.id;
+
         return {
           rootId: frame.id,
           nodes: {
@@ -6987,8 +7572,8 @@ export default function AdvancedEditor() {
 
       const buildSignupFlow = (origin: { x: number; y: number }, loginTargetId: string, nextPageId: string) => {
         const frame = makeFrameNode(
-          "회원가입 폼 (플로우)",
-          { x: origin.x, y: origin.y, w: 360, h: 460, rotation: 0 },
+          "Signup Flow",
+          { x: origin.x, y: origin.y, w: 360, h: 420, rotation: 0 },
           {
             fill: "#FFFFFF",
             stroke: { color: "#E5E7EB", width: 1 },
@@ -6996,22 +7581,9 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "column", gap: 12, padding: { t: 20, r: 20, b: 20, l: 20 }, align: "stretch", wrap: false },
           },
         );
-        const title = makeTextNode("타이틀", "회원가입", { x: 0, y: 0, w: 200, h: 28, rotation: 0 }, { size: 20, weight: 700 });
-        const name = makeFrameNode(
-          "이름 입력",
-          { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
-          {
-            fill: "#FFFFFF",
-            radius: 10,
-            stroke: { color: "#D1D5DB", width: 1 },
-            layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
-          },
-        );
-        const namePlaceholder = makeTextNode("플레이스홀더", fieldPlaceholder("name", "이름"), { x: 0, y: 0, w: 160, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
-        name.children = [namePlaceholder.id];
-        namePlaceholder.parentId = name.id;
+        const title = makeTextNode("Title", "Create account", { x: 0, y: 0, w: 220, h: 28, rotation: 0 }, { size: 20, weight: 700 });
         const email = makeFrameNode(
-          "이메일 입력",
+          "Email Field",
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -7020,11 +7592,12 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
           },
         );
-        const emailPlaceholder = makeTextNode("플레이스홀더", fieldPlaceholder("email", "이메일"), { x: 0, y: 0, w: 170, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+        const emailPlaceholder = makeTextNode("Placeholder", "Email", { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
         email.children = [emailPlaceholder.id];
         emailPlaceholder.parentId = email.id;
+
         const password = makeFrameNode(
-          "비밀번호 입력",
+          "Password Field",
           { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
           {
             fill: "#FFFFFF",
@@ -7033,38 +7606,12 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
           },
         );
-        const passwordPlaceholder = makeTextNode("플레이스홀더", fieldPlaceholder("password", "비밀번호"), { x: 0, y: 0, w: 180, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
+        const passwordPlaceholder = makeTextNode("Placeholder", "Password", { x: 0, y: 0, w: 200, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
         password.children = [passwordPlaceholder.id];
         passwordPlaceholder.parentId = password.id;
-        const confirm = makeFrameNode(
-          "비밀번호 확인 입력",
-          { x: 0, y: 0, w: 320, h: 44, rotation: 0 },
-          {
-            fill: "#FFFFFF",
-            radius: 10,
-            stroke: { color: "#D1D5DB", width: 1 },
-            layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "center", wrap: false },
-          },
-        );
-        const confirmPlaceholder = makeTextNode("플레이스홀더", fieldPlaceholder("passwordConfirm", "비밀번호 확인"), { x: 0, y: 0, w: 220, h: 20, rotation: 0 }, { color: "#9CA3AF", size: 14 });
-        confirm.children = [confirmPlaceholder.id];
-        confirmPlaceholder.parentId = confirm.id;
-        const terms = makeFrameNode(
-          "약관 체크박스",
-          { x: 0, y: 0, w: 200, h: 28, rotation: 0 },
-          {
-            fill: "#FFFFFF",
-            stroke: null,
-            layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 4, r: 0, b: 4, l: 0 }, align: "center", wrap: false },
-          },
-        );
-        const termsBox = makeRectNode("체크", { x: 0, y: 0, w: 16, h: 16, rotation: 0 }, { fill: "#FFFFFF", stroke: { color: "#111827", width: 1 }, radius: 4 });
-        const termsLabel = makeTextNode("라벨", fieldPlaceholder("terms", "약관에 동의합니다"), { x: 0, y: 0, w: 220, h: 18, rotation: 0 }, { size: 12, color: "#6B7280" });
-        terms.children = [termsBox.id, termsLabel.id];
-        termsBox.parentId = terms.id;
-        termsLabel.parentId = terms.id;
+
         const button = makeFrameNode(
-          "회원가입 버튼",
+          "Signup Button",
           { x: 0, y: 0, w: 180, h: 44, rotation: 0 },
           {
             fill: "#111827",
@@ -7073,7 +7620,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 18, b: 10, l: 18 }, align: "center", wrap: false },
           },
         );
-        const buttonLabel = makeTextNode("버튼 텍스트", "가입하기", { x: 0, y: 0, w: 80, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
+        const buttonLabel = makeTextNode("Label", "Sign up", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
         button.children = [buttonLabel.id];
         buttonLabel.parentId = button.id;
         button.prototype = {
@@ -7085,37 +7632,30 @@ export default function AdvancedEditor() {
             },
           ],
         };
-        const helper = makeTextNode("로그인 안내", "이미 계정이 있나요? 로그인", { x: 0, y: 0, w: 220, h: 18, rotation: 0 }, { size: 12, color: "#6B7280" });
+
+        const helper = makeTextNode("Helper Link", "Already have an account? Login", { x: 0, y: 0, w: 260, h: 18, rotation: 0 }, { size: 12, color: "#2563EB" });
         helper.prototype = {
           interactions: [
             { id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: loginTargetId } },
           ],
         };
-        frame.children = [title.id, name.id, email.id, password.id, confirm.id, terms.id, button.id, helper.id];
+
+        frame.children = [title.id, email.id, password.id, button.id, helper.id];
         title.parentId = frame.id;
-        name.parentId = frame.id;
         email.parentId = frame.id;
         password.parentId = frame.id;
-        confirm.parentId = frame.id;
-        terms.parentId = frame.id;
         button.parentId = frame.id;
         helper.parentId = frame.id;
+
         return {
           rootId: frame.id,
           nodes: {
             [frame.id]: frame,
             [title.id]: title,
-            [name.id]: name,
-            [namePlaceholder.id]: namePlaceholder,
             [email.id]: email,
             [emailPlaceholder.id]: emailPlaceholder,
             [password.id]: password,
             [passwordPlaceholder.id]: passwordPlaceholder,
-            [confirm.id]: confirm,
-            [confirmPlaceholder.id]: confirmPlaceholder,
-            [terms.id]: terms,
-            [termsBox.id]: termsBox,
-            [termsLabel.id]: termsLabel,
             [button.id]: button,
             [buttonLabel.id]: buttonLabel,
             [helper.id]: helper,
@@ -7123,41 +7663,67 @@ export default function AdvancedEditor() {
         };
       };
 
+      const buildAccount = (origin: { x: number; y: number }, logoutTargetId: string) => {
+        const card = makeFrameNode(
+          "Account Card",
+          { x: origin.x, y: origin.y, w: 320, h: 200, rotation: 0 },
+          {
+            fill: "#FFFFFF",
+            stroke: { color: "#E5E7EB", width: 1 },
+            radius: 12,
+            layout: { mode: "auto", dir: "column", gap: 12, padding: { t: 20, r: 20, b: 20, l: 20 }, align: "stretch", wrap: false },
+          },
+        );
+        const title = makeTextNode("Title", "Account", { x: 0, y: 0, w: 200, h: 24, rotation: 0 }, { size: 18, weight: 700 });
+        const button = makeFrameNode(
+          "Logout Button",
+          { x: 0, y: 0, w: 160, h: 40, rotation: 0 },
+          {
+            fill: "#111827",
+            stroke: null,
+            radius: 10,
+            layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 16, b: 10, l: 16 }, align: "center", wrap: false },
+          },
+        );
+        const buttonLabel = makeTextNode("Label", "Logout", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
+        button.children = [buttonLabel.id];
+        buttonLabel.parentId = button.id;
+        button.prototype = {
+          interactions: [
+            { id: makeRuntimeId("proto"), trigger: "click", action: { type: "submit", url: "/api/auth/logout", method: "POST", nextPageId: logoutTargetId } },
+          ],
+        };
+
+        card.children = [title.id, button.id];
+        title.parentId = card.id;
+        button.parentId = card.id;
+
+        return {
+          rootId: card.id,
+          nodes: {
+            [card.id]: card,
+            [title.id]: title,
+            [button.id]: button,
+            [buttonLabel.id]: buttonLabel,
+          },
+        };
+      };
+
       const origin = { x: 120, y: 120 };
-      if (!pageHasNode(loginPage.rootId, "로그인 폼 (플로우)")) {
+
+      if (!pageHasNode(loginPage.rootId, "Login Flow")) {
         const built = buildLoginFlow(origin, signupPage.id, accountPage.id);
         placeOnPage(loginPage.rootId, built.nodes, built.rootId);
       }
-      if (!pageHasNode(signupPage.rootId, "회원가입 폼 (플로우)")) {
+
+      if (!pageHasNode(signupPage.rootId, "Signup Flow")) {
         const built = buildSignupFlow(origin, loginPage.id, accountPage.id);
         placeOnPage(signupPage.rootId, built.nodes, built.rootId);
       }
 
-      if (!pageHasNode(accountPage.rootId, "관리자 패널")) {
-        const adminPreset = ALL_PRESET_GROUPS.flatMap((group) => group.items).find((item) => item.id === "admin-panel");
-        if (adminPreset) {
-          const built = adminPreset.build(origin);
-          placeOnPage(accountPage.rootId, built.nodes, built.rootId);
-        }
-      }
-
-      if (!pageHasNode(accountPage.rootId, "로그아웃 버튼")) {
-        const logoutPreset = ALL_PRESET_GROUPS.flatMap((group) => group.items).find((item) => item.id === "auth-logout");
-        if (logoutPreset) {
-          const built = logoutPreset.build({ x: origin.x, y: origin.y + 520 });
-          Object.values(built.nodes).forEach((node) => {
-            const interactions = node.prototype?.interactions ?? [];
-            if (!interactions.length) return;
-            node.prototype = {
-              interactions: interactions.map((interaction) =>
-                interaction.action.type === "submit"
-                  ? { ...interaction, action: { ...interaction.action, nextPageId: loginPage.id } }
-                  : interaction,
-              ),
-            };
-          });
-          placeOnPage(accountPage.rootId, built.nodes, built.rootId);
-        }
+      if (!pageHasNode(accountPage.rootId, "Account Card")) {
+        const built = buildAccount(origin, loginPage.id);
+        placeOnPage(accountPage.rootId, built.nodes, built.rootId);
       }
 
       commit(draft);
@@ -7174,13 +7740,13 @@ export default function AdvancedEditor() {
       pushMessage("preset_added");
       return;
     }
-
     if (preset.id === "page-nav-demo") {
       const draft = cloneDoc(docRef.current);
       const root = draft.nodes[draft.root];
       if (!root) return;
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) return existing;
         const pageId = makeRuntimeId("page");
@@ -7192,13 +7758,13 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const pageA = ensurePage("페이지 A");
-      const pageB = ensurePage("페이지 B");
+      const pageA = ensurePage("Label");
+      const pageB = ensurePage("Label");
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: pageA.id };
 
       const addNavButtons = (pageId: string, targetId: string) => {
         const button = makeFrameNode(
-          "페이지 이동 버튼",
+          "Label",
           { x: 120, y: 140, w: 200, h: 44, rotation: 0 },
           {
             fill: "#111827",
@@ -7207,7 +7773,7 @@ export default function AdvancedEditor() {
             layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 10, r: 18, b: 10, l: 18 }, align: "center", wrap: false },
           },
         );
-        const label = makeTextNode("버튼 텍스트", `→ ${draft.pages.find((p) => p.id === targetId)?.name ?? "다음"}`, { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
+        const label = makeTextNode("Nav Button Label", "Go to page", { x: 0, y: 0, w: 120, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 14, weight: 600, align: "center" });
         button.children = [label.id];
         label.parentId = button.id;
         button.prototype = { interactions: [{ id: makeRuntimeId("proto"), trigger: "click", action: { type: "navigate", targetPageId: targetId } }] };
@@ -7220,7 +7786,7 @@ export default function AdvancedEditor() {
 
       const pageHasButton = (pageId: string) => {
         const ids = flattenIds(draft, pageId);
-        return ids.some((id) => draft.nodes[id]?.name === "페이지 이동 버튼");
+        return ids.some((id) => draft.nodes[id]?.name === "Label");
       };
 
       if (!pageHasButton(pageA.rootId)) addNavButtons(pageA.rootId, pageB.id);
@@ -7237,7 +7803,8 @@ export default function AdvancedEditor() {
       const root = draft.nodes[draft.root];
       if (!root) return;
 
-      const ensurePage = (name: string) => {
+      const ensurePage = (rawName: string) => {
+        const name = normalizePresetLabel(rawName, "Page");
         const existing = draft.pages.find((page) => page.name === name);
         if (existing) return existing;
         const pageId = makeRuntimeId("page");
@@ -7249,8 +7816,8 @@ export default function AdvancedEditor() {
         return page;
       };
 
-      const basePage = ensurePage("호버 데모");
-      const overlayPage = ensurePage("툴팁 오버레이");
+      const basePage = ensurePage("Label");
+      const overlayPage = ensurePage("Label");
       draft.prototype = { ...(draft.prototype ?? {}), startPageId: basePage.id };
 
       const baseRoot = draft.nodes[basePage.rootId];
@@ -7258,7 +7825,7 @@ export default function AdvancedEditor() {
       if (!baseRoot || !overlayRoot) return;
 
       const target = makeFrameNode(
-        "호버 타겟",
+        "Label",
         { x: 140, y: 160, w: 220, h: 80, rotation: 0 },
         {
           fill: "#111827",
@@ -7267,7 +7834,7 @@ export default function AdvancedEditor() {
           layout: { mode: "auto", dir: "row", gap: 8, padding: { t: 12, r: 16, b: 12, l: 16 }, align: "center", wrap: false },
         },
       );
-      const targetLabel = makeTextNode("라벨", "마우스를 올려보세요", { x: 0, y: 0, w: 160, h: 20, rotation: 0 }, { color: "#FFFFFF", size: 13, weight: 600, align: "center" });
+      const targetLabel = makeTextNode("Target Label", "Hover", { x: 0, y: 0, w: 120, h: 18, rotation: 0 }, { color: "#FFFFFF", size: 13, weight: 600, align: "center" });
       target.children = [targetLabel.id];
       targetLabel.parentId = target.id;
       target.prototype = {
@@ -7277,7 +7844,7 @@ export default function AdvancedEditor() {
       };
 
       const tooltip = makeFrameNode(
-        "툴팁",
+        "Label",
         { x: 220, y: 110, w: 220, h: 70, rotation: 0 },
         {
           fill: "#FFFFFF",
@@ -7286,8 +7853,9 @@ export default function AdvancedEditor() {
           layout: { mode: "auto", dir: "column", gap: 6, padding: { t: 10, r: 12, b: 10, l: 12 }, align: "start", wrap: false },
         },
       );
-      const tooltipTitle = makeTextNode("타이틀", "호버 오버레이", { x: 0, y: 0, w: 160, h: 18, rotation: 0 }, { size: 12, weight: 700 });
-      const tooltipDesc = makeTextNode("설명", "클릭하면 닫힙니다", { x: 0, y: 0, w: 160, h: 16, rotation: 0 }, { size: 11, color: "#6B7280" });
+      const tooltipTitle = makeTextNode("Label", "Label", { x: 0, y: 0, w: 160, h: 18, rotation: 0 }, { size: 12, weight: 700 });
+      const tooltipDesc = makeTextNode("Label", "Label", { x: 0, y: 0, w: 180, h: 32, rotation: 0 }, { size: 11, color: "#6B7280" });
+
       tooltip.children = [tooltipTitle.id, tooltipDesc.id];
       tooltipTitle.parentId = tooltip.id;
       tooltipDesc.parentId = tooltip.id;
@@ -7317,33 +7885,21 @@ export default function AdvancedEditor() {
     const viewWidth = canvasSize.width / view.zoom;
     const viewHeight = canvasSize.height / view.zoom;
     const origin = {
-      x: snap(view.panX + (viewWidth - preset.size.w) / 2, gridSnap),
-      y: snap(view.panY + (viewHeight - preset.size.h) / 2, gridSnap),
+      x: snapValue(view.panX + (viewWidth - preset.size.w) / 2, gridSnap, "x"),
+      y: snapValue(view.panY + (viewHeight - preset.size.h) / 2, gridSnap, "y"),
     };
     const built = preset.build(origin);
     const resolveSubmitTarget = () => {
+      const findPageByRawName = (rawName: string) =>
+        draft.pages.find((page) => normalizePresetLabel(page.name, "Page") === normalizePresetLabel(rawName, "Page"));
       if (preset.id === "payment-form") {
-        return (
-          draft.pages.find((page) => page.name === "결제 완료") ??
-          draft.pages.find((page) => page.name === "완료") ??
-          draft.pages.find((page) => page.name === "성공") ??
-          null
-        );
+        return findPageByRawName("Account") ?? findPageByRawName("Stage") ?? null;
       }
       if (preset.id === "auth-login" || preset.id === "auth-signup") {
-        return (
-          draft.pages.find((page) => page.name === "계정") ??
-          draft.pages.find((page) => page.name === "대시보드") ??
-          draft.pages.find((page) => page.name === "홈") ??
-          null
-        );
+        return findPageByRawName("Account") ?? null;
       }
       if (preset.id === "auth-logout") {
-        return (
-          draft.pages.find((page) => page.name === "로그인") ??
-          draft.pages.find((page) => page.name === "홈") ??
-          null
-        );
+        return findPageByRawName("Login") ?? null;
       }
       return null;
     };
@@ -7364,6 +7920,7 @@ export default function AdvancedEditor() {
         };
       });
     }
+    sanitizePresetNodes(built.nodes, preset.id);
     Object.assign(draft.nodes, built.nodes);
     const parent = draft.nodes[rootId];
     const rootNode = draft.nodes[built.rootId];
@@ -7371,11 +7928,63 @@ export default function AdvancedEditor() {
     if (rootNode) rootNode.parentId = rootId;
     draft.selection = new Set([built.rootId]);
     commit(draft);
-    const guideMsg = preset.description
-      ? `${displayPresetLabel(preset.label, preset.id)} — ${preset.description}`
+    const guideDesc = sanitizeDescription(preset.description);
+    const guideMsg = guideDesc
+      ? `${displayPresetLabel(preset.label, preset.id)} - ${guideDesc}`
       : "preset_added";
     pushMessage(guideMsg);
   }, [canvasSize.width, canvasSize.height, gridSnap, commit, activePageId, selectPage, enableInfiniteCanvas, pushMessage]);
+
+  const insertPresetAsNewPage = useCallback(
+    (preset: PresetDefinition) => {
+      try {
+        const draft = cloneDoc(docRef.current);
+        ensureBasePage(draft);
+        const root = ensureRootNode(draft);
+        if (!root) {
+          pushMessage("page_action_failed");
+          return;
+        }
+        const baseLabel = displayPresetLabel(preset.label, preset.id).trim();
+        const baseName = baseLabel ? `Template ${baseLabel}` : "Template";
+        let name = baseName;
+        let idx = 2;
+        while (draft.pages.some((page) => page.name === name)) {
+          name = `${baseName} ${idx}`;
+          idx += 1;
+        }
+        const pageId = makeRuntimeId("page");
+        const pageNode = createNode("frame", { id: pageId, name, parentId: draft.root });
+        pageNode.frame = {
+          ...pageNode.frame,
+          w: Math.max(pageNode.frame.w, preset.size.w + 160),
+          h: Math.max(pageNode.frame.h, preset.size.h + 160),
+        };
+        draft.nodes[pageId] = pageNode;
+        root.children = [...root.children, pageId];
+        draft.pages = [...draft.pages, { id: pageId, name, rootId: pageId }];
+        if (!draft.prototype?.startPageId) {
+          draft.prototype = { ...(draft.prototype ?? {}), startPageId: pageId };
+        }
+        enableInfiniteCanvas(draft, pageId);
+        const built = preset.build({ x: 80, y: 80 });
+        sanitizePresetNodes(built.nodes, preset.id);
+        Object.assign(draft.nodes, built.nodes);
+        const parent = draft.nodes[pageId];
+        const rootNode = draft.nodes[built.rootId];
+        if (parent) parent.children = [...parent.children, built.rootId];
+        if (rootNode) rootNode.parentId = pageId;
+        draft.selection = new Set([built.rootId]);
+        commit(draft);
+        setInfiniteCanvasPages((prev) => ({ ...prev, [pageId]: true }));
+        selectPage(pageId);
+        pushMessage("preset_added");
+      } catch {
+        pushMessage("page_action_failed");
+      }
+    },
+    [commit, enableInfiniteCanvas, pushMessage, selectPage],
+  );
 
   const insertPresetById = useCallback(
     (presetId: string) => {
@@ -7517,8 +8126,8 @@ export default function AdvancedEditor() {
       const snapped = gridSnapRef.current;
       frames[id] = {
         ...node.frame,
-        x: snap(node.frame.x + dx, snapped),
-        y: snap(node.frame.y + dy, snapped),
+        x: snapValue(node.frame.x + dx, snapped, "x"),
+        y: snapValue(node.frame.y + dy, snapped, "y"),
       };
     });
     updateFrames(frames, true);
@@ -7625,10 +8234,10 @@ export default function AdvancedEditor() {
       if (!node || node.locked) return;
       frames[id] = {
         ...node.frame,
-        x: snap(node.frame.x, true),
-        y: snap(node.frame.y, true),
-        w: snap(node.frame.w, true),
-        h: snap(node.frame.h, true),
+        x: snapValue(node.frame.x, true, "x"),
+        y: snapValue(node.frame.y, true, "y"),
+        w: snapValue(node.frame.w, true),
+        h: snapValue(node.frame.h, true),
       };
     });
     updateFrames(frames, true);
@@ -7710,6 +8319,46 @@ export default function AdvancedEditor() {
     commit(next);
     pushMessage(allLocked ? "unlock_applied" : "lock_applied");
   }, [commit, pushMessage]);
+
+  const hideOtherLayers = useCallback(() => {
+    const draft = cloneDoc(docRef.current);
+    const selected = Array.from(draft.selection);
+    if (!selected.length) return;
+    const keep = new Set<string>();
+    selected.forEach((id) => collectSubtreeIds(draft, id, keep));
+    let updated = false;
+    Object.keys(draft.nodes).forEach((id) => {
+      if (id === draft.root) return;
+      const node = draft.nodes[id];
+      if (!node) return;
+      if (keep.has(id)) return;
+      if (!node.hidden) {
+        node.hidden = true;
+        updated = true;
+      }
+    });
+    if (!updated) return;
+    commit(draft);
+    pushMessage("hide_applied");
+    pushEditorEvent("action", "hide others");
+  }, [commit, pushMessage, pushEditorEvent]);
+
+  const showAllLayers = useCallback(() => {
+    const draft = cloneDoc(docRef.current);
+    let updated = false;
+    Object.keys(draft.nodes).forEach((id) => {
+      const node = draft.nodes[id];
+      if (!node || id === draft.root) return;
+      if (node.hidden) {
+        node.hidden = false;
+        updated = true;
+      }
+    });
+    if (!updated) return;
+    commit(draft);
+    pushMessage("show_applied");
+    pushEditorEvent("action", "show all layers");
+  }, [commit, pushMessage, pushEditorEvent]);
 
   const fitSelectionToContent = useCallback(() => {
     const ids = getTopLevelSelection(docRef.current, Array.from(docRef.current.selection));
@@ -7987,7 +8636,7 @@ export default function AdvancedEditor() {
         });
         const data = await res.json().catch(() => null);
         if (!res.ok) {
-          setMessage(data?.error ?? "save_failed");
+        setMessage("Invalid image URL.");
           return null;
         }
         const createdId = data?.page?.id ?? data?.pageId ?? data?.id;
@@ -8010,7 +8659,7 @@ export default function AdvancedEditor() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setMessage(data?.error ?? "save_failed");
+        setMessage("Invalid image URL.");
         return null;
       }
       if (typeof data?.version?.id === "string") {
@@ -8126,7 +8775,7 @@ export default function AdvancedEditor() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setMessage(data?.message ?? data?.error ?? "publish_failed");
+        setMessage("Invalid image URL.");
         return;
       }
 
@@ -8161,6 +8810,58 @@ export default function AdvancedEditor() {
     const name = makeSafeFilename(title || "advanced_export");
     downloadBlob(new Blob([payload], { type: "application/json;charset=utf-8" }), `${name}-tokens.json`);
   }, [title]);
+
+  const importTokensJson = useCallback(
+    async (file: File) => {
+      try {
+        const raw = await readFileAsText(file);
+        const parsed = JSON.parse(raw ?? "{}") as {
+          styles?: StyleToken[];
+          variables?: Variable[];
+          variableModes?: string[];
+          activeMode?: string | null;
+        };
+        const incomingStyles = Array.isArray(parsed.styles) ? parsed.styles : [];
+        const incomingVariables = Array.isArray(parsed.variables) ? parsed.variables : [];
+        const incomingModes = Array.isArray(parsed.variableModes) ? parsed.variableModes.filter(Boolean) : [];
+        const incomingActive = typeof parsed.activeMode === "string" ? parsed.activeMode : null;
+
+        const mergeById = <T extends { id: string }>(current: T[], next: T[]) => {
+          const map = new Map(current.map((item) => [item.id, item]));
+          next.forEach((item) => map.set(item.id, item));
+          return Array.from(map.values());
+        };
+
+        const draft = cloneDoc(docRef.current);
+        if (tokenImportMode === "replace") {
+          draft.styles = incomingStyles;
+          draft.variables = incomingVariables;
+          draft.variableModes = incomingModes.length ? incomingModes : draft.variableModes ?? ["Default"];
+          if (incomingActive) {
+            if (!draft.variableModes?.includes(incomingActive)) {
+              draft.variableModes = [...(draft.variableModes ?? []), incomingActive];
+            }
+            draft.variableMode = incomingActive;
+          } else {
+            draft.variableMode = draft.variableModes?.[0];
+          }
+        } else {
+          draft.styles = mergeById(draft.styles, incomingStyles);
+          draft.variables = mergeById(draft.variables, incomingVariables);
+          const baseModes = draft.variableModes?.length ? draft.variableModes : ["Default"];
+          const modeSet = new Set([...baseModes, ...incomingModes]);
+          if (incomingActive) modeSet.add(incomingActive);
+          draft.variableModes = Array.from(modeSet);
+          if (incomingActive) draft.variableMode = incomingActive;
+        }
+        commit(draft);
+        pushMessage("Tokens imported.");
+      } catch (e) {
+        pushMessage("Token import failed.");
+      }
+    },
+    [commit, pushMessage, tokenImportMode],
+  );
 
   const getExportBounds = useCallback(() => {
     const doc = docRef.current;
@@ -8392,7 +9093,7 @@ export default function AdvancedEditor() {
     (action: PluginAction, depth = 0) => {
       if (!action) return;
       if (depth > MAX_PLUGIN_DEPTH) {
-        pushMessage("플러그인 단계가 너무 깊습니다.");
+        pushMessage("Label");
         return;
       }
       if (action.type === "macro" && Array.isArray(action.steps)) {
@@ -8443,13 +9144,13 @@ export default function AdvancedEditor() {
       if (action.type === "openUrl" && action.url) {
         const safe = isSafeExternalUrl(action.url);
         if (!safe) {
-          pushMessage("허용되지 않는 URL입니다.");
+          pushMessage("Invalid URL. Please enter a valid http(s) URL.");
           return;
         }
         window.open(safe, "_blank");
         return;
       }
-      pushMessage("지원하지 않는 플러그인 액션입니다.");
+      pushMessage("Unsupported action.");
     },
     [exportSelectionPng, exportSelectionSvg, exportTokensJson, pushMessage],
   );
@@ -8458,17 +9159,17 @@ export default function AdvancedEditor() {
     const name = branchNameInput.trim();
     const targetId = branchTargetVersionId || currentVersionId || "";
     if (!name) {
-      pushMessage("브랜치 이름을 입력하세요.");
+      pushMessage("Branch name is required.");
       return;
     }
     if (!targetId) {
-      pushMessage("기준 버전을 선택하세요.");
+      pushMessage("Select a target version.");
       return;
     }
     setBranches((prev) => ({ ...prev, [name]: targetId }));
     setBranchNameInput("");
     setBranchTargetVersionId("");
-    pushMessage("브랜치가 생성되었습니다.");
+    pushMessage("Branch created.");
   }, [branchNameInput, branchTargetVersionId, currentVersionId, pushMessage]);
 
   const removeBranch = useCallback((name: string) => {
@@ -8489,7 +9190,7 @@ export default function AdvancedEditor() {
     const versionId = branches[name];
     if (!versionId) return;
     await restoreVersion(versionId);
-    pushMessage("브랜치를 병합했습니다.");
+    pushMessage("Label");
   }, [branches, restoreVersion, pushMessage]);
 
   const exportByNodeSettings = useCallback(() => {
@@ -8699,7 +9400,7 @@ export default function AdvancedEditor() {
         return;
       }
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-        const step = gridSnapRef.current ? GRID : 1;
+        const step = gridSnapRef.current ? Math.max(1, gridSizeRef.current) : 1;
         const delta = e.shiftKey ? step * 5 : step;
         if (e.key === "ArrowLeft") {
           e.preventDefault();
@@ -8969,18 +9670,71 @@ export default function AdvancedEditor() {
     walk(pageRoot);
     return set;
   }, [doc, pageRoot]);
+  const allPresetTags = useMemo(() => {
+    const tagMap = new Map<string, string>();
+    const addTag = (raw: string | undefined | null) => {
+      const tag = String(raw ?? "").trim();
+      if (!tag) return;
+      const key = tag.toLowerCase();
+      if (!tagMap.has(key)) tagMap.set(key, tag);
+    };
+    ALL_PRESET_GROUPS.forEach((group) => {
+      const groupLabel = displayPresetGroupTitle(group.title, group.items[0]?.id ?? "group");
+      addTag(groupLabel);
+      group.items.forEach((item) => {
+        (item.tags ?? []).forEach(addTag);
+      });
+    });
+    return Array.from(tagMap.values()).sort((a, b) => a.localeCompare(b));
+  }, []);
+  const toggleAssetTag = useCallback((tag: string) => {
+    setAssetTagFilters((prev) => {
+      if (prev.includes(tag)) return prev.filter((t) => t !== tag);
+      return [...prev, tag];
+    });
+  }, []);
+  const clearAssetTags = useCallback(() => setAssetTagFilters([]), []);
+  const assetTagSet = useMemo(() => new Set(assetTagFilters.map((tag) => tag.toLowerCase())), [assetTagFilters]);
+  const templatePresetGroups = useMemo(() => {
+    return ALL_PRESET_GROUPS.map((group) => ({
+      ...group,
+      items: group.items.filter((item) => item.id.startsWith("asset-template-")),
+    })).filter((group) => group.items.length > 0);
+  }, []);
+  const filteredTemplateGroups = useMemo(() => {
+    const query = templateQuery.trim().toLowerCase();
+    if (!query) return templatePresetGroups;
+    return templatePresetGroups.map((group) => ({
+      ...group,
+      items: group.items.filter((item) => {
+        const label = displayPresetLabel(item.label, item.id).toLowerCase();
+        const desc = sanitizeDescription(item.description).toLowerCase();
+        return label.includes(query) || desc.includes(query) || item.id.toLowerCase().includes(query);
+      }),
+    })).filter((group) => group.items.length > 0);
+  }, [templatePresetGroups, templateQuery]);
   const filteredPresetGroups = useMemo(() => {
     const query = elementQuery.trim().toLowerCase();
-    if (!query) return ALL_PRESET_GROUPS;
+    const hasTagFilter = assetTagSet.size > 0;
+    if (!query && !hasTagFilter) return ALL_PRESET_GROUPS;
     return ALL_PRESET_GROUPS.map((group) => ({
       ...group,
       items: group.items.filter((item) => {
         const itemLabel = displayPresetLabel(item.label, item.id).toLowerCase();
         const groupLabel = displayPresetGroupTitle(group.title, group.items[0]?.id ?? "group").toLowerCase();
-        return itemLabel.includes(query) || item.id.toLowerCase().includes(query) || groupLabel.includes(query);
+        const matchesQuery =
+          !query || itemLabel.includes(query) || item.id.toLowerCase().includes(query) || groupLabel.includes(query);
+        if (!matchesQuery) return false;
+        if (!hasTagFilter) return true;
+        const itemTags = new Set<string>([groupLabel]);
+        (item.tags ?? []).forEach((tag) => itemTags.add(tag.toLowerCase()));
+        for (const tag of assetTagSet) {
+          if (itemTags.has(tag)) return true;
+        }
+        return false;
       }),
     })).filter((group) => group.items.length > 0);
-  }, [elementQuery]);
+  }, [elementQuery, assetTagSet]);
   const filteredResourceGroups = useMemo(() => {
     const query = resourceQuery.trim().toLowerCase();
     if (!query) return ALL_PRESET_GROUPS;
@@ -8998,6 +9752,15 @@ export default function AdvancedEditor() {
   const hasSelection = selectedIds.length > 0;
   const hasMultipleSelection = selectedIds.length > 1;
   const hasGroupSelection = selectedIds.some((id) => doc.nodes[id]?.type === "group");
+  const canFlattenSelection = selectedIds.some((id) => {
+    const node = doc.nodes[id];
+    return Boolean(node && ["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(node.type));
+  });
+  const canJoinSelection =
+    selectedIds.filter((id) => {
+      const node = doc.nodes[id];
+      return Boolean(node && ["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(node.type));
+    }).length > 1;
   const selectionHidden = hasSelection && selectedIds.every((id) => doc.nodes[id]?.hidden);
   const selectionLocked = hasSelection && selectedIds.every((id) => doc.nodes[id]?.locked);
   const canPaste = Boolean(clipboardRef.current);
@@ -9009,15 +9772,32 @@ export default function AdvancedEditor() {
   const editingTextStyle = editingNode ? resolveTextStyle(doc, editingNode) : null;
   const editingFill = editingNode ? resolveFillColor(doc, editingNode) : "#111827";
   const componentName = Object.values(doc.nodes).filter((node) => node.type === "component");
-  const fillStyles = doc.styles.filter((style) => style.type === "fill");
-  const strokeStyles = doc.styles.filter((style) => style.type === "stroke");
-  const textStyles = doc.styles.filter((style) => style.type === "text");
-  const effectStyles = doc.styles.filter((style) => style.type === "effect");
+  const componentSearchText = componentSearch.trim().toLowerCase();
+  const filteredComponents = componentName.filter((component) =>
+    (component.name ?? "").toLowerCase().includes(componentSearchText),
+  );
+  const styleSearchText = styleSearch.trim().toLowerCase();
+  const styleMatches = (style: StyleToken) => {
+    if (styleTypeFilter !== "all" && style.type !== styleTypeFilter) return false;
+    if (!styleSearchText) return true;
+    return style.name.toLowerCase().includes(styleSearchText);
+  };
+  const fillStyles = doc.styles.filter((style) => style.type === "fill").filter(styleMatches);
+  const strokeStyles = doc.styles.filter((style) => style.type === "stroke").filter(styleMatches);
+  const textStyles = doc.styles.filter((style) => style.type === "text").filter(styleMatches);
+  const effectStyles = doc.styles.filter((style) => style.type === "effect").filter(styleMatches);
+  const variableSearchText = variableSearch.trim().toLowerCase();
+  const filteredVariables = doc.variables.filter((variable) => {
+    if (variableTypeFilter !== "all" && variable.type !== variableTypeFilter) return false;
+    if (!variableSearchText) return true;
+    return variable.name.toLowerCase().includes(variableSearchText);
+  });
   const colorVariables = doc.variables.filter((variable) => variable.type === "color");
-  const variableModes = doc.variableModes?.length ? doc.variableModes : ["기본"];
+  const variableModes = doc.variableModes?.length ? doc.variableModes : ["Default"];
   const activeVariableMode = doc.variableMode ?? variableModes[0];
   const selectedIsComponent = selectedNode?.type === "component";
   const selectedIsInstance = selectedNode?.type === "instance";
+  const defaultVariantId = selectedIsComponent ? selectedNode?.variants?.[0]?.id ?? null : null;
   const instanceSource = selectedIsInstance && selectedNode?.instanceOf ? doc.nodes[selectedNode.instanceOf] : null;
   const selectedComponentRoot = useMemo(
     () => (selectedNode ? findComponentRoot(doc, selectedNode.id) : null),
@@ -9031,6 +9811,31 @@ export default function AdvancedEditor() {
       : componentPropKind === "instance"
         ? selectedNode?.type === "instance"
         : true);
+  const componentSlots = useMemo(() => {
+    if (!selectedComponentRoot) return [];
+    return flattenIds(doc, selectedComponentRoot.id)
+      .map((id) => doc.nodes[id])
+      .filter((node): node is Node => Boolean(node && node.slotId))
+      .map((node) => ({
+        id: node.id,
+        name: node.name,
+        slotId: node.slotId as string,
+      }));
+  }, [doc, selectedComponentRoot?.id]);
+  const instanceSlots = useMemo(() => {
+    if (!instanceSource || instanceSource.type !== "component") return [];
+    return flattenIds(doc, instanceSource.id)
+      .map((id) => doc.nodes[id])
+      .filter((node): node is Node => Boolean(node && node.slotId))
+      .map((node) => ({
+        id: node.id,
+        name: node.name,
+        slotId: node.slotId as string,
+      }));
+  }, [doc, instanceSource?.id]);
+  const instanceSlotContents = selectedIsInstance && selectedNode?.overrides?.slotContents
+    ? selectedNode.overrides.slotContents
+    : {};
   const instanceTextOverrides = useMemo(() => {
     if (!selectedIsInstance || !selectedNode) return [];
     return flattenIds(doc, selectedNode.id)
@@ -9110,70 +9915,57 @@ export default function AdvancedEditor() {
     setContextMenu(null);
     setContextMenuSubMenu(null);
   };
-  /** 8번: 1단계 — 잘라내기, 복사, 붙여넣기, 삭제, 그룹, 잠금 등 5~8개 */
+  /** NOTE: comment removed (encoding issue). */
   const contextPrimaryItems: ContextItem[] = [
-    { id: "cut", label: "잘라내기", hint: "Ctrl+X", disabled: !hasSelection, onClick: cutSelected },
-    { id: "copy", label: "복사", hint: "Ctrl+C", disabled: !hasSelection, onClick: copySelected },
-    { id: "paste", label: "붙여넣기", hint: "Ctrl+V", disabled: !canPaste, onClick: pasteClipboard },
+    { id: "cut", label: "Cut", hint: "Ctrl+X", disabled: !hasSelection, onClick: cutSelected },
+    { id: "copy", label: "Copy", hint: "Ctrl+C", disabled: !hasSelection, onClick: copySelected },
+    { id: "paste", label: "Paste", hint: "Ctrl+V", disabled: !canPaste, onClick: pasteClipboard },
     { id: "divider-1", divider: true },
-    { id: "duplicate", label: "복제", hint: "Ctrl+D", disabled: !hasSelection, onClick: duplicateSelected },
-    { id: "delete", label: "삭제", hint: "Del", disabled: !hasSelection, onClick: removeSelected },
+    { id: "duplicate", label: "Duplicate", hint: "Ctrl+D", disabled: !hasSelection, onClick: duplicateSelected },
+    { id: "delete", label: "Delete", hint: "Del", disabled: !hasSelection, onClick: removeSelected },
     { id: "divider-2", divider: true },
-    { id: "group", label: "그룹", hint: "Ctrl+G", disabled: selectedIds.length < 2, onClick: groupSelected },
-    { id: "ungroup", label: "그룹 해제", hint: "Ctrl+Shift+G", disabled: !hasGroupSelection, onClick: ungroupSelected },
-    { id: "toggle-lock", label: selectionLocked ? "잠금 해제" : "잠금", hint: "Ctrl+Shift+L", disabled: !hasSelection, onClick: toggleSelectionLocked },
-    { id: "toggle-hide", label: selectionHidden ? "숨김 해제" : "숨김", hint: "Ctrl+Shift+H", disabled: !hasSelection, onClick: toggleSelectionHidden },
+    { id: "group", label: "Group", hint: "Ctrl+G", disabled: selectedIds.length < 2, onClick: groupSelected },
+    { id: "ungroup", label: "Ungroup", hint: "Ctrl+Shift+G", disabled: !hasGroupSelection, onClick: ungroupSelected },
+    { id: "toggle-lock", label: selectionLocked ? "Unlock Selection" : "Lock Selection", hint: "Ctrl+Shift+L", disabled: !hasSelection, onClick: toggleSelectionLocked },
+    { id: "toggle-hide", label: selectionHidden ? "Show Selection" : "Hide Selection", hint: "Ctrl+Shift+H", disabled: !hasSelection, onClick: toggleSelectionHidden },
   ];
-  /** 8번: 2단계 — "더 보기" 서브메뉴: 정렬, Boolean, 컴포넌트, 마스크 등 */
+  /** NOTE: comment removed (encoding issue). */
   const contextMoreItems: ContextItem[] = [
-    { id: "selection-page", label: "선택→페이지", disabled: !hasSelection, onClick: createPageFromSelection },
-    { id: "fit-content", label: "내용에 맞춤", disabled: !hasSelection, onClick: fitSelectionToContent },
+    { id: "selection-page", label: "Selection to Page", disabled: !hasSelection, onClick: createPageFromSelection },
+    { id: "fit-content", label: "Fit to Content", disabled: !hasSelection, onClick: fitSelectionToContent },
     { id: "divider-sel", divider: true },
-    { id: "select-all", label: "전체 선택", hint: "Ctrl+A", onClick: selectAll },
-    { id: "select-none", label: "선택 해제", hint: "Ctrl+Shift+A", onClick: clearSelection },
-    { id: "select-invert", label: "선택 반전", onClick: invertSelection },
-    { id: "select-parent", label: "부모 선택", disabled: selectedIds.length !== 1, onClick: selectParent },
-    { id: "select-children", label: "자식 선택", disabled: selectedIds.length !== 1, onClick: selectChildren },
-    { id: "select-siblings", label: "형제 선택", disabled: selectedIds.length !== 1, onClick: selectSiblings },
+    { id: "select-all", label: "Select All", hint: "Ctrl+A", onClick: selectAll },
+    { id: "select-none", label: "Select None", hint: "Ctrl+Shift+A", onClick: clearSelection },
+    { id: "select-invert", label: "Invert Selection", onClick: invertSelection },
+    { id: "select-parent", label: "Select Parent", disabled: selectedIds.length !== 1, onClick: selectParent },
+    { id: "select-children", label: "Select Children", disabled: selectedIds.length !== 1, onClick: selectChildren },
+    { id: "select-siblings", label: "Select Siblings", disabled: selectedIds.length !== 1, onClick: selectSiblings },
     { id: "divider-lay", divider: true },
-    { id: "auto-layout", label: "오토 레이아웃", hint: "Shift+A", disabled: !hasSelection, onClick: toggleAutoLayoutSelection },
-    { id: "component", label: "컴포넌트 만들기", disabled: !hasSelection, onClick: createComponentFromSelection },
-    { id: "instance", label: "인스턴스 생성", disabled: !selectedIsComponent || !selectedNode, onClick: () => selectedNode && createInstanceFromComponent(selectedNode.id, selectedNode.variants?.[0]?.id) },
-    { id: "detach", label: "인스턴스 분리", disabled: !selectedIsInstance || !selectedNode, onClick: () => selectedNode && detachInstance(selectedNode.id) },
+    { id: "auto-layout", label: "Toggle Auto Layout", hint: "Shift+A", disabled: !hasSelection, onClick: toggleAutoLayoutSelection },
+    { id: "component", label: "Create Component", disabled: !hasSelection, onClick: createComponentFromSelection },
+    { id: "instance", label: "Create Instance", disabled: !selectedIsComponent || !selectedNode, onClick: () => selectedNode && createInstanceFromComponent(selectedNode.id, selectedNode.variants?.[0]?.id) },
+    { id: "detach", label: "Detach Instance", disabled: !selectedIsInstance || !selectedNode, onClick: () => selectedNode && detachInstance(selectedNode.id) },
     { id: "divider-3", divider: true },
-    { id: "front", label: "맨 앞으로", disabled: !hasSelection, onClick: bringToFront },
-    { id: "back", label: "맨 뒤로", disabled: !hasSelection, onClick: sendToBack },
-    { id: "forward", label: "앞으로", hint: "Ctrl+Shift+]", disabled: !hasSelection, onClick: bringForward },
-    { id: "backward", label: "뒤로", hint: "Ctrl+Shift+[", disabled: !hasSelection, onClick: sendBackward },
+    { id: "front", label: "Bring to Front", disabled: !hasSelection, onClick: bringToFront },
+    { id: "back", label: "Send to Back", disabled: !hasSelection, onClick: sendToBack },
+    { id: "forward", label: "Bring Forward", hint: "Ctrl+Shift+]", disabled: !hasSelection, onClick: bringForward },
+    { id: "backward", label: "Send Backward", hint: "Ctrl+Shift+[", disabled: !hasSelection, onClick: sendBackward },
     { id: "divider-4", divider: true },
-    { id: "align-left", label: "왼쪽 정렬", disabled: !hasMultipleSelection, onClick: () => align("l") },
-    { id: "align-center", label: "가운데 정렬", disabled: !hasMultipleSelection, onClick: () => align("hc") },
-    { id: "align-right", label: "오른쪽 정렬", disabled: !hasMultipleSelection, onClick: () => align("r") },
-    { id: "distribute-h", label: "가로 간격 맞춤", disabled: selectedIds.length < 3, onClick: () => distribute("h") },
-    { id: "distribute-v", label: "세로 간격 맞춤", disabled: selectedIds.length < 3, onClick: () => distribute("v") },
-    { id: "same-width", label: "같은 너비", disabled: !hasMultipleSelection, onClick: () => matchSelectionSize("w") },
-    { id: "same-height", label: "같은 높이", disabled: !hasMultipleSelection, onClick: () => matchSelectionSize("h") },
-    { id: "snap-grid", label: "그리드 맞춤", disabled: !hasSelection, onClick: snapSelectionToGrid },
-    { id: "flip-h", label: "가로 뒤집기", disabled: !hasSelection, onClick: () => flipSelection("h") },
-    { id: "flip-v", label: "세로 뒤집기", disabled: !hasSelection, onClick: () => flipSelection("v") },
-    { id: "tidy-up", label: "정리 (Tidy up)", disabled: selectedIds.length < 2, onClick: tidyUpSelection },
-    { id: "repeat-grid", label: "반복 그리드", disabled: !hasSelection, onClick: openRepeatGrid },
+    { id: "snap-grid", label: "Snap to Grid", disabled: !hasSelection, onClick: snapSelectionToGrid },
+    { id: "tidy-up", label: "Tidy Up", disabled: selectedIds.length < 2, onClick: tidyUpSelection },
+    { id: "repeat-grid", label: "Repeat Grid", disabled: !hasSelection, onClick: openRepeatGrid },
     { id: "divider-vector", divider: true },
-    { id: "vector-union", label: "도형 합치기 (Union)", disabled: selectedIds.length < 2, onClick: () => runBooleanSelection("union") },
-    { id: "vector-subtract", label: "도형 빼기 (Subtract)", disabled: selectedIds.length < 2, onClick: () => runBooleanSelection("subtract") },
-    { id: "vector-intersect", label: "도형 겹침 (Intersect)", disabled: selectedIds.length < 2, onClick: () => runBooleanSelection("intersect") },
-    { id: "vector-exclude", label: "도형 제외 (Exclude)", disabled: selectedIds.length < 2, onClick: () => runBooleanSelection("exclude") },
-    { id: "mask-use", label: "마스크로 사용", disabled: selectedIds.length !== 1, onClick: applyMaskSelection },
-    { id: "mask-release", label: "마스크 해제", disabled: selectedIds.length !== 1 || !selectedNode?.isMask, onClick: releaseMaskSelection },
+    { id: "vector-flatten", label: "Flatten to Path", disabled: !canFlattenSelection, onClick: flattenSelectionToPath },
+    { id: "vector-join", label: "Join to Path", disabled: !canJoinSelection, onClick: joinSelectionToPath },
     { id: "divider-4b", divider: true },
-    { id: "zoom-selection", label: "선택 맞춤", disabled: !hasSelection, onClick: zoomToSelection },
-    { id: "zoom-content", label: "콘텐츠 맞춤", onClick: zoomToContent },
-    { id: "zoom-page", label: "페이지 맞춤", onClick: zoomToPage },
+    { id: "zoom-selection", label: "Zoom to Selection", disabled: !hasSelection, onClick: zoomToSelection },
+    { id: "zoom-content", label: "Zoom to Content", onClick: zoomToContent },
+    { id: "zoom-page", label: "Zoom to Page", onClick: zoomToPage },
     { id: "divider-4c", divider: true },
-    { id: "toggle-grid", label: showGrid ? "그리드 숨기기" : "그리드 표시", onClick: () => setShowGrid((prev) => !prev) },
-    { id: "toggle-outline", label: outlineMode ? "아웃라인 해제" : "아웃라인 보기", onClick: () => setOutlineMode((prev) => !prev) },
-    { id: "toggle-rulers", label: showRulers ? "룰러 숨기기" : "룰러 표시", onClick: () => setShowRulers((prev) => !prev) },
-    { id: "toggle-ui", label: uiHidden ? "UI 표시" : "UI 숨김", onClick: () => setUiHidden((prev) => !prev) },
+    { id: "toggle-grid", label: showGrid ? "Hide Grid" : "Show Grid", onClick: () => setShowGrid((prev) => !prev) },
+    { id: "toggle-outline", label: outlineMode ? "Disable Outline" : "Enable Outline", onClick: () => setOutlineMode((prev) => !prev) },
+    { id: "toggle-rulers", label: showRulers ? "Hide Rulers" : "Show Rulers", onClick: () => setShowRulers((prev) => !prev) },
+    { id: "toggle-ui", label: uiHidden ? "Show UI" : "Hide UI", onClick: () => setUiHidden((prev) => !prev) },
   ];
 
   const parentNode = selectedNode?.parentId ? doc.nodes[selectedNode.parentId] : null;
@@ -9184,6 +9976,8 @@ export default function AdvancedEditor() {
   const constraints = selectedNode?.constraints ?? {};
   const canEditConstraints = Boolean(selectedNode?.parentId && !parentIsAutoLayout);
   const resolvedTextStyle = selectedNode ? resolveTextStyle(doc, selectedNode) : null;
+  const textWrapEnabled = selectedNode?.type === "text" ? selectedNode.text?.wrap !== false : false;
+  const textAutoSizeEnabled = selectedNode?.type === "text" ? Boolean(selectedNode.text?.autoSize) : false;
   const selectedSupportsDataBinding = Boolean(
     selectedNode && ["frame", "section", "group", "component", "instance", "table"].includes(selectedNode.type),
   );
@@ -9230,7 +10024,7 @@ export default function AdvancedEditor() {
       const draft = cloneDoc(docRef.current);
       const ids = getScopeNodeIds(draft, scope);
       if (!ids.length) {
-        setMessage("선택한 레이어가 없습니다.");
+        setMessage("Label");
         return;
       }
       ids.forEach((id) => {
@@ -9308,7 +10102,7 @@ export default function AdvancedEditor() {
     (rawSrc: string, scope: "selection" | "page" | "document") => {
       const src = normalizeImageSrc(rawSrc);
       if (!src) {
-        setMessage("이미지 URL 또는 파일을 입력하세요.");
+        setMessage("Provide an image URL or file.");
         return;
       }
       const draft = cloneDoc(docRef.current);
@@ -9316,7 +10110,7 @@ export default function AdvancedEditor() {
       if (scope === "selection") {
         const selected = Array.from(draft.selection);
         if (!selected.length) {
-          setMessage("선택한 레이어가 없습니다.");
+          setMessage("No selection.");
           return;
         }
         const idSet = new Set<string>();
@@ -9329,7 +10123,7 @@ export default function AdvancedEditor() {
         const pageId = activePageIdRef.current ?? draft.pages[0]?.id ?? null;
         const rootId = pageId ? draft.pages.find((page) => page.id === pageId)?.rootId : draft.pages[0]?.rootId;
         if (!rootId) {
-          setMessage("페이지 정보를 찾을 수 없습니다.");
+          setMessage("Missing page root.");
           return;
         }
         targetIds = [rootId, ...flattenIds(draft, rootId)];
@@ -9338,7 +10132,7 @@ export default function AdvancedEditor() {
       }
 
       if (!targetIds.length) {
-        setMessage("교체할 대상이 없습니다.");
+        setMessage("No targets to update.");
         return;
       }
 
@@ -9388,11 +10182,11 @@ export default function AdvancedEditor() {
       });
 
       if (!updated) {
-        setMessage("교체할 이미지가 없습니다.");
+        setMessage("No images to replace.");
         return;
       }
       commit(draft);
-      setMessage(`이미지 ${updated}개 교체 완료`);
+      setMessage(`Updated ${updated} nodes.`);
     },
     [commit],
   );
@@ -9416,6 +10210,22 @@ export default function AdvancedEditor() {
   const selectedAbs = selectedNode ? getAbsoluteFrame(doc, selectedNode.id) : null;
   const parentAbs = selectedNode?.parentId ? getAbsoluteFrame(doc, selectedNode.parentId) : null;
   const devSpecLines = selectedNode ? buildSpecLines(doc, selectedNode) : [];
+  const filteredEventLog = useMemo(
+    () => (eventLogFilter === "all" ? eventLog : eventLog.filter((entry) => entry.kind === eventLogFilter)),
+    [eventLog, eventLogFilter],
+  );
+  const selectedComponentVersions = useMemo(() => {
+    if (!selectedIsComponent || !selectedNode) return [] as ComponentVersion[];
+    return doc.componentVersions?.[selectedNode.id] ?? [];
+  }, [doc.componentVersions, selectedIsComponent, selectedNode]);
+  const layoutConflicts = useMemo(() => {
+    if (!selectedNode) return [] as Array<{ id: string; name: string; area: number }>;
+    const conflicts = findLayoutConflicts(doc, selectedNode.id);
+    return conflicts.map((conflict) => ({
+      ...conflict,
+      name: toLabel(doc.nodes[conflict.id]),
+    }));
+  }, [doc, selectedNode?.id]);
   const devFillStyle = selectedNode ? findStyleName(doc, selectedNode.style.fillStyleId, "fill") : null;
   const devStrokeStyle = selectedNode ? findStyleName(doc, selectedNode.style.strokeStyleId, "stroke") : null;
   const devTextStyle = selectedNode && selectedNode.type === "text" ? findStyleName(doc, selectedNode.text?.styleRef, "text") : null;
@@ -9509,16 +10319,16 @@ export default function AdvancedEditor() {
     <>
       {selectedNode ? (
       <div className="space-y-4" key="with-node">
-        <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden" role="region" aria-label="선택 읽기">
+        <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden" role="region" aria-label="���� �б�">
           <div className="px-2 py-1.5 flex items-center gap-2">
             <button
               type="button"
               className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
               onClick={readSelectionAloud}
               disabled={!doc.selection.size}
-              aria-label="선택한 레이어 속성을 읽어줍니다"
+              aria-label="������ ���̾� �Ӽ��� �о��ݴϴ�"
             >
-              선택 읽기
+              ���� �б�
             </button>
             <span className="sr-only" aria-live="polite" aria-atomic>
               {selectionAnnounceText}
@@ -9532,14 +10342,14 @@ export default function AdvancedEditor() {
               className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100"
               onClick={() => setRightPanelSections((s) => ({ ...s, dataBinding: !s.dataBinding }))}
             >
-              <span>데이터 바인딩</span>
-              <span className={`shrink-0 transition-transform ${rightPanelSections.dataBinding ? "rotate-180" : ""}`} aria-hidden>▾</span>
+              <span>������ ���ε�</span>
+              <span className={`shrink-0 transition-transform ${rightPanelSections.dataBinding ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.dataBinding && (
               <div className="px-2 pb-2">
                 <div className="mt-2 space-y-2">
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">컬렉션 바인딩</span>
+                    <span className="text-neutral-500">�÷��� ���ε�</span>
                     <input
                       type="checkbox"
                       checked={Boolean(selectedDataBinding)}
@@ -9561,7 +10371,7 @@ export default function AdvancedEditor() {
                   {selectedDataBinding ? (
                     <>
                       <label className="flex flex-col gap-1">
-                        <span className="text-neutral-500">컬렉션 ID</span>
+                        <span className="text-neutral-500">�÷��� ID</span>
                         <input
                           type="text"
                           value={selectedDataBinding.collectionId ?? ""}
@@ -9578,7 +10388,7 @@ export default function AdvancedEditor() {
                         />
                       </label>
                       <label className="flex items-center justify-between gap-2">
-                        <span className="text-neutral-500">모드</span>
+                        <span className="text-neutral-500">���</span>
                         <select
                           value={selectedDataBinding.mode ?? "list"}
                           onChange={(e) =>
@@ -9591,12 +10401,12 @@ export default function AdvancedEditor() {
                           }
                           className="rounded border border-neutral-200 px-2 py-1 text-xs"
                         >
-                          <option value="list">리스트</option>
-                          <option value="table">테이블</option>
+                          <option value="list">����Ʈ</option>
+                          <option value="table">���̺�</option>
                         </select>
                       </label>
                       <label className="flex flex-col gap-1">
-                        <span className="text-neutral-500">필드(쉼표)</span>
+                        <span className="text-neutral-500">�ʵ�(��ǥ)</span>
                         <input
                           type="text"
                           value={selectedDataBindingFields}
@@ -9636,7 +10446,7 @@ export default function AdvancedEditor() {
                         />
                       </label>
                       <label className="flex items-center justify-between gap-2">
-                        <span className="text-neutral-500">편집 허용</span>
+                        <span className="text-neutral-500">���� ���</span>
                         <input
                           type="checkbox"
                           checked={Boolean(selectedDataBinding.editable)}
@@ -9651,7 +10461,7 @@ export default function AdvancedEditor() {
                         />
                       </label>
                       <label className="flex items-center justify-between gap-2">
-                        <span className="text-neutral-500">삭제 허용</span>
+                        <span className="text-neutral-500">���� ���</span>
                         <input
                           type="checkbox"
                           checked={Boolean(selectedDataBinding.allowDelete)}
@@ -9667,15 +10477,15 @@ export default function AdvancedEditor() {
                       </label>
                       {selectedNode.children.length === 0 ? (
                         <p className="text-[11px] text-amber-600">
-                          첫 자식 노드가 반복 템플릿입니다. 자식 노드를 추가하세요.
+                          ù �ڽ� ��尡 �ݺ� ���ø��Դϴ�. �ڽ� ��带 �߰��ϼ���.
                         </p>
                       ) : (
-                        <p className="text-[11px] text-neutral-500">첫 자식 노드를 반복 렌더링합니다.</p>
+                        <p className="text-[11px] text-neutral-500">ù �ڽ� ��带 �ݺ� �������մϴ�.</p>
                       )}
                     </>
                   ) : (
                     <p className="text-[11px] text-neutral-500">
-                      컬렉션 바인딩을 켜면 첫 자식을 반복 렌더링합니다.
+                      �÷��� ���ε��� �Ѹ� ù �ڽ��� �ݺ� �������մϴ�.
                     </p>
                   )}
                 </div>
@@ -9685,8 +10495,8 @@ export default function AdvancedEditor() {
         )}
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, geometry: !s.geometry }))}>
-            <span>기하</span>
-            <span className={`shrink-0 transition-transform ${rightPanelSections.geometry ? "rotate-180" : ""}`} aria-hidden>▾</span>
+            <span>����</span>
+            <span className={`shrink-0 transition-transform ${rightPanelSections.geometry ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.geometry && (
             <div className="px-2 pb-2">
@@ -9710,26 +10520,26 @@ export default function AdvancedEditor() {
                 {selectedNode.parentId ? (
                   <>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">가로 %</span>
-                      <input type="number" min={0} max={100} step={1} placeholder="—" value={selectedNode.widthPercent ?? ""} onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); updateNode(selectedNode.id, { widthPercent: v }, true); }} className="w-20 rounded border border-neutral-200 px-2 py-1" />
+                      <span className="text-neutral-500">���� %</span>
+                      <input type="number" min={0} max={100} step={1} placeholder="?" value={selectedNode.widthPercent ?? ""} onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); updateNode(selectedNode.id, { widthPercent: v }, true); }} className="w-20 rounded border border-neutral-200 px-2 py-1" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">세로 %</span>
-                      <input type="number" min={0} max={100} step={1} placeholder="—" value={selectedNode.heightPercent ?? ""} onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); updateNode(selectedNode.id, { heightPercent: v }, true); }} className="w-20 rounded border border-neutral-200 px-2 py-1" />
+                      <span className="text-neutral-500">���� %</span>
+                      <input type="number" min={0} max={100} step={1} placeholder="?" value={selectedNode.heightPercent ?? ""} onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); updateNode(selectedNode.id, { heightPercent: v }, true); }} className="w-20 rounded border border-neutral-200 px-2 py-1" />
                     </label>
                   </>
                 ) : null}
                 <label className="flex items-center justify-between gap-2">
-                  <span className="text-neutral-500">회전</span>
+                  <span className="text-neutral-500">ȸ��</span>
                   <input type="number" value={Math.round(selectedNode.frame.rotation)} onChange={(e) => updateNode(selectedNode.id, { frame: { ...selectedNode.frame, rotation: Number(e.target.value) } }, true)} className="w-20 rounded border border-neutral-200 px-2 py-1" />
                 </label>
               </div>
               <div className="mt-2">
-                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={fitSelectionToContent} disabled={!selectedNode.children?.length && !autoLayout}>내용 맞춤</button>
+                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={fitSelectionToContent} disabled={!selectedNode.children?.length && !autoLayout}>���� ����</button>
               </div>
               {selectedIsPageRoot && activePageMeta ? (
                 <div className="mt-3 border-t border-neutral-100 pt-2 space-y-2">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">브레이크포인트</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">�극��ũ����Ʈ</div>
                   <div className="flex flex-wrap gap-2">
                     {BREAKPOINT_PRESETS.map((preset) => (
                       <button
@@ -9738,7 +10548,7 @@ export default function AdvancedEditor() {
                         className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                         onClick={() => applyPageBreakpoint(activePageMeta.id, preset)}
                       >
-                        {preset.name} {preset.width}×{preset.height}
+                        {preset.name} {preset.width}��{preset.height}
                       </button>
                     ))}
                     <button
@@ -9749,7 +10559,7 @@ export default function AdvancedEditor() {
                         setNewBreakpointHeight(Math.round(selectedNode.frame.h));
                       }}
                     >
-                      현재 크기 반영
+                      ���� ũ�� �ݿ�
                     </button>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -9757,7 +10567,7 @@ export default function AdvancedEditor() {
                       type="text"
                       value={newBreakpointName}
                       onChange={(e) => setNewBreakpointName(e.target.value)}
-                      placeholder="이름 (선택)"
+                      placeholder="�̸� (����)"
                       className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
                     />
                     <button
@@ -9765,45 +10575,45 @@ export default function AdvancedEditor() {
                       className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                       onClick={() =>
                         applyPageBreakpoint(activePageMeta.id, {
-                          name: newBreakpointName || "커스텀",
+                          name: newBreakpointName || "Ŀ����",
                           width: newBreakpointWidth,
                           height: newBreakpointHeight,
                         })
                       }
                     >
-                      추가 + 적용
+                      �߰� + ����
                     </button>
                     <input
                       type="number"
                       value={newBreakpointWidth}
                       onChange={(e) => setNewBreakpointWidth(Number(e.target.value) || 0)}
                       className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
-                      placeholder="폭"
+                      placeholder="��"
                     />
                     <input
                       type="number"
                       value={newBreakpointHeight}
                       onChange={(e) => setNewBreakpointHeight(Number(e.target.value) || 0)}
                       className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
-                      placeholder="높이"
+                      placeholder="����"
                     />
                   </div>
                   {pageBreakpoints.length === 0 ? (
-                    <p className="text-[11px] text-neutral-400">저장된 브레이크포인트가 없습니다.</p>
+                    <p className="text-[11px] text-neutral-400">����� �극��ũ����Ʈ�� �����ϴ�.</p>
                   ) : (
                     <div className="space-y-1">
                       {pageBreakpoints.map((bp) => (
                         <div key={bp.id} className="flex items-center justify-between gap-2 rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]">
                           <div className="flex items-center gap-2">
                             <span className="text-neutral-700">{bp.name}</span>
-                            <span className="text-neutral-400">{bp.width}×{bp.height}</span>
+                            <span className="text-neutral-400">{bp.width}��{bp.height}</span>
                             {activePageBreakpointId === bp.id && (
-                              <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">현재</span>
+                              <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">����</span>
                             )}
                           </div>
                           <div className="flex items-center gap-1">
-                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => applyPageBreakpoint(activePageMeta.id, bp)}>적용</button>
-                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => removePageBreakpoint(activePageMeta.id, bp.id)}>삭제</button>
+                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => applyPageBreakpoint(activePageMeta.id, bp)}>����</button>
+                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => removePageBreakpoint(activePageMeta.id, bp.id)}>����</button>
                           </div>
                         </div>
                       ))}
@@ -9813,7 +10623,7 @@ export default function AdvancedEditor() {
               ) : null}
               {!selectedIsPageRoot && pageBreakpoints.length > 0 && selectedNode ? (
                 <div className="mt-3 border-t border-neutral-100 pt-2 space-y-2">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">반응형 오버라이드</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">������ �������̵�</div>
                   {pageBreakpoints.map((bp) => {
                     const bpOverride = selectedNode.breakpointOverrides?.[bp.id];
                     const isHidden = bpOverride?.hidden ?? false;
@@ -9831,7 +10641,7 @@ export default function AdvancedEditor() {
                               node.breakpointOverrides[bp.id].hidden = e.target.checked;
                               commit(draft);
                             }} />
-                            숨김
+                            ����
                           </label>
                         </div>
                         <div className="grid grid-cols-2 gap-1">
@@ -9872,85 +10682,85 @@ export default function AdvancedEditor() {
         </div>
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, layout: !s.layout }))}>
-            <span>레이아웃</span>
-            <span className={`shrink-0 transition-transform ${rightPanelSections.layout ? "rotate-180" : ""}`} aria-hidden>▾</span>
+            <span>���̾ƿ�</span>
+            <span className={`shrink-0 transition-transform ${rightPanelSections.layout ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.layout && (
             <div className="px-2 pb-2">
               <div className="mt-2 space-y-2">
                 <label className="flex items-center justify-between gap-2">
-                  <span className="text-neutral-500">자동</span>
+                  <span className="text-neutral-500">�ڵ�</span>
                   <input type="checkbox" checked={Boolean(autoLayout)} onChange={(e) => { if (e.target.checked) updateNode(selectedNode.id, { layout: { ...DEFAULT_AUTO_LAYOUT } }, true); else updateNode(selectedNode.id, { layout: { mode: "fixed" } }, true); }} />
                 </label>
                 {autoLayout && (
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">간격 모드</span>
+                    <span className="text-neutral-500">���� ���</span>
                     <select value={resolvedAutoLayout.gapMode ?? "fixed"} onChange={(e) => updateNode(selectedNode.id, { layout: { ...resolvedAutoLayout, gapMode: e.target.value as "fixed" | "space-between" } }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                      <option value="fixed">고정 간격</option>
-                      <option value="space-between">공간 분배</option>
+                      <option value="fixed">���� ����</option>
+                      <option value="space-between">���� �й�</option>
                     </select>
                   </label>
                 )}
                 {parentIsAutoLayout && (
                   <>
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">자식 크기</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">�ڽ� ũ��</div>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">가로</span>
+                      <span className="text-neutral-500">����</span>
                       <select value={sizing.width} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, width: e.target.value as "fixed" | "fill" | "hug" } }, true)} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
-                        <option value="fixed">고정</option>
-                        <option value="fill">채우기</option>
-                        <option value="hug">감싸기</option>
+                        <option value="fixed">����</option>
+                        <option value="fill">ä���</option>
+                        <option value="hug">���α�</option>
                       </select>
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">세로</span>
+                      <span className="text-neutral-500">����</span>
                       <select value={sizing.height} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, height: e.target.value as "fixed" | "fill" | "hug" } }, true)} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
-                        <option value="fixed">고정</option>
-                        <option value="fill">채우기</option>
-                        <option value="hug">감싸기</option>
+                        <option value="fixed">����</option>
+                        <option value="fill">ä���</option>
+                        <option value="hug">���α�</option>
                       </select>
                     </label>
                     <div className="grid grid-cols-2 gap-1 text-[11px]">
-                      <label className="flex items-center gap-1"><span className="text-neutral-500">minW</span><input type="number" placeholder="—" value={sizing.minWidth ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, minWidth: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
-                      <label className="flex items-center gap-1"><span className="text-neutral-500">maxW</span><input type="number" placeholder="—" value={sizing.maxWidth ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, maxWidth: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
-                      <label className="flex items-center gap-1"><span className="text-neutral-500">minH</span><input type="number" placeholder="—" value={sizing.minHeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, minHeight: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
-                      <label className="flex items-center gap-1"><span className="text-neutral-500">maxH</span><input type="number" placeholder="—" value={sizing.maxHeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, maxHeight: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">minW</span><input type="number" placeholder="?" value={sizing.minWidth ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, minWidth: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">maxW</span><input type="number" placeholder="?" value={sizing.maxWidth ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, maxWidth: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">minH</span><input type="number" placeholder="?" value={sizing.minHeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, minHeight: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">maxH</span><input type="number" placeholder="?" value={sizing.maxHeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, maxHeight: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
                     </div>
                   </>
                 )}
                 {canEditConstraints && (
                   <div className="border-t border-neutral-100 pt-2">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">제약</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">����</div>
                     <div className="grid grid-cols-3 gap-1 text-[11px]">
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, top: true })}>좌상</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, top: true })}>상단</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, top: true })}>우상</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, vCenter: true })}>좌</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, vCenter: true })}>중앙</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, vCenter: true })}>우</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, bottom: true })}>좌하</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, bottom: true })}>하단</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, bottom: true })}>우하</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, top: true })}>�»�</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, top: true })}>���</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, top: true })}>���</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, vCenter: true })}>��</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, vCenter: true })}>�߾�</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, vCenter: true })}>��</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, bottom: true })}>����</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, bottom: true })}>�ϴ�</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, bottom: true })}>����</button>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.left)} onChange={(e) => updateConstraintFlag("left", e.target.checked)} />왼쪽</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.right)} onChange={(e) => updateConstraintFlag("right", e.target.checked)} />오른쪽</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.top)} onChange={(e) => updateConstraintFlag("top", e.target.checked)} />위</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.bottom)} onChange={(e) => updateConstraintFlag("bottom", e.target.checked)} />아래</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.hCenter)} onChange={(e) => updateConstraintFlag("hCenter", e.target.checked)} />가로 중앙</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.vCenter)} onChange={(e) => updateConstraintFlag("vCenter", e.target.checked)} />세로 중앙</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.left)} onChange={(e) => updateConstraintFlag("left", e.target.checked)} />����</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.right)} onChange={(e) => updateConstraintFlag("right", e.target.checked)} />������</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.top)} onChange={(e) => updateConstraintFlag("top", e.target.checked)} />��</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.bottom)} onChange={(e) => updateConstraintFlag("bottom", e.target.checked)} />�Ʒ�</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.hCenter)} onChange={(e) => updateConstraintFlag("hCenter", e.target.checked)} />���� �߾�</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.vCenter)} onChange={(e) => updateConstraintFlag("vCenter", e.target.checked)} />���� �߾�</label>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true })}>가로 늘이기</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ top: true, bottom: true })}>세로 늘이기</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true, top: true, bottom: true })}>전체 늘이기</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={clearConstraints}>제약 초기화</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true })}>���� ���̱�</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ top: true, bottom: true })}>���� ���̱�</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true, top: true, bottom: true })}>��ü ���̱�</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={clearConstraints}>���� �ʱ�ȭ</button>
                     </div>
                   </div>
                 )}
                 {canEditLayoutGrid ? (
                   <div className="border-t border-neutral-100 pt-2">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">레이아웃 그리드</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">���̾ƿ� �׸���</div>
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -9962,7 +10772,7 @@ export default function AdvancedEditor() {
                           ])
                         }
                       >
-                        열 추가
+                        �� �߰�
                       </button>
                       <button
                         type="button"
@@ -9974,7 +10784,7 @@ export default function AdvancedEditor() {
                           ])
                         }
                       >
-                        행 추가
+                        �� �߰�
                       </button>
                       <button
                         type="button"
@@ -9986,16 +10796,16 @@ export default function AdvancedEditor() {
                           ])
                         }
                       >
-                        그리드 추가
+                        �׸��� �߰�
                       </button>
                     </div>
                     {layoutGridItems.length === 0 ? (
-                      <p className="mt-2 text-[11px] text-neutral-400">레이아웃 그리드가 없습니다.</p>
+                      <p className="mt-2 text-[11px] text-neutral-400">���̾ƿ� �׸��尡 �����ϴ�.</p>
                     ) : (
                       <div className="mt-2 space-y-2">
                         {layoutGridItems.map((item, idx) => {
                           const label =
-                            item.type === "columns" ? "열" : item.type === "rows" ? "행" : "그리드";
+                            item.type === "columns" ? "��" : item.type === "rows" ? "��" : "�׸���";
                           const updateItem = (patch: Partial<LayoutGridItem>) => {
                             const next = layoutGridItems.map((g, i) => (i === idx ? ({ ...g, ...patch } as LayoutGridItem) : g));
                             updateLayoutGridItems(next);
@@ -10009,14 +10819,14 @@ export default function AdvancedEditor() {
                                   className="rounded border border-neutral-200 px-2 py-0.5 text-[10px]"
                                   onClick={() => updateLayoutGridItems(layoutGridItems.filter((_, i) => i !== idx))}
                                 >
-                                  삭제
+                                  ����
                                 </button>
                               </div>
                               {item.type === "columns" && (
                                 <>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>개수</span>
+                                      <span>����</span>
                                       <input
                                         type="number"
                                         min={1}
@@ -10026,7 +10836,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>너비</span>
+                                      <span>�ʺ�</span>
                                       <input
                                         type="number"
                                         value={item.width ?? ""}
@@ -10040,7 +10850,7 @@ export default function AdvancedEditor() {
                                   </div>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>간격</span>
+                                      <span>����</span>
                                       <input
                                         type="number"
                                         value={item.gutter ?? 0}
@@ -10049,7 +10859,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>오프셋</span>
+                                      <span>������</span>
                                       <input
                                         type="number"
                                         value={item.offset ?? 0}
@@ -10064,7 +10874,7 @@ export default function AdvancedEditor() {
                                 <>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>개수</span>
+                                      <span>����</span>
                                       <input
                                         type="number"
                                         min={1}
@@ -10074,7 +10884,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>높이</span>
+                                      <span>����</span>
                                       <input
                                         type="number"
                                         value={item.height ?? ""}
@@ -10088,7 +10898,7 @@ export default function AdvancedEditor() {
                                   </div>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>간격</span>
+                                      <span>����</span>
                                       <input
                                         type="number"
                                         value={item.gutter ?? 0}
@@ -10097,7 +10907,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>오프셋</span>
+                                      <span>������</span>
                                       <input
                                         type="number"
                                         value={item.offset ?? 0}
@@ -10110,7 +10920,7 @@ export default function AdvancedEditor() {
                               )}
                               {item.type === "grid" && (
                                 <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                  <span>셀 크기</span>
+                                  <span>�� ũ��</span>
                                   <input
                                     type="number"
                                     min={1}
@@ -10122,7 +10932,7 @@ export default function AdvancedEditor() {
                               )}
                               <div className="grid grid-cols-2 gap-2">
                                 <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                  <span>색상</span>
+                                  <span>����</span>
                                   <input
                                     type="color"
                                     value={item.color ?? "#94A3B8"}
@@ -10131,7 +10941,7 @@ export default function AdvancedEditor() {
                                   />
                                 </label>
                                 <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                  <span>투명도</span>
+                                  <span>�����</span>
                                   <input
                                     type="number"
                                     step={0.05}
@@ -10153,16 +10963,16 @@ export default function AdvancedEditor() {
                 {["frame", "section", "component", "instance", "group", "table"].includes(selectedNode.type) && (
                   <>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">클립</span>
+                      <span className="text-neutral-500">Ŭ��</span>
                       <input type="checkbox" checked={Boolean(selectedNode.clipContent)} onChange={(e) => updateNode(selectedNode.id, { clipContent: e.target.checked }, true)} />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">오버플로우</span>
+                      <span className="text-neutral-500">�����÷ο�</span>
                       <select value={selectedNode.overflowScrolling ?? "none"} onChange={(e) => updateNode(selectedNode.id, { overflowScrolling: e.target.value === "none" ? undefined : (e.target.value as "vertical" | "horizontal" | "both") }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                        <option value="none">없음</option>
-                        <option value="horizontal">가로</option>
-                        <option value="vertical">세로</option>
-                        <option value="both">둘 다</option>
+                        <option value="none">����</option>
+                        <option value="horizontal">����</option>
+                        <option value="vertical">����</option>
+                        <option value="both">�� ��</option>
                       </select>
                     </label>
                   </>
@@ -10170,21 +10980,58 @@ export default function AdvancedEditor() {
                 {selectedNode.type === "table" && (
                   <>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">열 수</span>
+                      <span className="text-neutral-500">�� ��</span>
                       <input type="number" min={1} value={selectedNode.table?.columns ?? 3} onChange={(e) => updateNode(selectedNode.id, { table: { ...selectedNode.table, columns: Math.max(1, Math.round(Number(e.target.value) || 1)), headerRow: selectedNode.table?.headerRow } }, true)} className="w-14 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">헤더 행</span>
+                      <span className="text-neutral-500">��� ��</span>
                       <input type="checkbox" checked={Boolean(selectedNode.table?.headerRow)} onChange={(e) => updateNode(selectedNode.id, { table: { ...selectedNode.table, columns: selectedNode.table?.columns ?? 3, headerRow: e.target.checked } }, true)} />
                     </label>
                   </>
                 )}
                 {selectedNode.parentId && doc.nodes[selectedNode.parentId]?.overflowScrolling ? (
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">스크롤 시 고정</span>
+                    <span className="text-neutral-500">��ũ�� �� ����</span>
                     <input type="checkbox" checked={Boolean(selectedNode.sticky)} onChange={(e) => updateNode(selectedNode.id, { sticky: e.target.checked }, true)} />
                   </label>
                 ) : null}
+                <div className="border-t border-neutral-100 pt-2 space-y-2">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">캔버스 그리드/스냅</div>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">그리드 표시</span>
+                    <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">그리드 스냅</span>
+                    <input type="checkbox" checked={gridSnap} onChange={(e) => setGridSnap(e.target.checked)} />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">가이드 스냅</span>
+                    <input type="checkbox" checked={guideSnap} onChange={(e) => setGuideSnap(e.target.checked)} />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">그리드 크기</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={gridSize}
+                      onChange={(e) => {
+                        const next = Math.max(1, Math.min(200, Number(e.target.value) || 1));
+                        setGridSize(next);
+                      }}
+                      className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">픽셀 그리드</span>
+                    <input type="checkbox" checked={showPixelGrid} onChange={(e) => setShowPixelGrid(e.target.checked)} />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">룰러</span>
+                    <input type="checkbox" checked={showRulers} onChange={(e) => setShowRulers(e.target.checked)} />
+                  </label>
+                </div>
               </div>
             </div>
           )}
@@ -10196,7 +11043,7 @@ export default function AdvancedEditor() {
               className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100"
               onClick={() => setRightPanelSections((s) => ({ ...s, media: !s.media }))}
             >
-              <span>미디어</span>
+              <span>�̵��</span>
               <span className={`shrink-0 transition-transform ${rightPanelSections.media ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.media && (
@@ -10214,7 +11061,7 @@ export default function AdvancedEditor() {
                   </label>
                   {selectedNode?.type === "image" ? (
                     <label className="flex flex-col gap-1">
-                      <span className="text-neutral-500">파일 업로드</span>
+                      <span className="text-neutral-500">���� ���ε�</span>
                       <input
                         type="file"
                         accept={IMAGE_FILE_ACCEPT}
@@ -10231,19 +11078,19 @@ export default function AdvancedEditor() {
                     </label>
                   ) : null}
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">맞춤</span>
+                    <span className="text-neutral-500">����</span>
                     <select
                       value={selectedMedia?.fit ?? "cover"}
                       onChange={(e) => updateSelectedMedia({ fit: e.target.value as "cover" | "contain" | "fill" })}
                       className="rounded border border-neutral-200 px-2 py-1 text-xs"
                     >
-                      <option value="cover">채우기(cover)</option>
-                      <option value="contain">맞춤(contain)</option>
-                      <option value="fill">늘리기(fill)</option>
+                      <option value="cover">ä���(cover)</option>
+                      <option value="contain">����(contain)</option>
+                      <option value="fill">�ø���(fill)</option>
                     </select>
                   </label>
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">스케일</span>
+                    <span className="text-neutral-500">������</span>
                     <input
                       type="number"
                       step={0.05}
@@ -10255,7 +11102,7 @@ export default function AdvancedEditor() {
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">오프셋 X</span>
+                      <span className="text-neutral-500">������ X</span>
                       <input
                         type="number"
                         value={selectedMedia?.offsetX ?? 0}
@@ -10264,7 +11111,7 @@ export default function AdvancedEditor() {
                       />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">오프셋 Y</span>
+                      <span className="text-neutral-500">������ Y</span>
                       <input
                         type="number"
                         value={selectedMedia?.offsetY ?? 0}
@@ -10273,22 +11120,71 @@ export default function AdvancedEditor() {
                       />
                     </label>
                   </div>
+                  {selectedNode?.type === "video" && (
+                    <div className="border-t border-neutral-100 pt-2">
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">Video Controls</div>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Poster URL</span>
+                        <input
+                          type="text"
+                          value={selectedMedia?.poster ?? ""}
+                          onChange={(e) => updateSelectedMedia({ poster: e.target.value })}
+                          placeholder="https://..."
+                          className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Autoplay</span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedMedia?.autoplay)}
+                            onChange={(e) => updateSelectedMedia({ autoplay: e.target.checked })}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Loop</span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedMedia?.loop)}
+                            onChange={(e) => updateSelectedMedia({ loop: e.target.checked })}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Muted</span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedMedia?.muted)}
+                            onChange={(e) => updateSelectedMedia({ muted: e.target.checked })}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Controls</span>
+                          <input
+                            type="checkbox"
+                            checked={selectedMedia?.controls !== false}
+                            onChange={(e) => updateSelectedMedia({ controls: e.target.checked })}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
                   <div className="border-t border-neutral-100 pt-2">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">이미지 일괄 교체</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">�̹��� �ϰ� ��ü</div>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">범위</span>
+                      <span className="text-neutral-500">����</span>
                       <select
                         value={bulkImageScope}
                         onChange={(e) => setBulkImageScope(e.target.value as "selection" | "page" | "document")}
                         className="rounded border border-neutral-200 px-2 py-1 text-xs"
                       >
-                        <option value="selection">선택</option>
-                        <option value="page">페이지</option>
-                        <option value="document">문서 전체</option>
+                        <option value="selection">����</option>
+                        <option value="page">������</option>
+                        <option value="document">���� ��ü</option>
                       </select>
                     </label>
                     <label className="flex flex-col gap-1 mt-2">
-                      <span className="text-neutral-500">이미지 URL</span>
+                      <span className="text-neutral-500">�̹��� URL</span>
                       <input
                         type="text"
                         value={bulkImageUrl}
@@ -10298,7 +11194,7 @@ export default function AdvancedEditor() {
                       />
                     </label>
                     <label className="flex flex-col gap-1 mt-2">
-                      <span className="text-neutral-500">파일 업로드</span>
+                      <span className="text-neutral-500">���� ���ε�</span>
                       <input
                         type="file"
                         accept={IMAGE_FILE_ACCEPT}
@@ -10318,7 +11214,7 @@ export default function AdvancedEditor() {
                       className="mt-2 w-full rounded border border-neutral-200 bg-white px-2 py-1 text-xs"
                       onClick={() => applyBulkImageReplace(bulkImageUrl, bulkImageScope)}
                     >
-                      일괄 적용
+                      �ϰ� ����
                     </button>
                   </div>
                 </div>
@@ -10328,8 +11224,8 @@ export default function AdvancedEditor() {
         )}
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, fillStroke: !s.fillStroke }))}>
-            <span>채우기·테두리·효과</span>
-            <span className={`shrink-0 transition-transform ${rightPanelSections.fillStroke ? "rotate-180" : ""}`} aria-hidden>▾</span>
+            <span>ä��⡤�׵θ���ȿ��</span>
+            <span className={`shrink-0 transition-transform ${rightPanelSections.fillStroke ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.fillStroke && (
             <div className="px-2 pb-2">
@@ -10347,8 +11243,8 @@ export default function AdvancedEditor() {
                     <>
                       <label className="flex items-center justify-between gap-2">
                         <span className="flex items-center gap-1.5">
-                          <span className="text-neutral-500">채우기</span>
-                          {selectedNode.style.fillRef ? <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800">변수</span> : null}
+                          <span className="text-neutral-500">ä���</span>
+                          {selectedNode.style.fillRef ? <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800">����</span> : null}
                         </span>
                         <select
                           value={isSolid ? "solid" : isLinear ? "linear" : isImage ? "image" : "solid"}
@@ -10360,25 +11256,25 @@ export default function AdvancedEditor() {
                           }}
                           className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                         >
-                          <option value="solid">단색</option>
-                          <option value="linear">선형 그라디언트</option>
-                          <option value="image">이미지</option>
+                          <option value="solid">�ܻ�</option>
+                          <option value="linear">���� �׶���Ʈ</option>
+                          <option value="image">�̹���</option>
                         </select>
                       </label>
                       {isSolid && (
                         <label className="flex items-center justify-between gap-2">
-                          <span className="text-neutral-500">색</span>
+                          <span className="text-neutral-500">��</span>
                           <input type="color" value={primaryFill.color} onChange={(e) => setFills([{ type: "solid", color: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                         </label>
                       )}
                       {isImage && (
                         <>
                           <label className="flex flex-col gap-1">
-                            <span className="text-neutral-500">이미지 URL</span>
+                            <span className="text-neutral-500">�̹��� URL</span>
                             <input type="text" value={primaryFill.src} onChange={(e) => setFills([{ ...primaryFill, src: e.target.value }])} placeholder="https://..." className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                           </label>
                           <label className="flex flex-col gap-1">
-                            <span className="text-neutral-500">파일 업로드</span>
+                            <span className="text-neutral-500">���� ���ε�</span>
                             <input
                               type="file"
                               accept={IMAGE_FILE_ACCEPT}
@@ -10394,11 +11290,11 @@ export default function AdvancedEditor() {
                             />
                           </label>
                           <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">맞춤</span>
+                            <span className="text-neutral-500">����</span>
                             <select value={primaryFill.fit} onChange={(e) => setFills([{ ...primaryFill, fit: e.target.value as "cover" | "contain" | "fill" }])} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
-                              <option value="cover">채우기(cover)</option>
-                              <option value="contain">맞춤(contain)</option>
-                              <option value="fill">늘리기(fill)</option>
+                              <option value="cover">ä���(cover)</option>
+                              <option value="contain">����(contain)</option>
+                              <option value="fill">�ø���(fill)</option>
                             </select>
                           </label>
                         </>
@@ -10406,25 +11302,25 @@ export default function AdvancedEditor() {
                       {isLinear && (
                         <>
                           <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">시작 색</span>
+                            <span className="text-neutral-500">���� ��</span>
                             <input type="color" value={primaryFill.from} onChange={(e) => setFills([{ ...primaryFill, from: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                           </label>
                           <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">끝 색</span>
+                            <span className="text-neutral-500">�� ��</span>
                             <input type="color" value={primaryFill.to} onChange={(e) => setFills([{ ...primaryFill, to: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                           </label>
                           <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">각도(°)</span>
+                            <span className="text-neutral-500">����(��)</span>
                             <input type="number" value={primaryFill.angle ?? 0} onChange={(e) => setFills([{ ...primaryFill, angle: Number(e.target.value) }])} className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                           </label>
                           <div className="border-t border-neutral-100 pt-2 mt-1">
-                            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">정지점 (stops)</div>
+                            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">������ (stops)</div>
                             {linearStops.map((stop, idx) => (
                               <div key={idx} className="flex items-center gap-2 mb-2 rounded border border-neutral-200 bg-white p-2">
                                 <input type="number" min={0} max={1} step={0.05} value={stop.offset} onChange={(e) => {
                                   const next = linearStops.map((s, i) => (i === idx ? { ...s, offset: Number(e.target.value) } : s)).sort((a, b) => a.offset - b.offset);
                                   setFills([{ ...primaryFill, stops: next }]);
-                                }} className="w-14 rounded border border-neutral-200 px-1.5 py-0.5 text-[11px]" title="위치 0~1" />
+                                }} className="w-14 rounded border border-neutral-200 px-1.5 py-0.5 text-[11px]" title="��ġ 0~1" />
                                 <input type="color" value={stop.color} onChange={(e) => {
                                   const next = linearStops.map((s, i) => (i === idx ? { ...s, color: e.target.value } : s));
                                   setFills([{ ...primaryFill, stops: next }]);
@@ -10432,13 +11328,13 @@ export default function AdvancedEditor() {
                                 <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => {
                                   const next = linearStops.filter((_, i) => i !== idx);
                                   setFills([{ ...primaryFill, stops: next.length >= 2 ? next : undefined }]);
-                                }} disabled={linearStops.length <= 2}>삭제</button>
+                                }} disabled={linearStops.length <= 2}>����</button>
                               </div>
                             ))}
                             <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => {
                               const next = [...linearStops, { offset: 0.5, color: "#888888" }].sort((a, b) => a.offset - b.offset);
                               setFills([{ ...primaryFill, stops: next }]);
-                            }}>정지점 추가</button>
+                            }}>������ �߰�</button>
                           </div>
                         </>
                       )}
@@ -10461,11 +11357,11 @@ export default function AdvancedEditor() {
                       }, true)
                     }
                   >
-                    스타일 제거
+                    ��Ÿ�� ����
                   </button>
                 </div>
                 <label className="flex items-center justify-between gap-2">
-                  <span className="text-neutral-500">블렌드</span>
+                  <span className="text-neutral-500">�����</span>
                   <select
                     value={selectedNode.style.blendMode ?? "normal"}
                     onChange={(e) => updateNode(selectedNode.id, { style: { ...selectedNode.style, blendMode: e.target.value as BlendMode } }, true)}
@@ -10477,14 +11373,14 @@ export default function AdvancedEditor() {
                   </select>
                 </label>
                 <div className="border-t border-neutral-100 pt-2 mt-2">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">효과</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">ȿ��</div>
                   {selectedEffects.map((effect, idx) => (
                     <div key={idx} className="rounded border border-neutral-200 bg-white p-2 mb-2 space-y-1.5">
                       <div className="flex items-center justify-between gap-1">
                         <span className="text-[11px] font-medium text-neutral-700">
-                          {effect.type === "shadow" ? "그림자" : effect.type === "blur" ? "블러" : "노이즈"}
+                          {effect.type === "shadow" ? "�׸���" : effect.type === "blur" ? "���" : "������"}
                         </span>
-                        <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => removeEffectAt(idx)}>삭제</button>
+                        <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => removeEffectAt(idx)}>����</button>
                       </div>
                       {effect.type === "shadow" && (
                         <>
@@ -10497,35 +11393,35 @@ export default function AdvancedEditor() {
                             <input type="number" value={effect.y} onChange={(e) => updateEffectAt(idx, { y: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                           </label>
                           <label className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="text-neutral-500">블러</span>
+                            <span className="text-neutral-500">���</span>
                             <input type="number" min={0} value={effect.blur} onChange={(e) => updateEffectAt(idx, { blur: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                           </label>
                           <label className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="text-neutral-500">색</span>
+                            <span className="text-neutral-500">��</span>
                             <input type="color" value={effect.color} onChange={(e) => updateEffectAt(idx, { color: e.target.value })} className="h-6 w-10 rounded border border-neutral-200" />
                           </label>
                           <label className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="text-neutral-500">불투명</span>
+                            <span className="text-neutral-500">������</span>
                             <input type="number" min={0} max={1} step={0.05} value={effect.opacity ?? 1} onChange={(e) => updateEffectAt(idx, { opacity: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                           </label>
                         </>
                       )}
                       {effect.type === "blur" && (
                         <label className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-neutral-500">블러</span>
+                          <span className="text-neutral-500">���</span>
                           <input type="number" min={0} value={effect.blur} onChange={(e) => updateEffectAt(idx, { blur: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                         </label>
                       )}
                       {effect.type === "noise" && (
                         <label className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-neutral-500">강도 (0~1)</span>
+                          <span className="text-neutral-500">���� (0~1)</span>
                           <input type="number" min={0} max={1} step={0.05} value={effect.amount ?? 0.5} onChange={(e) => updateEffectAt(idx, { amount: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                         </label>
                       )}
                     </div>
                   ))}
                   <div className="flex items-center gap-1">
-                    <span className="text-[11px] text-neutral-500">효과 추가</span>
+                    <span className="text-[11px] text-neutral-500">ȿ�� �߰�</span>
                     <select
                       value=""
                       onChange={(e) => {
@@ -10534,10 +11430,10 @@ export default function AdvancedEditor() {
                       }}
                       className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                     >
-                      <option value="">선택</option>
-                      <option value="shadow">그림자</option>
-                      <option value="blur">블러</option>
-                      <option value="noise">노이즈</option>
+                      <option value="">����</option>
+                      <option value="shadow">�׸���</option>
+                      <option value="blur">���</option>
+                      <option value="noise">������</option>
                     </select>
                   </div>
                 </div>
@@ -10548,8 +11444,8 @@ export default function AdvancedEditor() {
         {selectedNode.type === "path" && (
           <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
             <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, pathSegments: !s.pathSegments }))}>
-              <span>Vector network (I5) — 세그먼트</span>
-              <span className={`shrink-0 transition-transform ${rightPanelSections.pathSegments ? "rotate-180" : ""}`} aria-hidden>▾</span>
+              <span>Vector network (I5) ? ���׸�Ʈ</span>
+              <span className={`shrink-0 transition-transform ${rightPanelSections.pathSegments ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.pathSegments && (
               <div className="px-2 pb-2">
@@ -10562,7 +11458,7 @@ export default function AdvancedEditor() {
                     if (segments.length === 0) {
                       return (
                         <>
-                          <p className="text-[11px] text-neutral-500">단일 path 또는 세그먼트 모드 사용</p>
+                          <p className="text-[11px] text-neutral-500">���� path �Ǵ� ���׸�Ʈ ��� ���</p>
                           <button
                             type="button"
                             className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
@@ -10572,7 +11468,7 @@ export default function AdvancedEditor() {
                               segments: [{ d: pathData, fills: selectedNode.style.fills?.length ? [...selectedNode.style.fills] : [{ type: "solid", color: "#EDEDED" }] }],
                             })}
                           >
-                            세그먼트 모드로 전환
+                            ���׸�Ʈ ���� ��ȯ
                           </button>
                         </>
                       );
@@ -10588,15 +11484,15 @@ export default function AdvancedEditor() {
                           return (
                             <div key={idx} className="rounded border border-neutral-200 bg-white p-2 space-y-1.5">
                               <div className="flex items-center justify-between gap-1">
-                                <span className="text-[10px] font-medium text-neutral-600">세그먼트 {idx + 1}</span>
-                                <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => setShape({ ...selectedNode.shape, segments: segments.filter((_, i) => i !== idx) })} disabled={segments.length <= 1}>삭제</button>
+                                <span className="text-[10px] font-medium text-neutral-600">���׸�Ʈ {idx + 1}</span>
+                                <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => setShape({ ...selectedNode.shape, segments: segments.filter((_, i) => i !== idx) })} disabled={segments.length <= 1}>����</button>
                               </div>
                               <label className="flex flex-col gap-0.5">
                                 <span className="text-neutral-500 text-[10px]">path d</span>
                                 <input type="text" value={seg.d} onChange={(e) => { const next = segments.map((s, i) => (i === idx ? { ...s, d: e.target.value } : s)); setShape({ ...selectedNode.shape, segments: next }); }} placeholder="M 0 0 L 100 100" className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] font-mono" />
                               </label>
                               <div className="flex items-center gap-2">
-                                <span className="text-neutral-500 text-[10px]">채우기</span>
+                                <span className="text-neutral-500 text-[10px]">ä���</span>
                                 <select
                                   value={primaryFill.type === "solid" ? "solid" : primaryFill.type === "linear" ? "linear" : "image"}
                                   onChange={(e) => {
@@ -10607,9 +11503,9 @@ export default function AdvancedEditor() {
                                   }}
                                   className="rounded border border-neutral-200 px-2 py-0.5 text-[10px]"
                                 >
-                                  <option value="solid">단색</option>
-                                  <option value="linear">그라디언트</option>
-                                  <option value="image">이미지</option>
+                                  <option value="solid">�ܻ�</option>
+                                  <option value="linear">�׶���Ʈ</option>
+                                  <option value="image">�̹���</option>
                                 </select>
                                 {primaryFill.type === "solid" && <input type="color" value={primaryFill.color} onChange={(e) => setSegFills([{ type: "solid", color: e.target.value }])} className="h-6 w-8 rounded border border-neutral-200" />}
                               </div>
@@ -10621,7 +11517,7 @@ export default function AdvancedEditor() {
                           className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                           onClick={() => setShape({ ...selectedNode.shape, segments: [...segments, { d: "", fills: [{ type: "solid", color: "#EDEDED" }] }] })}
                         >
-                          세그먼트 추가
+                          ���׸�Ʈ �߰�
                         </button>
                         <button
                           type="button"
@@ -10632,7 +11528,7 @@ export default function AdvancedEditor() {
                             updateNode(selectedNode.id, { style: { ...selectedNode.style, fills: first?.fills ?? [{ type: "solid", color: "#EDEDED" }] } }, true);
                           }}
                         >
-                          단일 path로 전환
+                          ���� path�� ��ȯ
                         </button>
                       </>
                     );
@@ -10645,28 +11541,28 @@ export default function AdvancedEditor() {
         {selectedNode.type === "text" && (
           <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
             <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, text: !s.text }))}>
-              <span>텍스트</span>
-              <span className={`shrink-0 transition-transform ${rightPanelSections.text ? "rotate-180" : ""}`} aria-hidden>▾</span>
+              <span>�ؽ�Ʈ</span>
+              <span className={`shrink-0 transition-transform ${rightPanelSections.text ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.text && (
               <div className="px-2 pb-2">
                 <div className="mt-2 space-y-2">
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">내용</span>
+                    <span className="text-neutral-500">����</span>
                     <input type="text" value={selectedNode.text?.value ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), value: e.target.value } as NodeText }, true)} className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">폰트 크기</span>
+                      <span className="text-neutral-500">��Ʈ ũ��</span>
                       <input type="number" min={1} value={resolvedTextStyle?.fontSize ?? 16} onChange={(e) => applyTextStyle({ fontSize: Number(e.target.value) || 16 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">굵기</span>
+                      <span className="text-neutral-500">����</span>
                       <input type="number" min={100} max={900} step={100} value={resolvedTextStyle?.fontWeight ?? 400} onChange={(e) => applyTextStyle({ fontWeight: Number(e.target.value) || 400 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                   </div>
                   <label className="flex flex-col gap-1">
-                    <span className="text-neutral-500">폰트 패밀리</span>
+                    <span className="text-neutral-500">��Ʈ �йи�</span>
                     <div className="relative">
                       <input
                         type="text"
@@ -10674,10 +11570,10 @@ export default function AdvancedEditor() {
                         value={resolvedTextStyle?.fontFamily ?? DEFAULT_FONT_FAMILY}
                         onChange={(e) => applyTextStyle({ fontFamily: e.target.value })}
                         className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
-                        placeholder="폰트 선택 또는 입력"
+                        placeholder="��Ʈ ���� �Ǵ� �Է�"
                       />
                       <datalist id="font-picker-list">
-                        <option value="Space Grotesk, 'Noto Sans KR', sans-serif">Space Grotesk (기본)</option>
+                        <option value="Space Grotesk, 'Noto Sans KR', sans-serif">Space Grotesk (�⺻)</option>
                         <option value="'Noto Sans KR', sans-serif">Noto Sans KR</option>
                         <option value="'Pretendard Variable', Pretendard, sans-serif">Pretendard</option>
                         <option value="Inter, sans-serif">Inter</option>
@@ -10687,10 +11583,10 @@ export default function AdvancedEditor() {
                         <option value="Poppins, sans-serif">Poppins</option>
                         <option value="Montserrat, sans-serif">Montserrat</option>
                         <option value="Lato, sans-serif">Lato</option>
-                        <option value="'Nanum Gothic', sans-serif">나눔고딕</option>
-                        <option value="'Nanum Myeongjo', serif">나눔명조</option>
+                        <option value="'Nanum Gothic', sans-serif">�������</option>
+                        <option value="'Nanum Myeongjo', serif">��������</option>
                         <option value="'Gothic A1', sans-serif">Gothic A1</option>
-                        <option value="'Do Hyeon', sans-serif">도현</option>
+                        <option value="'Do Hyeon', sans-serif">����</option>
                         <option value="'Spoqa Han Sans Neo', sans-serif">Spoqa Han Sans</option>
                         <option value="'Wanted Sans Variable', 'Wanted Sans', sans-serif">Wanted Sans</option>
                         <option value="Arial, Helvetica, sans-serif">Arial</option>
@@ -10704,43 +11600,43 @@ export default function AdvancedEditor() {
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">줄 높이</span>
+                      <span className="text-neutral-500">�� ����</span>
                       <input type="number" step={0.1} value={resolvedTextStyle?.lineHeight ?? 1.4} onChange={(e) => applyTextStyle({ lineHeight: Number(e.target.value) || 1.4 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">자간</span>
+                      <span className="text-neutral-500">�ڰ�</span>
                       <input type="number" step={0.1} value={resolvedTextStyle?.letterSpacing ?? 0} onChange={(e) => applyTextStyle({ letterSpacing: Number(e.target.value) || 0 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                   </div>
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">정렬</span>
+                    <span className="text-neutral-500">����</span>
                     <select value={resolvedTextStyle?.align ?? "left"} onChange={(e) => applyTextStyle({ align: e.target.value as "left" | "center" | "right" })} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                      <option value="left">왼쪽</option>
-                      <option value="center">가운데</option>
-                      <option value="right">오른쪽</option>
+                      <option value="left">����</option>
+                      <option value="center">���</option>
+                      <option value="right">������</option>
                     </select>
                   </label>
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">대/소문자</span>
+                    <span className="text-neutral-500">��/�ҹ���</span>
                     <select value={resolvedTextStyle?.textCase ?? "none"} onChange={(e) => applyTextStyle({ textCase: e.target.value as "none" | "upper" | "lower" | "capitalize" })} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                      <option value="none">기본</option>
-                      <option value="upper">대문자</option>
-                      <option value="lower">소문자</option>
-                      <option value="capitalize">첫 글자만</option>
+                      <option value="none">�⺻</option>
+                      <option value="upper">�빮��</option>
+                      <option value="lower">�ҹ���</option>
+                      <option value="capitalize">ù ���ڸ�</option>
                     </select>
                   </label>
                   <div className="flex flex-wrap items-center gap-3">
                     <label className="flex items-center gap-1.5 text-xs text-neutral-600">
                       <input type="checkbox" checked={Boolean(resolvedTextStyle?.italic)} onChange={(e) => applyTextStyle({ italic: e.target.checked })} />
-                      기울임
+                      �����
                     </label>
                     <label className="flex items-center gap-1.5 text-xs text-neutral-600">
                       <input type="checkbox" checked={Boolean(resolvedTextStyle?.underline)} onChange={(e) => applyTextStyle({ underline: e.target.checked })} />
-                      밑줄
+                      ����
                     </label>
                     <label className="flex items-center gap-1.5 text-xs text-neutral-600">
                       <input type="checkbox" checked={Boolean(resolvedTextStyle?.lineThrough)} onChange={(e) => applyTextStyle({ lineThrough: e.target.checked })} />
-                      취소선
+                      ��Ҽ�
                     </label>
                   </div>
                   <label className="flex flex-col gap-1">
@@ -10748,7 +11644,7 @@ export default function AdvancedEditor() {
                     <input type="text" value={resolvedTextStyle?.fontFeatureSettings ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), style: { ...(resolvedTextStyle ?? DEFAULT_TEXT_STYLE), fontFeatureSettings: e.target.value || undefined } } as NodeText }, true)} placeholder='e.g. "liga" 1, "ss01" 1' className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
                   </label>
                   <div className="border-t border-neutral-100 pt-2 mt-1">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">가변 폰트 (B2)</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">���� ��Ʈ (B2)</div>
                     <label className="flex flex-col gap-1">
                       <span className="text-neutral-500">font-variation-settings</span>
                       <input type="text" value={resolvedTextStyle?.fontVariationSettings ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), style: { ...(resolvedTextStyle ?? DEFAULT_TEXT_STYLE), fontVariationSettings: e.target.value || undefined } } as NodeText }, true)} placeholder='e.g. "wght" 400, "wdth" 100' className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
@@ -10784,38 +11680,38 @@ export default function AdvancedEditor() {
         )}
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, prototype: !s.prototype }))}>
-            <span>프로토타입</span>
-            <span className={`shrink-0 transition-transform ${rightPanelSections.prototype ? "rotate-180" : ""}`} aria-hidden>▾</span>
+            <span>������Ÿ��</span>
+            <span className={`shrink-0 transition-transform ${rightPanelSections.prototype ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.prototype && (
             <div className="px-2 pb-2">
               <div className="mt-2 space-y-2">
-                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">인터랙션</div>
+                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">���ͷ���</div>
                 {selectedInteractions.map((ia) => (
                   <div key={ia.id} className="rounded border border-neutral-200 bg-white px-2 py-2 space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] text-neutral-500">트리거</span>
+                      <span className="text-[10px] text-neutral-500">Ʈ����</span>
                       <select value={ia.trigger} onChange={(e) => updatePrototypeInteraction(selectedNode.id, ia.id, { trigger: e.target.value as import("../doc/scene").PrototypeTrigger })} className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]">
-                        <option value="click">클릭 (click)</option>
-                        <option value="hover">호버 (hover)</option>
-                        <option value="whileHover">호버 지연 (whileHover)</option>
-                        <option value="onPress">누름 (onPress)</option>
-                        <option value="onDragStart">드래그 시작 (onDragStart)</option>
-                        <option value="onDragEnd">드래그 끝 (onDragEnd)</option>
-                        <option value="load">로드 (load)</option>
-                        <option value="scroll">스크롤 (scroll)</option>
+                        <option value="click">Ŭ�� (click)</option>
+                        <option value="hover">ȣ�� (hover)</option>
+                        <option value="whileHover">ȣ�� ���� (whileHover)</option>
+                        <option value="onPress">���� (onPress)</option>
+                        <option value="onDragStart">�巡�� ���� (onDragStart)</option>
+                        <option value="onDragEnd">�巡�� �� (onDragEnd)</option>
+                        <option value="load">�ε� (load)</option>
+                        <option value="scroll">��ũ�� (scroll)</option>
                       </select>
-                      <button type="button" className="rounded border border-neutral-200 px-1 py-0.5 text-[10px]" onClick={() => removePrototypeInteraction(selectedNode.id, ia.id)}>삭제</button>
+                      <button type="button" className="rounded border border-neutral-200 px-1 py-0.5 text-[10px]" onClick={() => removePrototypeInteraction(selectedNode.id, ia.id)}>����</button>
                     </div>
                     {ia.trigger === "whileHover" && (
                       <label className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="text-neutral-500">지연(ms)</span>
+                        <span className="text-neutral-500">����(ms)</span>
                         <input type="number" min={0} value={ia.hoverDelayMs ?? 0} onChange={(e) => updatePrototypeInteraction(selectedNode.id, ia.id, { hoverDelayMs: Number(e.target.value) })} className="w-20 rounded border border-neutral-200 px-2 py-0.5 text-[11px]" />
                       </label>
                     )}
                     {ia.action.type === "navigate" ? (
                       <label className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="text-neutral-500">페이지</span>
+                        <span className="text-neutral-500">������</span>
                         <select value={ia.action.targetPageId ?? ""} onChange={(e) => updatePrototypeInteraction(selectedNode.id, ia.id, { action: { ...ia.action, type: "navigate", targetPageId: e.target.value } as import("../doc/scene").PrototypeAction })} className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]">
                           {doc.pages.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
                         </select>
@@ -10823,7 +11719,7 @@ export default function AdvancedEditor() {
                     ) : null}
                   </div>
                 ))}
-                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => addPrototypeInteraction(selectedNode.id)}>인터랙션 추가</button>
+                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => addPrototypeInteraction(selectedNode.id)}>���ͷ��� �߰�</button>
               </div>
             </div>
           )}
@@ -10831,22 +11727,22 @@ export default function AdvancedEditor() {
       </div>
     ) : (
       <div className="space-y-4" key="no-node">
-        <div className="text-xs text-neutral-500">레이어를 선택해 속성을 편집하세요.</div>
+        <div className="text-xs text-neutral-500">���̾ ������ �Ӽ��� �����ϼ���.</div>
         {pageNode && (
           <div>
-            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">페이지</div>
+            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">������</div>
             <div className="mt-2 grid grid-cols-2 gap-2">
               <label className="flex items-center justify-between gap-2">
-                <span className="text-neutral-500">너비</span>
+                <span className="text-neutral-500">�ʺ�</span>
                 <input type="number" value={Math.round(pageNode.frame.w)} onChange={(e) => updateNode(pageNode.id, { frame: { ...pageNode.frame, w: Number(e.target.value) } }, true)} className="w-20 rounded border border-neutral-200 px-2 py-1" />
               </label>
               <label className="flex items-center justify-between gap-2">
-                <span className="text-neutral-500">높이</span>
+                <span className="text-neutral-500">����</span>
                 <input type="number" value={Math.round(pageNode.frame.h)} onChange={(e) => updateNode(pageNode.id, { frame: { ...pageNode.frame, h: Number(e.target.value) } }, true)} className="w-20 rounded border border-neutral-200 px-2 py-1" />
               </label>
             </div>
             <label className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-neutral-500">배경</span>
+              <span className="text-neutral-500">���</span>
               <input type="color" value={resolveFillColor(doc, pageNode)} onChange={(e) => updateNode(pageNode.id, { style: { ...pageNode.style, fills: [{ type: "solid", color: e.target.value }] } }, true)} className="h-7 w-12 rounded border border-neutral-200" />
             </label>
           </div>
@@ -14001,7 +14897,10 @@ export default function AdvancedEditor() {
                                           action: {
                                             ...(interaction.action as PrototypeAction),
                                             name: nextName,
-                                            args: hasNativeArgs ? (interaction.action as PrototypeAction).args : (presetArgs || undefined),
+                                            args:
+                                              hasNativeArgs && "args" in interaction.action
+                                                ? interaction.action.args
+                                                : (presetArgs || undefined),
                                           } as PrototypeAction,
                                         });
                                       }}

@@ -5,6 +5,7 @@ import { apiErrorJson } from "@/lib/api-error";
 import { normalizeDomain } from "@/lib/hosting-domain";
 import { resolve4, resolve6, resolveCname, resolveTxt } from "dns/promises";
 import tls from "tls";
+import { logAppAudit } from "@/lib/app-audit";
 
 type Params = { pageId: string };
 type HostingValue = Record<string, unknown>;
@@ -15,15 +16,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function requireOwner(pageId: string, req: Request) {
   const anonUserId = await resolveAnonUserId(req);
-  if (!anonUserId) return { page: null as null, error: apiErrorJson("anon_required", 401) };
+  if (!anonUserId) return { page: null as null, user: null as null, anonUserId: null as string | null, error: apiErrorJson("anon_required", 401) };
   const user = await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } });
-  if (!user) return { page: null as null, error: apiErrorJson("user_not_found", 404) };
+  if (!user) return { page: null as null, user: null as null, anonUserId: null as string | null, error: apiErrorJson("user_not_found", 404) };
   const page = await prisma.page.findFirst({
     where: { id: pageId, owner_id: user.id, is_deleted: false },
     select: { id: true },
   });
-  if (!page) return { page: null as null, error: apiErrorJson("not_found", 404) };
-  return { page, error: null };
+  if (!page) return { page: null as null, user: null as null, anonUserId: null as string | null, error: apiErrorJson("not_found", 404) };
+  return { page, user, anonUserId, error: null };
 }
 
 async function loadHosting(pageId: string): Promise<HostingValue> {
@@ -108,14 +109,22 @@ async function checkTls(domain: string) {
 export async function GET(req: Request, context: { params: Promise<Params> }) {
   const { pageId } = await context.params;
   if (!pageId) return apiErrorJson("bad_page_id", 400);
-  const { error } = await requireOwner(pageId, req);
+  const { error, user, anonUserId } = await requireOwner(pageId, req);
   if (error) return error;
 
   const hosting = await loadHosting(pageId);
   const customDomainRaw = typeof hosting.customDomain === "string" ? hosting.customDomain : "";
   const customDomain = normalizeDomain(customDomainRaw);
   if (!customDomain) {
-    return apiErrorJson("custom_domain_required", 400, "커스텀 도메인이 필요합니다.");
+    await logAppAudit({
+      pageId,
+      action: "hosting_status_check",
+      targetType: "hosting",
+      targetId: null,
+      meta: { error: "custom_domain_required" },
+      actor: { userId: user!.id, anonId: anonUserId! },
+    });
+    return apiErrorJson("custom_domain_required", 400);
   }
 
   const verification = isRecord(hosting.verification) ? hosting.verification : null;
@@ -157,6 +166,15 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
       data: { last_checked_at: new Date(), last_error: null },
     });
   }
+
+  await logAppAudit({
+    pageId,
+    action: "hosting_status_check",
+    targetType: "hosting",
+    targetId: customDomain,
+    meta: { errors: errors || null },
+    actor: { userId: user!.id, anonId: anonUserId! },
+  });
 
   return NextResponse.json({
     ok: true,

@@ -1,6 +1,7 @@
 import { runScheduledWorkflows } from "@/lib/workflow-scheduler";
 import { expireStalePages } from "@/lib/expire";
 import { runDailyReportsOnce } from "@/lib/daily-reports";
+import { runConnectorSchedules } from "@/lib/connector-scheduler";
 
 type SchedulerHandle = {
   stop: () => void;
@@ -40,6 +41,7 @@ export function startInternalWorkflowScheduler(): SchedulerHandle | null {
     try {
       const now = new Date();
       await runScheduledWorkflows(now);
+      await runConnectorSchedules(now);
       const nowMs = now.getTime();
       if (nowMs - lastExpireAt >= expireIntervalMs) {
         await expireStalePages(now);

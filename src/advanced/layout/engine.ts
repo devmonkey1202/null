@@ -5,7 +5,7 @@ type LayoutItem = {
   node: Node;
   width: number;
   height: number;
-  /** 레이아웃 흐름용 크기 (테두리 포함 시 width/height보다 클 수 있음) */
+  /** Layout bounds size (may include stroke width beyond node width/height). */
   layoutWidth: number;
   layoutHeight: number;
   strokeInset: number;
@@ -353,7 +353,7 @@ function layoutNode(doc: Doc, nodeId: string) {
   }
 }
 
-/** N1: 테이블 노드 자식들을 columns×rows 그리드로 배치 */
+  /** Table layout: place children into a columns x rows grid. */
 function applyTableLayout(doc: Doc, node: Node) {
   const cols = Math.max(1, Math.round(node.table!.columns));
   const childIds = node.children.filter((id) => doc.nodes[id]);

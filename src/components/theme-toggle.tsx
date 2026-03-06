@@ -1,17 +1,15 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
+import { readStorageKey, subscribeStorageKey, writeStorageKey } from "@/lib/synced-storage";
 
 const STORAGE_KEY = "theme";
 type Theme = "light" | "dark";
 
+const parseTheme = (raw: string | null): Theme | null => (raw === "light" || raw === "dark" ? raw : null);
+
 function getStoredTheme(): Theme | null {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    return stored === "light" || stored === "dark" ? stored : null;
-  } catch {
-    return null;
-  }
+  return readStorageKey(STORAGE_KEY, parseTheme, null);
 }
 
 function getSystemTheme(): Theme {
@@ -62,16 +60,29 @@ export default function ThemeToggle({ className = "" }: { className?: string }) 
     return () => media.removeListener(onChange);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return subscribeStorageKey(STORAGE_KEY, parseTheme, (value) => {
+      if (value) {
+        document.documentElement.setAttribute("data-theme", value);
+        setTheme(value);
+        setIsSystem(false);
+      } else {
+        const sys = getSystemTheme();
+        document.documentElement.setAttribute("data-theme", sys);
+        setSystem(sys);
+        setTheme(sys);
+        setIsSystem(true);
+      }
+    });
+  }, []);
+
   const effective = isSystem ? system : theme;
   const label = effective === "dark" ? "다크" : "라이트";
 
   const toggle = () => {
     const next: Theme = effective === "dark" ? "light" : "dark";
-    try {
-      localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // ignore storage access errors
-    }
+    writeStorageKey(STORAGE_KEY, next, (value) => value);
     document.documentElement.setAttribute("data-theme", next);
     setTheme(next);
     setIsSystem(false);

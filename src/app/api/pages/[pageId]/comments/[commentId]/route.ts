@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId, ensureAnonUser } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string; commentId: string };
 
@@ -47,6 +48,15 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     include: { user: { select: { id: true, anon_id: true, email: true } } },
   });
 
+  await logPageAudit({
+    pageId,
+    action: "comment_update",
+    targetType: "comment",
+    targetId: updated.id,
+    meta: { resolved: updated.resolved },
+    actor: { userId: user.id, anonId: anonUserId },
+  });
+
   const author = updated.user.email ? updated.user.email : `Anonymous (${updated.user.anon_id.slice(0, 8)})`;
   return NextResponse.json({
     ok: true,
@@ -87,5 +97,13 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
   if (!canDelete) return apiErrorJson("forbidden", 403);
 
   await prisma.comment.deleteMany({ where: { id: commentId } });
+  await logPageAudit({
+    pageId,
+    action: "comment_delete",
+    targetType: "comment",
+    targetId: commentId,
+    meta: null,
+    actor: { userId: user.id, anonId: anonUserId },
+  });
   return NextResponse.json({ ok: true });
-}
+}

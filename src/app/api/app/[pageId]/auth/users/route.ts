@@ -4,6 +4,7 @@ import { withErrorHandler, safeParseBody } from "@/lib/api-handler";
 import { cookies } from "next/headers";
 import { resolveAnonUserId } from "@/lib/anon";
 import { prisma } from "@/lib/db";
+import { logAppAudit } from "@/lib/app-audit";
 
 async function getToken(pageId: string, req: Request): Promise<string | undefined> {
   const authHeader = req.headers.get("authorization");
@@ -31,11 +32,25 @@ async function requireAdminOrOwner(pageId: string, req: Request) {
   return { ok: true };
 }
 
+async function resolveActor(pageId: string, req: Request) {
+  const anonUserId = await resolveAnonUserId(req);
+  if (anonUserId) {
+    const owner = await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } });
+    if (owner) return { userId: owner.id, appUserId: null as string | null, anonId: anonUserId };
+  }
+  const token = await getToken(pageId, req);
+  if (token) {
+    const appUser = await getAppUserByToken(token);
+    if (appUser) return { userId: null as string | null, appUserId: appUser.id, anonId: null as string | null };
+  }
+  return { userId: null as string | null, appUserId: null as string | null, anonId: null as string | null };
+}
+
 export const GET = withErrorHandler(
   async (req: Request, context: { params: Promise<{ pageId: string }> }) => {
     const { pageId } = await context.params;
     const gate = await requireAdminOrOwner(pageId, req);
-    if (!gate.ok) return NextResponse.json({ error: "관리자 또는 소유자 권한이 필요합니다." }, { status: 403 });
+    if (!gate.ok) return NextResponse.json({ error: "admin_or_owner_required" }, { status: 403 });
 
     const url = new URL(req.url);
     const role = url.searchParams.get("role") ?? undefined;
@@ -51,14 +66,23 @@ export const PATCH = withErrorHandler(
   async (req: Request, context: { params: Promise<{ pageId: string }> }) => {
     const { pageId } = await context.params;
     const gate = await requireAdminOrOwner(pageId, req);
-    if (!gate.ok) return NextResponse.json({ error: "관리자 또는 소유자 권한이 필요합니다." }, { status: 403 });
+    if (!gate.ok) return NextResponse.json({ error: "admin_or_owner_required" }, { status: 403 });
 
     const body = (await safeParseBody(req)) as Record<string, unknown> | null;
     if (!body || !body.user_id || !body.role) {
-      return NextResponse.json({ error: "user_id와 role이 필요합니다." }, { status: 400 });
+      return NextResponse.json({ error: "user_id_role_required" }, { status: 400 });
     }
 
     const updated = await setAppUserRole(String(body.user_id), String(body.role));
+    const actor = await resolveActor(pageId, req);
+    await logAppAudit({
+      pageId,
+      action: "app_user_role_set",
+      targetType: "app_user",
+      targetId: updated.id,
+      meta: { role: updated.role },
+      actor: { userId: actor.userId, appUserId: actor.appUserId, anonId: actor.anonId },
+    });
     return NextResponse.json({ ok: true, user: updated });
   }
 );
@@ -67,13 +91,22 @@ export const DELETE = withErrorHandler(
   async (req: Request, context: { params: Promise<{ pageId: string }> }) => {
     const { pageId } = await context.params;
     const gate = await requireAdminOrOwner(pageId, req);
-    if (!gate.ok) return NextResponse.json({ error: "관리자 또는 소유자 권한이 필요합니다." }, { status: 403 });
+    if (!gate.ok) return NextResponse.json({ error: "admin_or_owner_required" }, { status: 403 });
 
     const url = new URL(req.url);
     const userId = url.searchParams.get("user_id");
-    if (!userId) return NextResponse.json({ error: "user_id가 필요합니다." }, { status: 400 });
+    if (!userId) return NextResponse.json({ error: "user_id_required" }, { status: 400 });
 
     await deleteAppUser(userId);
+    const actor = await resolveActor(pageId, req);
+    await logAppAudit({
+      pageId,
+      action: "app_user_delete",
+      targetType: "app_user",
+      targetId: userId,
+      meta: null,
+      actor: { userId: actor.userId, appUserId: actor.appUserId, anonId: actor.anonId },
+    });
     return NextResponse.json({ ok: true });
   }
 );

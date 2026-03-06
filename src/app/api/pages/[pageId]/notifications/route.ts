@@ -30,7 +30,7 @@ export const GET = withErrorHandler(async (req: Request, context: { params: Prom
     OR: [
       { recipient_user_id: user.id },
       { recipient_anon_id: anonUserId },
-    ] as const,
+    ],
     ...(unreadOnly ? { read_at: null } : {}),
   };
 

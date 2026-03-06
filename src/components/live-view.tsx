@@ -182,6 +182,7 @@ export default function LiveView({ pageId }: { pageId: string }) {
         vh: typeof window !== "undefined" ? window.innerHeight : 0,
       },
     });
+    // eslint-disable-next-line react-hooks/immutability
     socketRef.current = socket;
     let hadDisconnected = false;
 

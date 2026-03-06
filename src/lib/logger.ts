@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { logSystemEvent } from "@/lib/system-log";
 
 type LogLevel = "info" | "warn" | "error";
 
@@ -76,6 +77,7 @@ export function logWarn(message: string, meta?: Record<string, unknown>) {
 }
 
 export function logError(message: string, meta?: Record<string, unknown>) {
+  logSystemEvent("error", message, meta, "server");
   writeLog("error", message, meta);
 }
 
@@ -97,4 +99,3 @@ export function logApiError(req: Request, message: string, error: unknown, extra
   const context = getRequestContext(req);
   logError(message, { ...context, error: safeError(error), ...(extra ?? {}) });
 }
-

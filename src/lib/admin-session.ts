@@ -137,3 +137,18 @@ export async function requireAdminSession(options?: { roles?: AdminRole[] }): Pr
 
   return { ok: true, admin: found.admin };
 }
+
+export async function requireAdminAccess(
+  req: Request,
+  options?: { roles?: AdminRole[] }
+): Promise<AdminSessionGate> {
+  if (!isAdminUiConfigured()) return { ok: false, code: "not_configured" };
+  const headerKey = req.headers.get("x-admin-key") ?? "";
+  if (headerKey && verifyAdminKey(headerKey)) {
+    const admin = await ensureAdminUser();
+    if (!admin.is_active) return { ok: false, code: "inactive" };
+    if (!roleAllowed(admin.role, options?.roles)) return { ok: false, code: "forbidden" };
+    return { ok: true, admin: { id: admin.id, username: admin.username, role: admin.role, is_active: admin.is_active } };
+  }
+  return requireAdminSession(options);
+}

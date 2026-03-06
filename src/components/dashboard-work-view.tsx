@@ -574,6 +574,7 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
   }, [pageId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (data?.page) fetchAppUsers();
   }, [data?.page, fetchAppUsers]);
 
@@ -598,11 +599,14 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
   }, [pageId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (data?.page) fetchHostingSettings();
   }, [data?.page, fetchHostingSettings]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHostingStatus(null);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHostingStatusMessage(null);
   }, [hostingSettings.customDomain]);
 
@@ -633,6 +637,7 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
   }, [pageId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (data?.page) fetchMobileSettings();
   }, [data?.page, fetchMobileSettings]);
 

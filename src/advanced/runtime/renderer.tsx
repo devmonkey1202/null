@@ -64,6 +64,96 @@ function MediaImageWithError({
   );
 }
 
+function MediaVideo({
+  href,
+  fw,
+  fh,
+  offsetX,
+  offsetY,
+  scale,
+  fit,
+  radius,
+  brightness,
+  contrast,
+  autoplay,
+  loop,
+  muted,
+  controls,
+  poster,
+}: {
+  href: string;
+  fw: number;
+  fh: number;
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+  fit: "cover" | "contain" | "fill";
+  radius: number;
+  brightness: number;
+  contrast: number;
+  autoplay?: boolean;
+  loop?: boolean;
+  muted?: boolean;
+  controls?: boolean;
+  poster?: string;
+}) {
+  if (!href) {
+    return (
+      <g>
+        <rect
+          x={0}
+          y={0}
+          width={fw}
+          height={fh}
+          fill="#F3F3F3"
+          stroke="#B8B8B8"
+          strokeWidth={1}
+          strokeDasharray="6 4"
+        />
+        <line x1={0} y1={0} x2={fw} y2={fh} stroke="#B8B8B8" strokeWidth={1} />
+        <line x1={fw} y1={0} x2={0} y2={fh} stroke="#B8B8B8" strokeWidth={1} />
+        <text x={fw / 2} y={fh / 2} textAnchor="middle" dominantBaseline="middle" fill="#666666" fontSize={12}>
+          Video
+        </text>
+      </g>
+    );
+  }
+  const fitValue = fit === "fill" ? "fill" : fit;
+  const filter = `brightness(${brightness}) contrast(${contrast})`;
+  const safeControls = controls !== false;
+  const safeAutoplay = Boolean(autoplay);
+  const effectiveMuted = Boolean(muted) || safeAutoplay;
+  return (
+    <foreignObject x={0} y={0} width={fw} height={fh}>
+      <div
+        style={{
+          width: fw,
+          height: fh,
+          overflow: "hidden",
+          borderRadius: radius || 0,
+        }}
+      >
+        <video
+          src={href}
+          poster={poster}
+          controls={safeControls}
+          loop={Boolean(loop)}
+          muted={effectiveMuted}
+          autoPlay={safeAutoplay}
+          playsInline
+          style={{
+            width: fw * scale,
+            height: fh * scale,
+            transform: `translate(${offsetX}px, ${offsetY}px)`,
+            objectFit: fitValue,
+            filter: filter,
+          }}
+        />
+      </div>
+    </foreignObject>
+  );
+}
+
 function normalizeImageSrc(raw?: string) {
   const src = (raw ?? "").trim();
   if (!src) return "";
@@ -663,12 +753,45 @@ function renderShape(
     case "image":
     case "video": {
       const media = node.type === "video" ? node.video : node.image;
-        const href = normalizeImageSrc(media?.src);
+      const href = normalizeImageSrc(media?.src);
       const fit = media?.fit ?? "cover";
       const scale = media?.scale ?? 1;
       const offsetX = media?.offsetX ?? 0;
       const offsetY = media?.offsetY ?? 0;
       const preserve = fit === "contain" ? "xMidYMid meet" : fit === "fill" ? "none" : "xMidYMid slice";
+      const fw = frame.w;
+      const fh = frame.h;
+      const clipId = `rt-media-clip-${node.id}`;
+      const radius = typeof node.style.radius === "number" ? node.style.radius : 0;
+      const crop = media?.crop;
+      const cropRect = crop && crop.w > 0 && crop.h > 0 ? { x: crop.x * fw, y: crop.y * fh, w: crop.w * fw, h: crop.h * fh } : null;
+      const brightness = media?.brightness ?? 1;
+      const contrast = media?.contrast ?? 1;
+      const needBcFilter = Math.abs(brightness - 1) > 0.01 || Math.abs(contrast - 1) > 0.01;
+      const bcFilterId = needBcFilter ? `rt-media-bc-${node.id}-${brightness}-${contrast}` : undefined;
+
+      if (node.type === "video") {
+        return (
+          <MediaVideo
+            href={href}
+            fw={fw}
+            fh={fh}
+            offsetX={offsetX}
+            offsetY={offsetY}
+            scale={scale}
+            fit={fit}
+            radius={radius}
+            brightness={brightness}
+            contrast={contrast}
+            autoplay={media?.autoplay}
+            loop={media?.loop}
+            muted={media?.muted}
+            controls={media?.controls}
+            poster={media?.poster}
+          />
+        );
+      }
+
       if (!href) {
         return (
           <g>
@@ -687,16 +810,6 @@ function renderShape(
           </g>
         );
       }
-      const fw = frame.w;
-      const fh = frame.h;
-      const clipId = `rt-media-clip-${node.id}`;
-      const radius = typeof node.style.radius === "number" ? node.style.radius : 0;
-      const crop = media?.crop;
-      const cropRect = crop && crop.w > 0 && crop.h > 0 ? { x: crop.x * fw, y: crop.y * fh, w: crop.w * fw, h: crop.h * fh } : null;
-      const brightness = media?.brightness ?? 1;
-      const contrast = media?.contrast ?? 1;
-      const needBcFilter = Math.abs(brightness - 1) > 0.01 || Math.abs(contrast - 1) > 0.01;
-      const bcFilterId = needBcFilter ? `rt-media-bc-${node.id}-${brightness}-${contrast}` : undefined;
       return (
         <g>
           <defs>
@@ -1321,6 +1434,10 @@ function CollectionBound({
   doc,
   appPageId,
   collectionId,
+  limit: bindingLimit,
+  offset: bindingOffset,
+  orderBy,
+  orderDir,
   firstChildId,
   rowHeight,
   variableRuntime,
@@ -1329,6 +1446,10 @@ function CollectionBound({
   doc: Doc;
   appPageId: string;
   collectionId: string;
+  limit?: number;
+  offset?: number;
+  orderBy?: "created_at" | "updated_at";
+  orderDir?: "asc" | "desc";
   firstChildId: string;
   rowHeight: number;
   variableRuntime?: VariableRuntime;
@@ -1347,13 +1468,19 @@ function CollectionBound({
     resolveNumber(overrides.perPage) ??
     resolveNumber(overrides.page_size) ??
     resolveNumber(overrides.per_page) ??
-    50;
-  const explicitOffset = resolveNumber(overrides.offset) ?? resolveNumber(overrides.collection_offset);
+    (typeof bindingLimit === "number" && Number.isFinite(bindingLimit) ? Math.max(1, bindingLimit) : 50);
+  const explicitOffset =
+    resolveNumber(overrides.offset) ??
+    resolveNumber(overrides.collection_offset) ??
+    (typeof bindingOffset === "number" && Number.isFinite(bindingOffset) ? Math.max(0, bindingOffset) : null);
   const pageValue = resolveNumber(overrides.page) ?? resolveNumber(overrides.pageIndex);
   const offset = explicitOffset ?? (pageValue ? Math.max(0, (pageValue - 1) * limit) : 0);
   useEffect(() => {
     let cancelled = false;
-    const url = `/api/app/${appPageId}/${collectionId}?limit=${limit}&offset=${offset}`;
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (orderBy) params.set("orderBy", orderBy);
+    if (orderDir) params.set("orderDir", orderDir);
+    const url = `/api/app/${appPageId}/${collectionId}?${params.toString()}`;
     fetch(url, { credentials: "include" })
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { items?: Array<Record<string, unknown> & { id?: string }> } | null) => {
@@ -1364,7 +1491,7 @@ function CollectionBound({
     return () => {
       cancelled = true;
     };
-  }, [appPageId, collectionId, limit, offset]);
+  }, [appPageId, collectionId, limit, offset, orderBy, orderDir, bindingLimit, bindingOffset]);
 
   if (items.length === 0) return null;
   return (
@@ -1574,7 +1701,14 @@ function renderNodeTree(
   const firstChild = firstChildId ? resolveDoc.nodes[firstChildId] : null;
   const useMask = effectiveChildIds.length >= 2 && firstChild?.isMask === true;
 
-  const dataBinding = node.data as { type?: string; collectionId?: string } | undefined;
+  const dataBinding = node.data as {
+    type?: string;
+    collectionId?: string;
+    limit?: number;
+    offset?: number;
+    orderBy?: "created_at" | "updated_at";
+    orderDir?: "asc" | "desc";
+  } | undefined;
   if (dataBinding?.type === "collection" && dataBinding.collectionId && appPageId && firstChildId) {
     const rowHeight = firstChild?.frame?.h ?? 50;
     const renderChildWithRuntime = (childId: string, variableRuntimeOverride?: VariableRuntime) =>
@@ -1615,6 +1749,10 @@ function renderNodeTree(
           doc={doc}
           appPageId={appPageId}
           collectionId={dataBinding.collectionId}
+          limit={dataBinding.limit}
+          offset={dataBinding.offset}
+          orderBy={dataBinding.orderBy}
+          orderDir={dataBinding.orderDir}
           firstChildId={firstChildId}
           rowHeight={rowHeight}
           variableRuntime={variableRuntime}
@@ -1900,11 +2038,25 @@ function renderNodeTree(
     if (!onNavigate) return;
     onNavigate({ pageId, nodeId: node.id, trigger, action: interaction.action });
   };
-  const handleClick = clickInteraction || (interactive && canInteract && clickRole)
+  const canClick = Boolean(clickInteraction || (interactive && canInteract && clickRole));
+  const triggerClick = () => {
+    if (clickRole && clickRole.type !== "input" && onToggleControl) onToggleControl(clickRole.rootId);
+    if (clickInteraction) handleTrigger(clickInteraction, "click");
+  };
+  const handleClick = canClick
     ? (event: React.MouseEvent<SVGGElement>) => {
         event.stopPropagation();
-        if (clickRole && clickRole.type !== "input" && onToggleControl) onToggleControl(clickRole.rootId);
-        if (clickInteraction) handleTrigger(clickInteraction, "click");
+        triggerClick();
+      }
+    : undefined;
+  const isKeyboardFocusable = Boolean(interactive && canClick && (!clickRole || clickRole.type !== "input"));
+  const handleKeyDown = isKeyboardFocusable
+    ? (event: React.KeyboardEvent<SVGGElement>) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          triggerClick();
+        }
       }
     : undefined;
   const handleMouseEnter = hoverInteraction
@@ -2201,9 +2353,10 @@ function renderNodeTree(
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerLeave}
-      tabIndex={interactive && (isTooltipGroup || isSkipLink) ? 0 : undefined}
+      tabIndex={interactive && (isTooltipGroup || isSkipLink || isKeyboardFocusable) ? 0 : undefined}
+      onKeyDown={handleKeyDown}
       aria-label={skipLabel}
-      role={isSkipLink ? "link" : undefined}
+      role={isSkipLink ? "link" : isKeyboardFocusable ? "button" : undefined}
       style={cursor || blendMode ? { ...(cursor ? { cursor } : {}), ...(blendMode ? { mixBlendMode: blendMode } : {}) } : undefined}
       pointerEvents={pointerEventsValue}
     >

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { withErrorHandler } from "@/lib/api-handler";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
@@ -77,12 +79,13 @@ export const PUT = withErrorHandler(async (req: Request, context: { params: Prom
   if (!parsed.success) return apiErrorJson("invalid_body", 400, "key(1~200)와 value가 필요합니다.");
 
   const { key, value } = parsed.data;
+  const storedValue = value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue);
 
   try {
     await prisma.pageSetting.upsert({
       where: { page_id_key: { page_id: pageId, key } },
-      create: { page_id: pageId, key, value },
-      update: { value },
+      create: { page_id: pageId, key, value: storedValue },
+      update: { value: storedValue },
     });
   } catch (err) {
     const msg = (err as Error)?.message ?? "";
@@ -91,6 +94,15 @@ export const PUT = withErrorHandler(async (req: Request, context: { params: Prom
     }
     throw err;
   }
+
+  await logPageAudit({
+    pageId,
+    action: "settings_update",
+    targetType: "page_setting",
+    targetId: key,
+    meta: null,
+    actor: { userId: user.id, anonId: anonUserId },
+  });
 
   return NextResponse.json({ ok: true, key, value });
 });

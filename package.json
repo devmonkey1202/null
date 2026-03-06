@@ -13,7 +13,9 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "mobile:cap:prepare": "npx tsx scripts/mobile/prepare-capacitor.ts",
+    "mobile:rn:prepare": "npx tsx scripts/mobile/prepare-react-native.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",
@@ -38,6 +40,7 @@
     "cross-env": "^10.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.2",
+    "jsdom": "^28.1.0",
     "prisma": "^6.9.0",
     "rimraf": "^6.0.1",
     "tailwindcss": "^4",

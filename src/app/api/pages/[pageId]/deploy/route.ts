@@ -6,6 +6,7 @@ import { expireStalePages } from "@/lib/expire";
 import { apiErrorJson } from "@/lib/api-error";
 import { substituteAlertTemplate } from "@/lib/alert-template";
 import { parseJsonBody } from "@/lib/validation";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
@@ -86,6 +87,15 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
       }),
     }).catch(() => {});
   }
+
+  await logPageAudit({
+    pageId,
+    action: "page_deploy",
+    targetType: "page",
+    targetId: updated.id,
+    meta: { deployed: deploy, deployed_at: updated.deployed_at?.toISOString() ?? null },
+    actor: { userId: page.owner.id, anonId: anonUserId },
+  });
 
   return NextResponse.json({
     ok: true,

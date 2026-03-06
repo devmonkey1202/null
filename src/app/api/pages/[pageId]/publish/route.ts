@@ -6,6 +6,7 @@ import { canPublishMore } from "@/lib/policy";
 import { computeLiveExpiry, expireStalePages, getLiveHours } from "@/lib/expire";
 import { resolvePlanFeatures } from "@/lib/plan";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
@@ -67,6 +68,15 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
       live_started_at: now,
       live_expires_at: computeLiveExpiry(now, liveHours),
     },
+  });
+
+  await logPageAudit({
+    pageId,
+    action: "page_publish",
+    targetType: "page",
+    targetId: updated.id,
+    meta: { status: updated.status, live_expires_at: updated.live_expires_at?.toISOString() ?? null },
+    actor: { userId: user.id, anonId: anonUserId },
   });
 
   return NextResponse.json({

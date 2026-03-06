@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { withErrorHandler, safeParseBody } from "@/lib/api-handler";
 import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
+import { resolveAnonUserId } from "@/lib/anon";
+import { logAppAudit } from "@/lib/app-audit";
 
 export const POST = withErrorHandler(
   async (req: Request, context: { params: Promise<{ pageId: string; formName: string }> }) => {
     const { pageId, formName } = await context.params;
     const contentType = req.headers.get("content-type") ?? "";
+    const anonUserId = await resolveAnonUserId(req);
 
     const fields: Record<string, unknown> = {};
     const files: Record<string, { name: string; type: string; size: number }> = {};
@@ -39,6 +42,15 @@ export const POST = withErrorHandler(
       { formName },
       triggerData,
     );
+
+    await logAppAudit({
+      pageId,
+      action: "form_submit",
+      targetType: "form",
+      targetId: formName,
+      meta: { fields: Object.keys(fields), files: Object.keys(files), triggered: results.length },
+      actor: { anonId: anonUserId ?? null },
+    });
 
     return NextResponse.json({ ok: true, formName, triggered: results.length, results });
   }

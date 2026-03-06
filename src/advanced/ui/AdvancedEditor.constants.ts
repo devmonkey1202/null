@@ -67,7 +67,7 @@ export const MESSAGE_LABELS: Record<string, string> = {
   preset_added: "프리셋이 추가되었습니다.",
   preset_failed: "프리셋 추가에 실패했습니다.",
   component_pushed: "컴포넌트가 업데이트되었습니다.",
-  vector_coming_soon: "Boolean/Outline/Flatten/Join 기능은 준비 중입니다.",
+  vector_coming_soon: "Outline/Offset 기능은 준비 중입니다.",
   export_pdf_unsupported: "PDF 내보내기는 지원되지 않습니다. jspdf 설정을 확인하세요.",
   figma_token_required:
     "Figma Access Token이 필요합니다. Figma > Personal access tokens에서 생성 후 .env의 FIGMA_ACCESS_TOKEN에 등록하세요.",

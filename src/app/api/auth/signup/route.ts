@@ -8,6 +8,7 @@ import { checkRateLimit, rateLimitHeaders } from "@/lib/rate-limit";
 import { logApiError } from "@/lib/logger";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
+import { logSecurityEvent } from "@/lib/security-log";
 
 const COOKIE_NAME = "anon_user_id";
 const SIGNUP_MAX_PER_MINUTE = 5;
@@ -15,6 +16,7 @@ const SIGNUP_MAX_PER_MINUTE = 5;
 export async function POST(req: Request) {
   const rl = await checkRateLimit(req, SIGNUP_MAX_PER_MINUTE);
   if (!rl.allowed) {
+    logSecurityEvent({ action: "user_signup_rate_limited", req });
     return apiErrorJson("rate_limit_exceeded", 429, {
       message: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
       headers: rateLimitHeaders(rl),
@@ -51,7 +53,7 @@ export async function POST(req: Request) {
     }
 
     if (!isValidPassword(password)) {
-      return apiErrorJson("password_too_short", 400);
+      return apiErrorJson("password_too_short", 400, "비밀번호는 8자 이상이며 대/소문자, 숫자, 특수문자를 포함해야 합니다.");
     }
 
     if (passwordConfirm && passwordConfirm !== password) {
@@ -70,6 +72,12 @@ export async function POST(req: Request) {
           where: { id: existing.id },
           data: { last_login_at: new Date() },
         });
+        logSecurityEvent({
+          action: "user_login_success",
+          req,
+          actor: { userId: existing.id, anonId: existing.anon_id },
+          meta: { email, via: "signup_existing" },
+        });
         const response = NextResponse.json({ ok: true, anonUserId: existing.anon_id, email: existing.email });
         Object.entries(rateLimitHeaders(rl)).forEach(([k, v]) => response.headers.set(k, v));
         response.cookies.set(COOKIE_NAME, existing.anon_id, {
@@ -81,6 +89,7 @@ export async function POST(req: Request) {
         });
         return response;
       }
+      logSecurityEvent({ action: "user_signup_email_in_use", req, meta: { email } });
       return apiErrorJson("email_in_use", 409);
     }
 
@@ -95,6 +104,12 @@ export async function POST(req: Request) {
           password_hash: passwordHash,
           last_login_at: new Date(),
         },
+      });
+      logSecurityEvent({
+        action: "user_signup_success",
+        req,
+        actor: { userId: created.id, anonId: created.anon_id },
+        meta: { email, switched: true },
       });
       const response = NextResponse.json({
         ok: true,
@@ -120,6 +135,12 @@ export async function POST(req: Request) {
         password_hash: passwordHash,
         last_login_at: new Date(),
       },
+    });
+    logSecurityEvent({
+      action: "user_signup_success",
+      req,
+      actor: { userId: updated.id, anonId: updated.anon_id },
+      meta: { email, switched: false },
     });
 
     const response = NextResponse.json({

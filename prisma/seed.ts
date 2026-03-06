@@ -2,7 +2,6 @@ import { PrismaClient, PlanTier } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-// TODO(정책확정 필요): plan limits and pricing.
 const plans = [
   {
     id: PlanTier.free,

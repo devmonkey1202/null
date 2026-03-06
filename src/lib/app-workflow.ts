@@ -4,6 +4,7 @@
  */
 
 import { prisma } from "@/lib/db";
+import { Prisma } from "@prisma/client";
 
 export type WorkflowTrigger =
   | { type: "record_created"; collection: string }
@@ -37,7 +38,7 @@ export type WorkflowStep =
     } & RetryOptions)
   | ({ type: "set_variable"; key: string; value: unknown } & RetryOptions)
   | ({ type: "condition"; if: { field: string; op: string; value: unknown }; then: WorkflowStep[]; else?: WorkflowStep[] } & RetryOptions)
-  | ({ type: "loop"; items: string; variable: string; steps: WorkflowStep[] } & RetryOptions)
+  | ({ type: "loop"; items: string; variable: string; steps: WorkflowStep[]; maxItems?: number } & RetryOptions)
   | ({ type: "delay"; ms: number } & RetryOptions)
   | ({ type: "log"; message: string } & RetryOptions);
 
@@ -49,6 +50,8 @@ type WorkflowContext = {
   stepCount: number;
   maxSteps: number;
 };
+
+const MAX_LOOP_ITEMS_DEFAULT = 500;
 
 function interpolate(template: string, ctx: WorkflowContext): string {
   return template.replace(/\{\{([^}]+)\}\}/g, (_, key: string) => {
@@ -202,7 +205,15 @@ async function executeStepOnce(step: WorkflowStep, ctx: WorkflowContext): Promis
     case "loop": {
       const items = ctx.variables[step.items];
       if (Array.isArray(items)) {
-        for (const item of items) {
+        const limit = Math.min(
+          typeof step.maxItems === "number" ? step.maxItems : MAX_LOOP_ITEMS_DEFAULT,
+          MAX_LOOP_ITEMS_DEFAULT
+        );
+        const sliced = items.slice(0, limit);
+        if (items.length > limit) {
+          ctx.logs.push(`loop_truncated:${items.length}->${limit}`);
+        }
+        for (const item of sliced) {
           ctx.variables[step.variable] = item;
           for (const s of step.steps) {
             await executeStep(s, ctx);
@@ -258,7 +269,7 @@ export async function executeWorkflow(
       workflow_id: workflowId,
       page_id: pageId,
       status: "running",
-      input: (triggerData ?? null) as object | null,
+      input: triggerData == null ? Prisma.DbNull : (triggerData as Prisma.InputJsonValue),
     },
   });
 
@@ -280,7 +291,7 @@ export async function executeWorkflow(
       where: { id: log.id },
       data: {
         status: "success",
-        output: { logs: ctx.logs, variables: ctx.variables } as object,
+        output: { logs: ctx.logs, variables: ctx.variables } as Prisma.InputJsonValue,
         finished_at: new Date(),
       },
     });
@@ -292,7 +303,7 @@ export async function executeWorkflow(
       data: {
         status: "error",
         error: errorMsg,
-        output: { logs: ctx.logs, variables: ctx.variables } as object,
+        output: { logs: ctx.logs, variables: ctx.variables } as Prisma.InputJsonValue,
         finished_at: new Date(),
       },
     });

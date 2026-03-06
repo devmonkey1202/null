@@ -3,7 +3,10 @@ import { test, expect } from "@playwright/test";
 const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
 
 async function initAnon(request: typeof test extends (name: string, fn: (args: infer A) => void) => void ? A["request"] : never): Promise<string> {
-  const res = await request.post(`${BASE}/api/anon/init`);
+  const ip = `127.0.0.${Math.floor(Math.random() * 200) + 20}`;
+  const res = await request.post(`${BASE}/api/anon/init`, {
+    headers: { "x-forwarded-for": ip },
+  });
   const data = await res.json();
   return data?.anonUserId ?? data?.anon_user_id ?? "";
 }
@@ -19,7 +22,10 @@ test.describe("Chat API", () => {
     const headers = { "x-anon-user-id": anonId, "Content-Type": "application/json" };
     const createRes = await request.post(`${BASE}/api/pages`, {
       headers,
-      data: JSON.stringify({ title: "E2E Chat Test" }),
+      data: JSON.stringify({
+        title: "E2E Chat Test",
+        content: { type: "doc", content: [] },
+      }),
     });
     if (createRes.ok()) {
       const body = await createRes.json();

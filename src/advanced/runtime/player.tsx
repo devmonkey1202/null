@@ -5,6 +5,7 @@ import RuntimeRenderer, { buildControlRoles, type NavigateEvent, type ControlRol
 import type { Doc, Node, PrototypeAction, PrototypeCondition, PrototypeInteraction, PrototypeTransitionType, SerializableDoc } from "../doc/scene";
 import { cloneDoc, hydrateDoc } from "../doc/scene";
 import { applyConstraintsOnResize, layoutDoc } from "../layout/engine";
+import { subscribeStorageKey } from "@/lib/synced-storage";
 import type { Variable } from "../doc/scene";
 
 type CollectionCache = Record<string, Array<Record<string, unknown>>>;
@@ -105,7 +106,7 @@ function computeAllFormulas(variables: Variable[], overrides: Record<string, str
   const computed = variables.filter((v) => v.computed?.formula);
   if (computed.length === 0) return overrides;
 
-  let current = { ...overrides };
+  const current = { ...overrides };
   const MAX_PASSES = 5;
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     let changed = false;
@@ -688,10 +689,10 @@ function resolveLocaleMode(label: string, modes: string[]) {
   const direct = normalizedModes.find((entry) => entry.key && (entry.key === normalized || entry.key.includes(normalized) || normalized.includes(entry.key)));
   if (direct) return direct.mode;
   const map: Array<{ pattern: RegExp; code: string }> = [
-    { pattern: /ko|kr|\uD55C\uAD6D|\uD55C\uAE00|korean/, code: "ko" },
-    { pattern: /en|\uC601\uC5B4|english/, code: "en" },
-    { pattern: /ja|jp|\uC77C\uBCF8|japanese/, code: "ja" },
-    { pattern: /zh|cn|\uC911\uAD6D|chinese/, code: "zh" },
+    { pattern: /ko|kr|\uD55C\uAD6D|\uD55C\uAE00|korean/i, code: "ko" },
+    { pattern: /en|\uC601\uC5B4|english/i, code: "en" },
+    { pattern: /ja|jp|\uC77C\uBCF8|\u65E5\u672C|japanese/i, code: "ja" },
+    { pattern: /zh|cn|\uC911\uAD6D|\u4E2D\u6587|chinese/i, code: "zh" },
   ];
   const match = map.find((entry) => entry.pattern.test(label));
   if (match) {
@@ -706,8 +707,8 @@ function resolveLocaleCode(label: string) {
   if (!value) return null;
   if (/ko|kr|\uD55C\uAD6D|\uD55C\uAE00|korean/i.test(value)) return "ko";
   if (/en|\uC601\uC5B4|english/i.test(value)) return "en";
-  if (/ja|jp|\uC77C\uBCF8|japanese/i.test(value)) return "ja";
-  if (/zh|cn|\uC911\uAD6D|chinese/i.test(value)) return "zh";
+  if (/ja|jp|\uC77C\uBCF8|\u65E5\u672C|japanese/i.test(value)) return "ja";
+  if (/zh|cn|\uC911\uAD6D|\u4E2D\u6587|chinese/i.test(value)) return "zh";
   const normalized = normalizeLooseLabel(value);
   if (normalized.length >= 2) return normalized.slice(0, 2);
   return null;
@@ -1623,7 +1624,7 @@ function isSameOriginUrl(href: string) {
 
 const SUBMIT_ERROR_MESSAGES: Record<string, string> = {
   email_password_required: "\uC774\uBA54\uC77C\uACFC \uBE44\uBC00\uBC88\uD638\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.",
-  password_too_short: "\uBE44\uBC00\uBC88\uD638\uB294 8\uC790 \uC774\uC0C1\uC774\uC5B4\uC57C \uD569\uB2C8\uB2E4.",
+  password_too_short: "\uBE44\uBC00\uBC88\uD638\uB294\u0020\u0038\uC790\u0020\uC774\uC0C1\uC774\uBA70\u0020\uB300\u002F\uC18C\uBB38\uC790\u002C\u0020\uC22B\uC790\u002C\u0020\uD2B9\uC218\uBB38\uC790\uB97C\u0020\uD3EC\uD568\uD574\uC57C\u0020\uD569\uB2C8\uB2E4\u002E",
   password_mismatch: "\uBE44\uBC00\uBC88\uD638 \uD655\uC778\uACFC \uC77C\uCE58\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
   anon_required: "\uC138\uC158\uC774 \uD544\uC694\uD569\uB2C8\uB2E4. \uD398\uC774\uC9C0\uB97C \uB2E4\uC2DC \uC5F4\uC5B4 \uC794\uC694\uD574 \uC8FC\uC138\uC694.",
   anon_user_id_required: "\uC138\uC158\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.",
@@ -2191,6 +2192,9 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
   const choiceFocusRef = useRef<{ parentId: string | null; rootId: string | null }>({ parentId: null, rootId: null });
   const onboardingCompleteRef = useRef<Set<string>>(new Set());
   const storyProgressRef = useRef<number>(0);
+  const themeSyncRef = useRef<string | null>(null);
+  const localeSyncRef = useRef<string | null>(null);
+  const accessibilitySyncRef = useRef<string | null>(null);
   const pushNotice = useCallback((notice: { type: "success" | "error" | "info"; message: unknown }) => {
     const safeMessage = typeof notice.message === "string" ? notice.message : (typeof notice.message === "object" && notice.message !== null ? "" : String(notice.message ?? ""));
     const id = `notice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -7843,7 +7847,10 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     }
   }, [appPageId, ensureAnonSession]);
 
-  const handleAction = useCallback((action: PrototypeAction, source?: { nodeId?: string; pageId?: string }) => {
+  const handleAction = useCallback(function handleActionInner(
+    action: PrototypeAction,
+    source?: { nodeId?: string; pageId?: string },
+  ) {
     const currentDoc = docRef.current;
     const currentPageId = basePageRef.current;
     const nextDelay = getDelayMs(action);
@@ -7938,19 +7945,19 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
               applyVariableOverrides({ [action.responseVariable]: v });
             }
             if (data.ok && action.onSuccess) {
-              handleAction(action.onSuccess, source);
+              handleActionInner(action.onSuccess, source);
             } else if (!data.ok) {
               if (action.errorVariable) {
                 applyVariableOverrides({ [action.errorVariable]: String(data.error ?? "요청 실패") });
               }
               if (action.onError) {
-                handleAction(action.onError, source);
+                handleActionInner(action.onError, source);
               }
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : "네트워크 오류";
             if (action.errorVariable) applyVariableOverrides({ [action.errorVariable]: msg });
-            if (action.onError) handleAction(action.onError, source);
+            if (action.onError) handleActionInner(action.onError, source);
           }
         })();
         return;
@@ -7986,18 +7993,18 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
               applyVariableOverrides({ [action.responseVariable]: value });
             }
             if (ok) {
-              if (action.onSuccess) handleAction(action.onSuccess, source);
+              if (action.onSuccess) handleActionInner(action.onSuccess, source);
             } else {
               const errMsg = isObject && "error" in (res as Record<string, unknown>)
                 ? String((res as Record<string, unknown>).error ?? "native_error")
                 : "native_error";
               if (action.errorVariable) applyVariableOverrides({ [action.errorVariable]: errMsg });
-              if (action.onError) handleAction(action.onError, source);
+              if (action.onError) handleActionInner(action.onError, source);
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : "native_call_failed";
             if (action.errorVariable) applyVariableOverrides({ [action.errorVariable]: msg });
-            if (action.onError) handleAction(action.onError, source);
+            if (action.onError) handleActionInner(action.onError, source);
           }
         })();
         return;
@@ -8971,6 +8978,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
           // ignore
         }
       }
+      themeSyncRef.current = nextTheme;
     }
 
     if (activeLocaleLabel) {
@@ -8991,6 +8999,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
           // ignore
         }
       }
+      localeSyncRef.current = activeLocaleLabel;
     }
 
     if (hasAccessibility) {
@@ -9002,13 +9011,75 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
       }
       if (typeof localStorage !== "undefined") {
         try {
-          localStorage.setItem(ACCESSIBILITY_STORAGE_KEY, JSON.stringify({ highContrast, textScale, largeText }));
+          const raw = JSON.stringify({ highContrast, textScale, largeText });
+          localStorage.setItem(ACCESSIBILITY_STORAGE_KEY, raw);
+          accessibilitySyncRef.current = raw;
         } catch {
           // ignore
         }
       }
     }
   }, [applyVariableOverrides, basePageId, controlFields, controlRootRoles, controlState, variableMode]);
+
+  useEffect(() => {
+    if (!basePageId) return;
+    const cleanupTheme = subscribeStorageKey(
+      THEME_STORAGE_KEY,
+      (raw) => (raw && raw.trim() ? raw.trim() : null),
+      (value) => {
+        if (!value || themeSyncRef.current === value) return;
+        themeSyncRef.current = value;
+        applyVariableOverrides({ theme: value, themeMode: value });
+        if (typeof document !== "undefined") {
+          document.documentElement.dataset.theme = value;
+        }
+      },
+    );
+    const cleanupLocale = subscribeStorageKey(
+      LOCALE_STORAGE_KEY,
+      (raw) => (raw && raw.trim() ? raw.trim() : null),
+      (value) => {
+        if (!value || localeSyncRef.current === value) return;
+        localeSyncRef.current = value;
+        applyVariableOverrides({ locale: value, language: value });
+        const modes = docRef.current.variableModes?.length ? docRef.current.variableModes : [];
+        const mode = resolveLocaleMode(value, modes);
+        if (mode && mode !== variableMode) {
+          deferStateUpdate(() => setVariableMode(mode));
+        }
+        if (typeof document !== "undefined") {
+          const code = resolveLocaleCode(value);
+          if (code) document.documentElement.lang = code;
+        }
+      },
+    );
+    const cleanupAccessibility = subscribeStorageKey(
+      ACCESSIBILITY_STORAGE_KEY,
+      (raw) => (raw && raw.trim() ? raw : null),
+      (raw) => {
+        if (!raw || accessibilitySyncRef.current === raw) return;
+        accessibilitySyncRef.current = raw;
+        try {
+          const parsed = JSON.parse(raw) as { highContrast?: boolean; textScale?: number; largeText?: boolean };
+          const highContrast = Boolean(parsed.highContrast);
+          const textScale = typeof parsed.textScale === "number" && Number.isFinite(parsed.textScale) ? parsed.textScale : 1;
+          const largeText = Boolean(parsed.largeText);
+          applyVariableOverrides({ highContrast, textScale, largeText });
+          if (typeof document !== "undefined") {
+            document.documentElement.dataset.contrast = highContrast ? "high" : "normal";
+            document.documentElement.style.setProperty("--runtime-text-scale", String(textScale));
+          }
+        } catch {
+          // ignore invalid JSON
+        }
+      },
+    );
+    return () => {
+      cleanupTheme();
+      cleanupLocale();
+      cleanupAccessibility();
+    };
+  }, [applyVariableOverrides, basePageId, variableMode]);
 
   useEffect(() => {
     if (!basePageId) return;
@@ -9471,3 +9542,5 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     </div>
   );
 }
+
+export { resolveLocaleMode, resolveLocaleCode };

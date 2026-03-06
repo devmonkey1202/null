@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getCollections, setSchema, type AppCollectionDef, type SchemaMode, type AppSchemaMigrations } from "@/lib/app-data";
+import { logAppAudit } from "@/lib/app-audit";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
 
@@ -74,6 +75,18 @@ export async function PUT(req: Request, context: { params: Promise<Params> }) {
   const migrations = parsed.data.migrations as AppSchemaMigrations | undefined;
   const batchSize = parsed.data.batchSize as number | undefined;
   await setSchema(pageId, collections, { mode, migrations, batchSize });
+  await logAppAudit({
+    pageId,
+    action: "schema_update",
+    targetType: "schema",
+    targetId: pageId,
+    meta: {
+      collections: collections.map((c) => c.slug),
+      mode: mode ?? "preserve",
+      migrations: Boolean(migrations),
+    },
+    actor: { userId: user.id, anonId: anonUserId },
+  });
   const list = await getCollections(pageId);
   return NextResponse.json({ ok: true, collections: list });
 }

@@ -219,6 +219,9 @@ export type NodeDataBinding =
       mode: "table" | "list";
       fields?: string[];
       limit?: number;
+      offset?: number;
+      orderBy?: "created_at" | "updated_at";
+      orderDir?: "asc" | "desc";
       editable?: boolean;
       allowDelete?: boolean;
     };
@@ -261,6 +264,11 @@ export type NodeImage = {
   offsetX?: number;
   offsetY?: number;
   scale?: number;
+  poster?: string;
+  autoplay?: boolean;
+  loop?: boolean;
+  muted?: boolean;
+  controls?: boolean;
   /** 크롭 영역 (0~1 정규화). 미설정 시 전체 표시 */
   crop?: { x: number; y: number; w: number; h: number };
   /** 밝기 (0~2, 1=기본) */
@@ -383,6 +391,14 @@ export type DocPage = {
 /** C1: 팀 라이브러리·파일 간 컴포넌트. 문서가 참조하는 외부 라이브러리 메타. */
 export type LibraryRef = { id: string; name: string };
 
+export type ComponentVersion = {
+  id: string;
+  name: string;
+  createdAt: string;
+  rootId: string;
+  nodes: Record<string, Node>;
+};
+
 export interface Doc {
   schema: "null_advanced_v1";
   version: 1;
@@ -396,6 +412,7 @@ export interface Doc {
   variableModes?: string[];
   variableMode?: string;
   components: Record<string, string>;
+  componentVersions?: Record<string, ComponentVersion[]>;
   /** C1: 이 문서가 사용하는 팀/외부 라이브러리 목록. */
   libraries?: LibraryRef[];
   prototype?: DocPrototype;
@@ -493,7 +510,18 @@ export function createNode(type: NodeType, overrides: Partial<Node> = {}): Node 
 
   if (type === "image" || type === "video") {
     base.frame = { x: 0, y: 0, w: 320, h: 220, rotation: 0 };
-    const media = { src: "", fit: "cover" as const, offsetX: 0, offsetY: 0, scale: 1 };
+    const media = {
+      src: "",
+      fit: "cover" as const,
+      offsetX: 0,
+      offsetY: 0,
+      scale: 1,
+      poster: "",
+      autoplay: false,
+      loop: false,
+      muted: false,
+      controls: true,
+    };
     if (type === "video") base.video = { ...media };
     else base.image = { ...media };
     base.style = { ...base.style, fills: [{ type: "solid", color: "#D1D5DB" }] };
@@ -561,6 +589,7 @@ export function createDoc(): Doc {
     variableModes: ["기본"],
     variableMode: "기본",
     components: {},
+    componentVersions: {},
     prototype: { startPageId: pageId },
   };
 }
@@ -689,6 +718,7 @@ export function cloneDoc(doc: Doc): Doc {
     variableModes: doc.variableModes ? [...doc.variableModes] : undefined,
     variableMode: doc.variableMode,
     components: { ...doc.components },
+    componentVersions: doc.componentVersions ? JSON.parse(JSON.stringify(doc.componentVersions)) : undefined,
     libraries: doc.libraries ? doc.libraries.map((l) => ({ ...l })) : undefined,
     prototype: doc.prototype ? { ...doc.prototype } : undefined,
   };
@@ -719,6 +749,7 @@ export function hydrateDoc(raw: unknown): Doc {
     styles: Array.isArray(r.styles) ? (r.styles as StyleToken[]) : base.styles,
     variables: Array.isArray(r.variables) ? (r.variables as Variable[]) : base.variables,
     components: r.components && typeof r.components === "object" ? (r.components as Record<string, string>) : base.components,
+    componentVersions: r.componentVersions && typeof r.componentVersions === "object" ? (r.componentVersions as Doc["componentVersions"]) : base.componentVersions,
     libraries: Array.isArray(r.libraries) ? (r.libraries as Doc["libraries"]) : base.libraries,
     prototype: r.prototype && typeof r.prototype === "object" ? (r.prototype as DocPrototype) : base.prototype,
   };

@@ -4,12 +4,13 @@ export function makeRuntimeId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(16).slice(2)}`;
 }
 
-export function snap(value: number, enabled: boolean) {
+export function snap(value: number, enabled: boolean, grid = GRID) {
   if (!enabled) return value;
-  return Math.round(value / GRID) * GRID;
+  const step = Math.max(1, grid);
+  return Math.round(value / step) * step;
 }
 
-/** 이동/리사이즈 시 0.5px 방지용 정수 반올림 (N1 픽셀 스냅) */
+/** Integer rounding to avoid 0.5px during move/resize (N1 pixel snap). */
 export function snapToPixel(value: number): number {
   return Math.round(value);
 }

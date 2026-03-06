@@ -2,9 +2,10 @@
 
 import { prisma } from "@/lib/db";
 import { notFound } from "next/navigation";
-import type { AdminRole, ReportAction, ReportStatus } from "@prisma/client";
+import { ReportAction, ReportStatus, type AdminRole } from "@prisma/client";
 import { clearAdminSession, createAdminSession, isAdminUiConfigured, requireAdminSession, verifyAdminKey } from "@/lib/admin-session";
 import { logAdminAudit } from "@/lib/admin-audit";
+import { logSecurityEvent } from "@/lib/security-log";
 
 /**
  * Server Actions for Admin UI
@@ -33,10 +34,19 @@ export async function adminLoginAction(slug: string, formData: FormData) {
 
   const key = String(formData.get("key") ?? "");
   if (!verifyAdminKey(key)) {
+    logSecurityEvent({
+      action: "admin_login_failed",
+      meta: { reason: "bad_key" },
+    });
     return { ok: false as const, error: "BAD_KEY" as const };
   }
 
   const admin = await createAdminSession();
+  logSecurityEvent({
+    action: "admin_login_success",
+    actor: { adminId: admin.id },
+    meta: { username: admin.username },
+  });
   await logAdminAudit({
     adminId: admin.id,
     action: "admin_login",
@@ -52,6 +62,10 @@ export async function adminLogoutAction(slug: string) {
   if (slug !== process.env.ADMIN_SECRET_SLUG) notFound();
   const gate = await requireAdminSession();
   if (gate.ok) {
+    logSecurityEvent({
+      action: "admin_logout",
+      actor: { adminId: gate.admin.id },
+    });
     await logAdminAudit({
       adminId: gate.admin.id,
       action: "admin_logout",

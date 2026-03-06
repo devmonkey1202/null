@@ -1,13 +1,13 @@
-'use client';
+"use client";
 
-import { Suspense } from 'react';
-import AdvancedEditor from '@/advanced/ui/AdvancedEditor';
-import { NullLoadingScreen } from '@/components/null-spinner';
+import dynamic from "next/dynamic";
+import { NullLoadingScreen } from "@/components/null-spinner";
+
+const AdvancedEditor = dynamic(() => import("@/advanced/ui/AdvancedEditor"), {
+  ssr: false,
+  loading: () => <NullLoadingScreen label="에디터 불러오는 중.." />,
+});
 
 export default function Page() {
-  return (
-    <Suspense fallback={<NullLoadingScreen label="에디터 불러오는 중..." />}>
-      <AdvancedEditor />
-    </Suspense>
-  );
+  return <AdvancedEditor />;
 }

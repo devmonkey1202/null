@@ -1,0 +1,80 @@
+12601:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-xs" onClick={doRedo} disabled={redoStackLen === 0} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">Redo</button>
+12602:             <span className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600" title="Plan limits (buttons/texts/images)">
+12603:               Plan limits: Buttons {constraintCounts.buttons}/{planFeatures?.maxButtons ?? 3} | Texts {constraintCounts.texts}/{planFeatures?.maxTexts ?? 6} | Images {constraintCounts.images}/{planFeatures?.maxImages ?? 1}
+12604:             </span>
+12605:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={groupSelected}>Group</button>
+12606:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={ungroupSelected}>Ungroup</button>
+12607:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={sendToBack}>Send to back</button>
+12608:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={bringToFront}>Bring to front</button>
+12609:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={sendBackward}>Send backward</button>
+12610:             <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={bringForward}>Bring forward</button>
+12611:             <button
+12612:               type="button"
+12613:               className={`rounded-full border px-3 py-1 text-xs ${
+12614:                 livePreview ? "border-emerald-600 bg-emerald-600 text-white" : "border-neutral-200 bg-white text-neutral-600"
+12615:               }`}
+12616:               onClick={toggleLivePreview}
+12617:             >
+12618:               {livePreview ? "Live preview: On" : "Live preview"}
+12619:                               </div>
+12620:                             </div>
+12621:                           ))}
+12622:                         </div>
+12623:                       )}
+12624:                     </>
+12625:                   )}
+12626:                 </div>
+12627:                 <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 space-y-2">
+12628:                   <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Step Reference</div>
+12629:                   <div className="text-[10px] text-neutral-500 space-y-1 font-mono">
+12630:                     <div>create_record: collection, data</div>
+12631:                     <div>update_record: collection, recordId, data</div>
+12632:                     <div>delete_record: collection, recordId</div>
+12633:                     <div>api_call: url, method, headers, body</div>
+12634:                     <div>set_variable: key, value</div>
+12635:                     <div>condition: if, then, else</div>
+12636:                     <div>loop: items, variable, steps</div>
+12637:                     <div>delay: ms</div>
+12638:                     <div>log: message</div>
+12639:                   </div>
+12640:                 </div>
+12641:               </div>
+12642:             ) : null}
+12643:                                     {panelMode === "export" ? (
+12644:               <div className="mt-4 space-y-4 text-xs">
+12645:                 <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 space-y-2">
+12646:                   <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Performance / Audit</div>
+12647:                   <label className="flex items-center justify-between gap-2 text-xs text-neutral-600">
+12648:                     <span>Performance Mode</span>
+12649:                     <input type="checkbox" checked={performanceMode} onChange={(e) => setPerformanceMode(e.target.checked)} />
+12650:                   </label>
+12651:                   <label className="flex items-center justify-between gap-2 text-xs text-neutral-600">
+12652:                     <span>Audit Mode</span>
+12653:                     <input type="checkbox" checked={auditMode} onChange={(e) => setAuditMode(e.target.checked)} />
+12654:                   </label>
+12655:                   {auditMode ? (
+12656:                     <div className="space-y-2">
+12657:                       <label className="flex items-center justify-between gap-2 text-xs text-neutral-600">
+12658:                         <span>Scope</span>
+12659:                         <select value={auditScope} onChange={(e) => setAuditScope(e.target.value as "page" | "document")} className="w-28 rounded border border-neutral-200 px-2 py-1">
+12660:                           <option value="page">Page</option>
+12661:                           <option value="document">Document</option>
+12662:                         </select>
+12663:                       </label>
+12664:                       <label className="flex items-center justify-between gap-2 text-xs text-neutral-600">
+12665:                         <span>Filter</span>
+12666:                         <select
+12667:                           value={auditFilter}
+12668:                           onChange={(e) =>
+12669:                             setAuditFilter(e.target.value as "all" | "contrast" | "font-size" | "tiny" | "opacity")
+12670:                           }
+12671:                           className="w-28 rounded border border-neutral-200 px-2 py-1"
+12672:                         >
+12673:                           <option value="all">All</option>
+12674:                           <option value="contrast">Contrast</option>
+12675:                           <option value="font-size">Font size</option>
+12676:                           <option value="tiny">Tiny text</option>
+12677:                           <option value="opacity">Opacity</option>
+12678:                         </select>
+12679:                       </label>
+12680:                       <div className="flex items-center gap-2">

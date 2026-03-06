@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
@@ -81,6 +82,15 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
       title: parsed.data.title,
       sort_order,
     },
+  });
+
+  await logPageAudit({
+    pageId,
+    action: "kanban_column_create",
+    targetType: "kanban_column",
+    targetId: column.id,
+    meta: { title: column.title },
+    actor: { userId: user.id, anonId: anonUserId },
   });
 
   return NextResponse.json({

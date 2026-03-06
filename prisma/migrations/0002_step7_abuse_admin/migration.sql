@@ -1,6 +1,6 @@
 -- Step 7 (Abuse & Admin) migration
 -- IMPORTANT:
--- - Any policy-sensitive choices remain TODO(ì •ì±…í™•ì • í•„ìš”) in app code.
+-- - Any policy-sensitive choices remain TODO(Á¤Ã¥È®Á¤ ÇÊ¿ä) in app code.
 -- - This migration only adds tables/columns/indexes needed for Step 7.
 
 -- CreateEnum

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { withErrorHandler } from "@/lib/api-handler";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getPageForAsset } from "@/lib/page-access";
 import { apiErrorJson } from "@/lib/api-error";
+import { logPageAudit } from "@/lib/page-audit";
 
 type Params = { pageId: string };
 
@@ -94,8 +96,17 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
       start_at,
       end_at,
       all_day: parsed.data.all_day ?? false,
-      meta: parsed.data.meta ?? undefined,
+      meta: parsed.data.meta ? (parsed.data.meta as Prisma.InputJsonValue) : undefined,
     },
+  });
+
+  await logPageAudit({
+    pageId,
+    action: "calendar_create",
+    targetType: "calendar",
+    targetId: event.id,
+    meta: { title: event.title, start_at: event.start_at.toISOString() },
+    actor: { userId: user.id, anonId: anonUserId },
   });
 
   return NextResponse.json({

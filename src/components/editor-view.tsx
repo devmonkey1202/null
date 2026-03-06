@@ -19,11 +19,14 @@ import {
   clampNodeToCanvas,
   genNodeId,
   snapToGrid,
+  type BuilderAction,
   type CanvasDocument,
   type CanvasNode,
   type CanvasNodeType,
 } from "@/lib/canvas";
 import type { PlanFeatures } from "@/lib/plan";
+import { runBooleanMultiple, type BooleanOp } from "@/advanced/geom/boolean";
+import { pathDataToBounds, pathDataToPolygon } from "@/advanced/geom/pathData";
 
 type HistoryState = {
   past: CanvasNode[][];
@@ -69,6 +72,59 @@ type ContentV2 = {
   schema: "canvas_v2";
   startSceneId: string;
   scenes: Scene[];
+};
+
+type StylePreset = {
+  id: string;
+  name: string;
+  props: Record<string, unknown>;
+};
+
+type ColorToken = { id: string; name: string; value: string };
+type NumberToken = { id: string; name: string; value: number };
+type TextToken = { id: string; name: string; value: string };
+
+type StyleTokens = {
+  colors: ColorToken[];
+  radii: NumberToken[];
+  textSizes: NumberToken[];
+  shadows: TextToken[];
+  fonts: TextToken[];
+};
+
+type FillStop = { color: string; pos: number };
+
+type LayoutSettings = {
+  dir: "row" | "column";
+  gap: number;
+  align: "start" | "center" | "end" | "stretch";
+  justify: "start" | "center" | "end" | "space-between";
+  wrap: boolean;
+  padding: { t: number; r: number; b: number; l: number };
+  auto: boolean;
+  wrapSize?: number;
+};
+
+type LayoutGroup = {
+  id: string;
+  name: string;
+  nodeIds: string[];
+  settings: LayoutSettings;
+};
+
+type ComponentVariant = {
+  id: string;
+  name: string;
+  nodes: CanvasNode[];
+  size: { w: number; h: number };
+};
+
+type ComponentDefinition = {
+  id: string;
+  name: string;
+  nodes: CanvasNode[];
+  size: { w: number; h: number };
+  variants: ComponentVariant[];
 };
 
 const NODE_TYPE_LABELS: Record<CanvasNodeType, string> = {
@@ -231,6 +287,16 @@ function pickSmallestMissingPositive(nums: number[]) {
   return k;
 }
 
+function isValueEqual(a: unknown, b: unknown) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 function formatOptionList(value: unknown) {
   if (Array.isArray(value)) return value.filter((v) => typeof v === "string").join(", ");
   if (typeof value === "string") return value;
@@ -256,6 +322,38 @@ function formatPathPoints(value: unknown) {
     parts.push(`${x.toFixed(2)},${y.toFixed(2)}`);
   }
   return parts.join("; ");
+}
+
+function parsePathPointsToArray(points: unknown): Array<[number, number]> {
+  if (Array.isArray(points)) {
+    const mapped: Array<[number, number]> = [];
+    for (const p of points) {
+      if (!Array.isArray(p) || p.length < 2) continue;
+      const xn = typeof p[0] === "number" ? p[0] : Number(p[0]);
+      const yn = typeof p[1] === "number" ? p[1] : Number(p[1]);
+      if (!Number.isFinite(xn) || !Number.isFinite(yn)) continue;
+      mapped.push([xn, yn]);
+    }
+    return mapped;
+  }
+  if (typeof points === "string") {
+    const entries = points.split(/[\n;]+/).map((v) => v.trim()).filter(Boolean);
+    const mapped: Array<[number, number]> = [];
+    for (const entry of entries) {
+      const parts = entry.split(/[, ]+/).map((v) => v.trim()).filter(Boolean);
+      if (parts.length < 2) continue;
+      let x = Number(parts[0]);
+      let y = Number(parts[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (Math.abs(x) > 1 && Math.abs(x) <= 100) x = x / 100;
+      if (Math.abs(y) > 1 && Math.abs(y) <= 100) y = y / 100;
+      x = Math.min(1, Math.max(0, x));
+      y = Math.min(1, Math.max(0, y));
+      mapped.push([x, y]);
+    }
+    return mapped;
+  }
+  return [];
 }
 
 function resolveFontSize(props: Record<string, unknown>, fallback = 16) {
@@ -284,6 +382,151 @@ function resolveFontWeight(props: Record<string, unknown>, fallback = 500) {
   if (preset === "medium") return 500;
   if (preset === "bold") return 700;
   return fallback;
+}
+
+function buildLinearGradient(angle: number, from: string, to: string) {
+  const safeAngle = Number.isFinite(angle) ? angle : 135;
+  return `linear-gradient(${safeAngle}deg, ${from} 0%, ${to} 100%)`;
+}
+
+function getFillControlState(node: CanvasNode, fillKey: "background" | "fill") {
+  const props = node.props as Record<string, unknown>;
+  const mode = String(props.fillMode ?? "solid");
+  const fallback = String(props[fillKey] ?? "#FFFFFF");
+  const from = String(props.fillFrom ?? fallback ?? "#FFFFFF");
+  const to = String(props.fillTo ?? "#111111");
+  const angle = Number(props.fillAngle ?? 135);
+  const fillType = String(props.fillType ?? "linear");
+  const centerX = Number(props.fillCenterX ?? 50);
+  const centerY = Number(props.fillCenterY ?? 50);
+  const stopsRaw = Array.isArray(props.fillStops) ? (props.fillStops as FillStop[]) : [];
+  const stops =
+    stopsRaw.length > 0
+      ? stopsRaw.map((s) => ({ color: String(s.color ?? "#000000"), pos: Number(s.pos ?? 0) }))
+      : [
+          { color: from, pos: 0 },
+          { color: to, pos: 100 },
+        ];
+  return { mode, from, to, angle, fillType, centerX, centerY, stops };
+}
+
+const STYLE_KEYS_COMMON = [
+  "fill",
+  "background",
+  "color",
+  "fillMode",
+  "fillFrom",
+  "fillTo",
+  "fillAngle",
+  "fillType",
+  "fillStops",
+  "fillCenterX",
+  "fillCenterY",
+  "border",
+  "borderColor",
+  "borderWidth",
+  "borderStyle",
+  "stroke",
+  "strokeWidth",
+  "strokeStyle",
+  "radius",
+  "shadow",
+  "blur",
+  "blendMode",
+  "filterBrightness",
+  "filterContrast",
+  "filterSaturate",
+  "filterHue",
+  "filterGrayscale",
+];
+
+const STYLE_KEYS_TEXT = [
+  "fontSize",
+  "fontWeight",
+  "fontFamily",
+  "letterSpacing",
+  "lineHeight",
+  "textTransform",
+  "fontStyle",
+  "textAlign",
+  "align",
+];
+
+const STYLE_KEYS_VECTOR = ["dash", "lineCap", "lineJoin", "closed", "fill", "stroke", "strokeWidth"];
+
+const DEFAULT_STYLE_TOKENS: StyleTokens = {
+  colors: [],
+  radii: [],
+  textSizes: [],
+  shadows: [],
+  fonts: [],
+};
+
+const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
+  dir: "row",
+  gap: 12,
+  align: "start",
+  justify: "start",
+  wrap: false,
+  padding: { t: 16, r: 16, b: 16, l: 16 },
+  auto: true,
+  wrapSize: undefined,
+};
+
+function getStyleKeysForType(nodeType: CanvasNodeType): Set<string> {
+  switch (nodeType) {
+    case "text":
+      return new Set([...STYLE_KEYS_TEXT, "color", "blendMode", "shadow", "blur"]);
+    case "button":
+    case "link":
+    case "badge":
+      return new Set([...STYLE_KEYS_COMMON, ...STYLE_KEYS_TEXT]);
+    case "input":
+    case "textarea":
+    case "select":
+    case "checkbox":
+    case "slider":
+      return new Set([...STYLE_KEYS_COMMON, ...STYLE_KEYS_TEXT]);
+    case "box":
+    case "frame":
+    case "shape_rect":
+    case "shape_ellipse":
+      return new Set([...STYLE_KEYS_COMMON]);
+    case "image":
+      return new Set(["borderColor", "borderWidth", "borderStyle", "radius", "shadow", "blur", "blendMode"]);
+    case "line":
+      return new Set(["stroke", "strokeWidth", "dash", "lineCap", "shadow", "blur", "blendMode"]);
+    case "path":
+      return new Set([...STYLE_KEYS_VECTOR, "shadow", "blur", "blendMode"]);
+    case "divider":
+      return new Set(["color", "thickness", "shadow", "blur", "blendMode"]);
+    default:
+      return new Set([...STYLE_KEYS_COMMON]);
+  }
+}
+
+function extractStyleProps(node: CanvasNode) {
+  const props = node.props ?? {};
+  const keys = getStyleKeysForType(node.type);
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (key in props) out[key] = props[key];
+  }
+  return out;
+}
+
+function normalizeStylePatchForNode(nodeType: CanvasNodeType, patch: Record<string, unknown>) {
+  const out: Record<string, unknown> = { ...patch };
+  if ((nodeType === "box" || nodeType === "frame" || nodeType === "link") && "fill" in out && !("background" in out)) {
+    out.background = out.fill;
+  }
+  if ((nodeType === "shape_rect" || nodeType === "shape_ellipse" || nodeType === "path") && "background" in out && !("fill" in out)) {
+    out.fill = out.background;
+  }
+  if (nodeType === "text" && "textAlign" in out && !("align" in out)) {
+    out.align = out.textAlign;
+  }
+  return out;
 }
 
 export default function EditorView() {
@@ -326,6 +569,22 @@ export default function EditorView() {
       if (Array.isArray(d?.scenes)) setScenes(d.scenes);
       if (typeof d?.startSceneId === "string") setStartSceneId(d.startSceneId);
       if (typeof d?.activeSceneId === "string") setActiveSceneId(d.activeSceneId);
+      if (Array.isArray(d?.stylePresets)) setStylePresets(d.stylePresets);
+      if (d?.styleTokens && typeof d.styleTokens === "object") {
+        setStyleTokens({
+          colors: Array.isArray(d.styleTokens.colors) ? d.styleTokens.colors : [],
+          radii: Array.isArray(d.styleTokens.radii) ? d.styleTokens.radii : [],
+          textSizes: Array.isArray(d.styleTokens.textSizes) ? d.styleTokens.textSizes : [],
+          shadows: Array.isArray(d.styleTokens.shadows) ? d.styleTokens.shadows : [],
+          fonts: Array.isArray(d.styleTokens.fonts) ? d.styleTokens.fonts : [],
+        });
+      }
+      if (Array.isArray(d?.components)) {
+        setComponents(d.components);
+      }
+      if (Array.isArray(d?.layoutGroups)) {
+        setLayoutGroups(d.layoutGroups);
+      }
 
       const v2: ContentV2 = {
         schema: "canvas_v2",
@@ -357,6 +616,7 @@ export default function EditorView() {
   useEffect(() => {
     gridSnapRef.current = gridSnap;
   }, [gridSnap]);
+
 
   const [history, setHistory] = useState<HistoryState>({
     past: [],
@@ -397,6 +657,27 @@ export default function EditorView() {
   const [showPublishModal, setShowPublishModal] = useState(false);
   /** NOTE: comment removed (encoding issue). */
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
+  const [presetName, setPresetName] = useState("");
+  const styleClipboardRef = useRef<Record<string, unknown> | null>(null);
+  const [styleTokens, setStyleTokens] = useState<StyleTokens>(DEFAULT_STYLE_TOKENS);
+  const [colorTokenDraft, setColorTokenDraft] = useState({ name: "", value: "#111111" });
+  const [radiusTokenDraft, setRadiusTokenDraft] = useState({ name: "", value: 12 });
+  const [textSizeTokenDraft, setTextSizeTokenDraft] = useState({ name: "", value: 14 });
+  const [shadowTokenDraft, setShadowTokenDraft] = useState({ name: "", value: "0 12px 30px rgba(0,0,0,0.15)" });
+  const [fontTokenDraft, setFontTokenDraft] = useState({ name: "", value: "" });
+  const [components, setComponents] = useState<ComponentDefinition[]>([]);
+  const [componentNameDraft, setComponentNameDraft] = useState("");
+  const [variantNameDraft, setVariantNameDraft] = useState("");
+  const [layoutGroups, setLayoutGroups] = useState<LayoutGroup[]>([]);
+  const [layoutGroupNameDraft, setLayoutGroupNameDraft] = useState("");
+  const [pathOffsetDraft, setPathOffsetDraft] = useState(8);
+  const [pathSmoothDraft, setPathSmoothDraft] = useState(1);
+  const [pathSimplifyDraft, setPathSimplifyDraft] = useState(0.02);
+  const layoutGroupsRef = useRef<LayoutGroup[]>([]);
+  useEffect(() => {
+    layoutGroupsRef.current = layoutGroups;
+  }, [layoutGroups]);
 
   // NOTE: comment removed (encoding issue).
   useEffect(() => {
@@ -474,6 +755,68 @@ export default function EditorView() {
     return nodes.find((n) => n.id === id) ?? null;
   }, [nodes, selectedCount, selectedIds]);
 
+  const selectedNodes = useMemo(() => selectedIds.map((id) => nodes.find((n) => n.id === id)).filter(Boolean) as CanvasNode[], [
+    nodes,
+    selectedIds,
+  ]);
+  const multiPathSelection = useMemo(
+    () => selectedNodes.length > 1 && selectedNodes.every((n) => n.type === "path"),
+    [selectedNodes],
+  );
+  const multiBooleanSelection = useMemo(
+    () =>
+      selectedNodes.length > 1 &&
+      selectedNodes.every((n) => n.type === "path" || n.type === "shape_rect" || n.type === "shape_ellipse"),
+    [selectedNodes],
+  );
+  const convertibleSelection = useMemo(
+    () => selectedNodes.some((n) => n.type === "shape_rect" || n.type === "shape_ellipse" || n.type === "line"),
+    [selectedNodes],
+  );
+  const selectionComponentId = useMemo(() => {
+    if (selectedNodes.length === 0) return null;
+    const id = selectedNodes[0].componentId;
+    if (!id) return null;
+    return selectedNodes.every((n) => n.componentId === id) ? id : null;
+  }, [selectedNodes]);
+  const selectionInstanceId = useMemo(() => {
+    if (selectedNodes.length === 0) return null;
+    const id = selectedNodes[0].componentInstanceId;
+    if (!id) return null;
+    return selectedNodes.every((n) => n.componentInstanceId === id) ? id : null;
+  }, [selectedNodes]);
+  const selectionVariantId = useMemo(() => {
+    if (selectedNodes.length === 0) return null;
+    const id = selectedNodes[0].componentVariantId;
+    if (!id) return null;
+    return selectedNodes.every((n) => n.componentVariantId === id) ? id : null;
+  }, [selectedNodes]);
+  const activeComponent = selectionComponentId ? components.find((c) => c.id === selectionComponentId) ?? null : null;
+  const instanceOverrideSummary = useMemo(() => {
+    if (!selectionInstanceId || !selectionComponentId || !activeComponent) return [];
+    const defNodes = getComponentDefinitionNodes(selectionComponentId, selectionVariantId);
+    if (defNodes.length === 0) return [];
+    const defMap = new Map(defNodes.map((n) => [n.id, n]));
+    const summary: Array<{ nodeId: string; label: string; keys: string[] }> = [];
+    const instanceNodes = nodes.filter(
+      (n) => n.componentId === selectionComponentId && n.componentInstanceId === selectionInstanceId,
+    );
+    for (const node of instanceNodes) {
+      const sourceId = node.componentNodeId ?? node.id;
+      const defNode = defMap.get(sourceId);
+      if (!defNode) continue;
+      const baseProps = defNode.props ?? {};
+      const currentProps = node.props ?? {};
+      const keys = Object.keys(currentProps).filter(
+        (key) => !isValueEqual(currentProps[key], (baseProps as Record<string, unknown>)[key]),
+      );
+      if (keys.length === 0) continue;
+      const label = String((node.props as Record<string, unknown>)?.layerName ?? NODE_TYPE_LABELS[node.type] ?? node.type);
+      summary.push({ nodeId: node.id, label, keys });
+    }
+    return summary;
+  }, [selectionInstanceId, selectionComponentId, selectionVariantId, activeComponent, nodes]);
+
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
@@ -489,10 +832,11 @@ export default function EditorView() {
   }
 
   function setPresent(nodesNext: CanvasNode[], commit = true) {
+    const withLayout = commit ? applyAutoLayoutGroups(nodesNext) : nodesNext;
     setHistory((prev) => {
       const past = commit ? [...prev.past, prev.present].slice(-MAX_HISTORY) : prev.past;
       const future = commit ? [] : prev.future;
-      return { past, present: nodesNext, future };
+      return { past, present: withLayout, future };
     });
   }
 
@@ -526,6 +870,24 @@ export default function EditorView() {
         if (!data?.version?.content_json) return;
         const content = data.version.content_json;
         setTitle(typeof data?.page?.title === "string" ? data.page.title : "");
+        if (Array.isArray(content?.stylePresets)) {
+          setStylePresets(content.stylePresets);
+        }
+        if (content?.styleTokens && typeof content.styleTokens === "object") {
+          setStyleTokens({
+            colors: Array.isArray(content.styleTokens.colors) ? content.styleTokens.colors : [],
+            radii: Array.isArray(content.styleTokens.radii) ? content.styleTokens.radii : [],
+            textSizes: Array.isArray(content.styleTokens.textSizes) ? content.styleTokens.textSizes : [],
+            shadows: Array.isArray(content.styleTokens.shadows) ? content.styleTokens.shadows : [],
+            fonts: Array.isArray(content.styleTokens.fonts) ? content.styleTokens.fonts : [],
+          });
+        }
+        if (Array.isArray(content?.components)) {
+          setComponents(content.components);
+        }
+        if (Array.isArray(content?.layoutGroups)) {
+          setLayoutGroups(content.layoutGroups);
+        }
 
         const v2 = normalizeToV2(content);
         setScenes(v2.scenes);
@@ -559,6 +921,10 @@ export default function EditorView() {
         scenes,
         startSceneId,
         activeSceneId,
+        stylePresets,
+        styleTokens,
+        components,
+        layoutGroups,
         docMeta: { width: docMetaRef.current.width, height: docMetaRef.current.height },
         ts: Date.now(),
       };
@@ -566,7 +932,7 @@ export default function EditorView() {
     } catch {
       // ignore
     }
-  }, [draftKey, title, scenes, startSceneId, activeSceneId]);
+  }, [draftKey, title, scenes, startSceneId, activeSceneId, stylePresets, styleTokens, components, layoutGroups]);
 
   function addNode(type: CanvasNodeType) {
     const base = ELEMENT_DEFAULTS[type];
@@ -648,6 +1014,12 @@ export default function EditorView() {
   function deleteSelected() {
     const ids = selectedIdsRef.current;
     if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    setLayoutGroups((prev) =>
+      prev
+        .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((id) => !idSet.has(id)) }))
+        .filter((g) => g.nodeIds.length > 0),
+    );
     const next = nodesRef.current.filter((n) => !ids.includes(n.id));
     setPresent(next, true);
     setSelectedIds([]);
@@ -660,6 +1032,12 @@ export default function EditorView() {
 
     const nowNodes = nodesRef.current;
     const idSet = new Set(ids);
+    const instanceMap = new Map<string, string>();
+    const getInstanceId = (oldId: string | undefined) => {
+      const key = oldId ?? "instance";
+      if (!instanceMap.has(key)) instanceMap.set(key, genNodeId("instance"));
+      return instanceMap.get(key)!;
+    };
 
     // preserve stacking: clone in the same order as current array
     const clones: CanvasNode[] = [];
@@ -671,6 +1049,7 @@ export default function EditorView() {
       const dx = gridSnapRef.current ? GRID_SIZE : 8;
       const dy = gridSnapRef.current ? GRID_SIZE : 8;
 
+      const nextInstanceId = n.componentId ? getInstanceId(n.componentInstanceId) : n.componentInstanceId;
       const cloned: CanvasNode = clampNodeToCanvas(
         {
           ...n,
@@ -678,6 +1057,7 @@ export default function EditorView() {
           x: n.x + dx,
           y: n.y + dy,
           props: { ...(n.props ?? {}) },
+          componentInstanceId: nextInstanceId,
         },
         { width, height },
       );
@@ -688,6 +1068,16 @@ export default function EditorView() {
     setPresent(next, true);
     setSelectedIds(clones.map((c) => c.id));
     setMessage("복제되었습니다.");
+  }
+
+  function remapComponentInstances(nodes: CanvasNode[]) {
+    const map = new Map<string, string>();
+    return nodes.map((n) => {
+      if (!n.componentId) return n;
+      const key = n.componentInstanceId ?? n.id;
+      if (!map.has(key)) map.set(key, genNodeId("instance"));
+      return { ...n, componentInstanceId: map.get(key)! };
+    });
   }
 
   function nudgeSelected(dx: number, dy: number) {
@@ -863,6 +1253,101 @@ export default function EditorView() {
     setPresent(nextNodes, true);
   }
 
+  function rotateSelected(delta: number) {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const nextNodes = nodesRef.current.map((node) => {
+      if (!idSet.has(node.id)) return node;
+      const current = typeof node.rotation === "number" ? node.rotation : 0;
+      const nextRotation = ((current + delta) % 360 + 360) % 360;
+      return { ...node, rotation: nextRotation };
+    });
+    setPresent(nextNodes, true);
+  }
+
+  function applyConstraintsOnResize(nodes: CanvasNode[], prevW: number, prevH: number, nextW: number, nextH: number) {
+    return nodes.map((node) => {
+      const c = node.constraints;
+      if (!c) return node;
+      let x = node.x;
+      let y = node.y;
+      let w = node.w;
+      let h = node.h;
+      const left = node.x;
+      const right = prevW - (node.x + node.w);
+      const top = node.y;
+      const bottom = prevH - (node.y + node.h);
+
+      if (c.scaleX && prevW > 0) {
+        const scaleX = nextW / prevW;
+        x = node.x * scaleX;
+        w = node.w * scaleX;
+      } else if (c.pinLeft && c.pinRight) {
+        x = left;
+        w = Math.max(1, nextW - left - right);
+      } else if (c.centerX) {
+        const offset = node.x + node.w / 2 - prevW / 2;
+        x = nextW / 2 - node.w / 2 + offset;
+      } else if (c.pinRight) {
+        x = nextW - right - node.w;
+      }
+
+      if (c.scaleY && prevH > 0) {
+        const scaleY = nextH / prevH;
+        y = node.y * scaleY;
+        h = node.h * scaleY;
+      } else if (c.pinTop && c.pinBottom) {
+        y = top;
+        h = Math.max(1, nextH - top - bottom);
+      } else if (c.centerY) {
+        const offset = node.y + node.h / 2 - prevH / 2;
+        y = nextH / 2 - node.h / 2 + offset;
+      } else if (c.pinBottom) {
+        y = nextH - bottom - node.h;
+      }
+
+      return clampNodeToCanvas({ ...node, x, y, w, h }, { width: nextW, height: nextH });
+    });
+  }
+
+  function resizeCanvas(nextW: number, nextH: number) {
+    const prev = docMetaRef.current;
+    const nextNodes = applyConstraintsOnResize(nodesRef.current, prev.width, prev.height, nextW, nextH);
+    setPresent(nextNodes, true);
+    setDocMeta({ width: nextW, height: nextH, nodes: nextNodes });
+    if (activeSceneId) {
+      setScenes((prevScenes) =>
+        prevScenes.map((s) => (s.id === activeSceneId ? { ...s, width: nextW, height: nextH } : s)),
+      );
+    }
+  }
+
+  function updateConstraint(id: string, patch: Record<string, boolean>) {
+    const node = nodesRef.current.find((n) => n.id === id);
+    if (!node) return;
+    const next = { ...(node.constraints ?? {}), ...patch };
+    updateNode(id, { constraints: next });
+  }
+
+  function toggleConstraintExclusive(
+    id: string,
+    key: "pinLeft" | "pinRight" | "centerX" | "scaleX" | "pinTop" | "pinBottom" | "centerY" | "scaleY",
+    clear: Array<keyof NonNullable<CanvasNode["constraints"]>>,
+  ) {
+    const node = nodesRef.current.find((n) => n.id === id);
+    if (!node) return;
+    const current = node.constraints ?? {};
+    const nextValue = !current[key];
+    const next: Record<string, boolean> = { ...current, [key]: nextValue };
+    if (nextValue) {
+      clear.forEach((k) => {
+        if (k !== key) next[k] = false;
+      });
+    }
+    updateNode(id, { constraints: next });
+  }
+
   function updateNode(id: string, patch: Partial<CanvasNode>, commit = true) {
     const { width, height } = docMetaRef.current;
     const nextNodes = nodesRef.current.map((node) =>
@@ -876,32 +1361,1207 @@ export default function EditorView() {
       if (node.id !== id) return node;
       const mapped = mapInspectorPropsForRender(node.type, patch);
       const nextProps = { ...(node.props ?? {}), ...mapped };
-      let nextAction = node.action;
-      if (node.type === "button") {
-        const kind = String(nextProps.actionKind ?? "none");
-        if (kind === "url") {
-          const href = String(nextProps.href ?? "").trim();
-          nextAction = href ? { type: "link", url: href } : { type: "none" };
-        } else if (kind === "scene") {
-          const sid = String(nextProps.sceneId ?? "").trim();
-          nextAction = sid ? { type: "scene", sceneId: sid } : { type: "none" };
-        } else {
-          nextAction = { type: "none" };
-        }
-      }
-      if (node.type === "link") {
-        const href = String(nextProps.href ?? "").trim();
-        nextAction = href ? { type: "link", url: href } : { type: "none" };
-      }
+      const nextAction = resolveActionForNode(node.type, nextProps, node.action);
       return { ...node, props: nextProps, action: nextAction };
     });
     setPresent(nextNodes, commit);
+  }
+
+  function resolveActionForNode(
+    nodeType: CanvasNodeType,
+    props: Record<string, unknown>,
+    currentAction: BuilderAction | undefined,
+  ): BuilderAction | undefined {
+    if (nodeType === "button") {
+      const kind = String(props.actionKind ?? "none");
+      if (kind === "url") {
+        const href = String(props.href ?? "").trim();
+        return href ? { type: "link", url: href } : { type: "none" };
+      }
+      if (kind === "scene") {
+        const sid = String(props.sceneId ?? "").trim();
+        return sid ? { type: "scene", sceneId: sid } : { type: "none" };
+      }
+      return { type: "none" };
+    }
+    if (nodeType === "link") {
+      const href = String(props.href ?? "").trim();
+      return href ? { type: "link", url: href } : { type: "none" };
+    }
+    return currentAction;
+  }
+
+  function replaceNodeProps(ids: Set<string>, nextPropsById: Map<string, Record<string, unknown>>) {
+    const nextNodes = nodesRef.current.map((node) => {
+      if (!ids.has(node.id)) return node;
+      const nextPropsRaw = nextPropsById.get(node.id);
+      if (!nextPropsRaw) return node;
+      const mapped = mapInspectorPropsForRender(node.type, nextPropsRaw);
+      const nextProps = { ...mapped };
+      const nextAction = resolveActionForNode(node.type, nextProps, node.action);
+      return { ...node, props: nextProps, action: nextAction };
+    });
+    setPresent(nextNodes, true);
   }
 
   function updateNodeBindKey(id: string, key: string) {
     const node = nodesRef.current.find((n) => n.id === id);
     const nextBind = { ...(node?.bind ?? {}), key: key.trim() ? key.trim() : undefined };
     updateNode(id, { bind: nextBind });
+  }
+
+  function updateFillState(
+    nodeId: string,
+    fillKey: "background" | "fill",
+    next: {
+      mode?: string;
+      from?: string;
+      to?: string;
+      angle?: number;
+      fillType?: string;
+      centerX?: number;
+      centerY?: number;
+      stops?: FillStop[];
+    },
+  ) {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    if (!node) return;
+    const current = getFillControlState(node, fillKey);
+    const mode = next.mode ?? current.mode;
+    const from = next.from ?? current.from;
+    const to = next.to ?? current.to;
+    const angle = typeof next.angle === "number" ? next.angle : current.angle;
+    const fillType = next.fillType ?? current.fillType;
+    const centerX = typeof next.centerX === "number" ? next.centerX : current.centerX;
+    const centerY = typeof next.centerY === "number" ? next.centerY : current.centerY;
+    const stops = next.stops ?? current.stops;
+    const normalizedStops =
+      stops && stops.length
+        ? stops.map((s) => ({ color: s.color, pos: Math.max(0, Math.min(100, Number(s.pos) || 0)) }))
+        : [
+            { color: from, pos: 0 },
+            { color: to, pos: 100 },
+          ];
+    const patch: Record<string, unknown> = {
+      fillMode: mode,
+      fillFrom: normalizedStops[0]?.color ?? from,
+      fillTo: normalizedStops[normalizedStops.length - 1]?.color ?? to,
+      fillAngle: angle,
+      fillType,
+      fillCenterX: centerX,
+      fillCenterY: centerY,
+      fillStops: normalizedStops,
+    };
+    patch[fillKey] = mode === "gradient" ? buildLinearGradient(angle, from, to) : from;
+    updateNodeProps(nodeId, patch);
+  }
+
+  function updatePathPoints(nodeId: string, points: Array<[number, number]>) {
+    updateNodeProps(nodeId, { points });
+  }
+
+  function getPathAbsoluteRing(node: CanvasNode): number[][] {
+    const pts = parsePathPointsToArray(node.props.points);
+    if (pts.length < 3) return [];
+    return pts.map(([x, y]) => [node.x + x * node.w, node.y + y * node.h]);
+  }
+
+  function getBooleanRingForNode(node: CanvasNode): number[][] | null {
+    if (node.type === "path") {
+      const ring = getPathAbsoluteRing(node);
+      if (ring.length < 3) return null;
+      const closed = Boolean(node.props.closed);
+      if (!closed) ring.push([ring[0][0], ring[0][1]]);
+      return ring;
+    }
+    if (node.type === "shape_rect") {
+      return [
+        [node.x, node.y],
+        [node.x + node.w, node.y],
+        [node.x + node.w, node.y + node.h],
+        [node.x, node.y + node.h],
+        [node.x, node.y],
+      ];
+    }
+    if (node.type === "shape_ellipse") {
+      const pts = makeEllipsePoints(32);
+      const ring = pts.map(([x, y]) => [node.x + x * node.w, node.y + y * node.h] as [number, number]);
+      ring.push([ring[0][0], ring[0][1]]);
+      return ring;
+    }
+    return null;
+  }
+
+  function normalizeAbsolutePoints(points: number[][]) {
+    if (points.length === 0) return { x: 0, y: 0, w: 1, h: 1, normalized: [] as Array<[number, number]> };
+    const xs = points.map((p) => p[0]);
+    const ys = points.map((p) => p[1]);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const maxX = Math.max(...xs);
+    const maxY = Math.max(...ys);
+    const w = Math.max(1, maxX - minX);
+    const h = Math.max(1, maxY - minY);
+    const normalized = points.map(([x, y]) => [(x - minX) / w, (y - minY) / h] as [number, number]);
+    return { x: minX, y: minY, w, h, normalized };
+  }
+
+  function runPathBoolean(op: BooleanOp) {
+    const selected = selectedIdsRef.current;
+    const targets = nodesRef.current.filter(
+      (n) =>
+        selected.includes(n.id) && (n.type === "path" || n.type === "shape_rect" || n.type === "shape_ellipse"),
+    );
+    if (targets.length < 2) {
+      setMessage("불리언 연산은 2개 이상 선택해야 합니다.");
+      return;
+    }
+    const rings = targets
+      .map(getBooleanRingForNode)
+      .filter((ring): ring is number[][] => ring !== null);
+    if (rings.length < 2) {
+      setMessage("선택된 도형의 점이 충분하지 않습니다.");
+      return;
+    }
+    const d = runBooleanMultiple(rings, op);
+    if (!d) {
+      setMessage("불리언 연산에 실패했습니다.");
+      return;
+    }
+    const ring = pathDataToPolygon(d);
+    if (!ring || ring.length < 3) {
+      setMessage("불리언 결과가 비어 있습니다.");
+      return;
+    }
+    const bounds = pathDataToBounds(d, 0);
+    const w = Math.max(1, bounds.w);
+    const h = Math.max(1, bounds.h);
+    const normalized = ring.map(([x, y]) => [(x - bounds.x) / w, (y - bounds.y) / h] as [number, number]);
+    const base = targets[0];
+    const nextNode: CanvasNode = {
+      ...base,
+      id: genNodeId("node"),
+      type: "path",
+      x: bounds.x,
+      y: bounds.y,
+      w,
+      h,
+      props: { ...(base.props ?? {}), points: normalized, closed: true },
+      componentId: undefined,
+      componentInstanceId: undefined,
+      componentVariantId: undefined,
+    };
+    const nextNodes = nodesRef.current.filter((n) => !selected.includes(n.id));
+    setPresent([...nextNodes, nextNode], true);
+    setSelectedIds([nextNode.id]);
+    setMessage("불리언 연산 완료");
+  }
+
+  function joinSelectedPaths() {
+    const selected = selectedIdsRef.current;
+    const paths = nodesRef.current.filter((n) => selected.includes(n.id) && n.type === "path");
+    if (paths.length < 2) {
+      setMessage("패스는 2개 이상 선택해야 합니다.");
+      return;
+    }
+    const absPointsList = paths.map((node) => ({
+      node,
+      points: parsePathPointsToArray(node.props.points).map(([x, y]) => [node.x + x * node.w, node.y + y * node.h] as [
+        number,
+        number,
+      ]),
+    }));
+    if (absPointsList.some((p) => p.points.length < 2)) {
+      setMessage("패스 점이 충분하지 않습니다.");
+      return;
+    }
+
+    const used = new Set<string>();
+    let chain = absPointsList[0].points.slice();
+    used.add(absPointsList[0].node.id);
+
+    const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+    while (used.size < absPointsList.length) {
+      let best: { idx: number; reverse: boolean; d: number } | null = null;
+      const end = chain[chain.length - 1];
+      for (let i = 0; i < absPointsList.length; i++) {
+        const entry = absPointsList[i];
+        if (used.has(entry.node.id)) continue;
+        const pts = entry.points;
+        const dStart = dist(end, pts[0]);
+        const dEnd = dist(end, pts[pts.length - 1]);
+        if (!best || dStart < best.d) best = { idx: i, reverse: false, d: dStart };
+        if (!best || dEnd < best.d) best = { idx: i, reverse: true, d: dEnd };
+      }
+      if (!best) break;
+      const nextEntry = absPointsList[best.idx];
+      const nextPoints = best.reverse ? [...nextEntry.points].reverse() : nextEntry.points;
+      if (dist(chain[chain.length - 1], nextPoints[0]) < 1) {
+        chain = [...chain, ...nextPoints.slice(1)];
+      } else {
+        chain = [...chain, ...nextPoints];
+      }
+      used.add(nextEntry.node.id);
+    }
+
+    const { x, y, w, h, normalized } = normalizeAbsolutePoints(chain);
+    const base = paths[0];
+    const nextNode: CanvasNode = {
+      ...base,
+      id: genNodeId("node"),
+      x,
+      y,
+      w,
+      h,
+      type: "path",
+      props: { ...(base.props ?? {}), points: normalized, closed: false },
+    };
+    const nextNodes = nodesRef.current.filter((n) => !selected.includes(n.id));
+    setPresent([...nextNodes, nextNode], true);
+    setSelectedIds([nextNode.id]);
+    setMessage("패스 연결 완료");
+  }
+
+  function offsetPath(nodeId: string, amount: number) {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    if (!node) return;
+    const ring = getPathAbsoluteRing(node);
+    if (ring.length < 3) return;
+    const cx = ring.reduce((acc, p) => acc + p[0], 0) / ring.length;
+    const cy = ring.reduce((acc, p) => acc + p[1], 0) / ring.length;
+    const nextAbs = ring.map(([x, y]) => {
+      const dx = x - cx;
+      const dy = y - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      return [x + (dx / len) * amount, y + (dy / len) * amount] as [number, number];
+    });
+    const { x, y, w, h, normalized } = normalizeAbsolutePoints(nextAbs);
+    updateNode(nodeId, { x, y, w, h, props: { ...(node.props ?? {}), points: normalized } });
+  }
+
+  function smoothPathPoints(points: Array<[number, number]>, closed: boolean, iterations: number) {
+    let pts = points;
+    const iters = Math.max(1, Math.min(5, Math.floor(iterations)));
+    for (let iter = 0; iter < iters; iter++) {
+      const next: Array<[number, number]> = [];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[i];
+        const p1 = pts[i + 1];
+        next.push([0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1]]);
+        next.push([0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1]]);
+      }
+      if (closed && pts.length > 2) {
+        const p0 = pts[pts.length - 1];
+        const p1 = pts[0];
+        next.push([0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1]]);
+        next.push([0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1]]);
+      } else if (pts.length > 0) {
+        next.unshift(pts[0]);
+        next.push(pts[pts.length - 1]);
+      }
+      pts = next.map(([x, y]) => [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))]);
+    }
+    return pts;
+  }
+
+  function simplifyPathPoints(points: Array<[number, number]>, epsilon: number) {
+    if (points.length < 3 || epsilon <= 0) return points;
+    const sqEps = epsilon * epsilon;
+    const out: Array<[number, number]> = [];
+    const stack: Array<[number, number]> = [[0, points.length - 1]];
+
+    const sqDist = (p: [number, number], a: [number, number], b: [number, number]) => {
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      if (dx === 0 && dy === 0) return (p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2;
+      const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy);
+      const clamped = Math.max(0, Math.min(1, t));
+      const projX = a[0] + clamped * dx;
+      const projY = a[1] + clamped * dy;
+      return (p[0] - projX) ** 2 + (p[1] - projY) ** 2;
+    };
+
+    const keep = new Set<number>();
+    keep.add(0);
+    keep.add(points.length - 1);
+
+    while (stack.length) {
+      const [start, end] = stack.pop()!;
+      let maxDist = 0;
+      let index = -1;
+      for (let i = start + 1; i < end; i++) {
+        const d = sqDist(points[i], points[start], points[end]);
+        if (d > maxDist) {
+          maxDist = d;
+          index = i;
+        }
+      }
+      if (index !== -1 && maxDist > sqEps) {
+        keep.add(index);
+        stack.push([start, index], [index, end]);
+      }
+    }
+
+    const sorted = Array.from(keep).sort((a, b) => a - b);
+    for (const i of sorted) out.push(points[i]);
+    return out;
+  }
+
+  function smoothPath(nodeId: string, iterations: number) {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    if (!node) return;
+    const pts = parsePathPointsToArray(node.props.points);
+    if (pts.length < 3) return;
+    const closed = Boolean(node.props.closed);
+    const next = smoothPathPoints(pts, closed, iterations);
+    updateNodeProps(nodeId, { points: next });
+  }
+
+  function simplifyPath(nodeId: string, tolerance: number) {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    if (!node) return;
+    const pts = parsePathPointsToArray(node.props.points);
+    if (pts.length < 3) return;
+    const next = simplifyPathPoints(pts, tolerance);
+    updateNodeProps(nodeId, { points: next });
+  }
+
+  function makeEllipsePoints(segments = 24): Array<[number, number]> {
+    const pts: Array<[number, number]> = [];
+    for (let i = 0; i < segments; i++) {
+      const t = (i / segments) * Math.PI * 2;
+      pts.push([0.5 + 0.5 * Math.cos(t), 0.5 + 0.5 * Math.sin(t)]);
+    }
+    return pts;
+  }
+
+  function convertSelectedToPath() {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) return;
+    const targets = nodesRef.current.filter(
+      (n) => ids.includes(n.id) && (n.type === "shape_rect" || n.type === "shape_ellipse" || n.type === "line"),
+    );
+    if (targets.length === 0) {
+      setMessage("패스로 변환 가능한 도형이 없습니다.");
+      return;
+    }
+    const nextNodes = nodesRef.current.filter((n) => !targets.some((t) => t.id === n.id));
+    const created: CanvasNode[] = [];
+    for (const node of targets) {
+      const fill = String((node.props as Record<string, unknown>)?.fill ?? (node.props as Record<string, unknown>)?.background ?? "#EDEDED");
+      const stroke = String(
+        (node.props as Record<string, unknown>)?.stroke ??
+          (node.props as Record<string, unknown>)?.borderColor ??
+          "#111111",
+      );
+      const strokeWidth = Number(
+        (node.props as Record<string, unknown>)?.strokeWidth ??
+          (node.props as Record<string, unknown>)?.borderWidth ??
+          1,
+      );
+      let points: Array<[number, number]> = [];
+      let closed = true;
+      if (node.type === "line") {
+        points = [
+          [0, 0.5],
+          [1, 0.5],
+        ];
+        closed = false;
+      } else if (node.type === "shape_ellipse") {
+        points = makeEllipsePoints(24);
+        closed = true;
+      } else {
+        points = [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 1],
+        ];
+        closed = true;
+      }
+      created.push({
+        ...node,
+        id: genNodeId("node"),
+        type: "path",
+        props: {
+          ...(node.props ?? {}),
+          points,
+          closed,
+          fill: node.type === "line" ? "none" : fill,
+          stroke,
+          strokeWidth: Number.isFinite(strokeWidth) ? strokeWidth : 1,
+          lineCap: (node.props as Record<string, unknown>)?.lineCap ?? "round",
+          lineJoin: (node.props as Record<string, unknown>)?.lineJoin ?? "round",
+        },
+      });
+    }
+    setPresent([...nextNodes, ...created], true);
+    setSelectedIds(created.map((n) => n.id));
+    setMessage("패스로 변환했습니다.");
+  }
+
+  function renderFillControls(node: CanvasNode, fillKey: "background" | "fill", label = "채우기") {
+    const state = getFillControlState(node, fillKey);
+    return (
+      <div className="space-y-2">
+        <SelectField
+          label={`${label} 유형`}
+          value={state.mode}
+          onChange={(value) => updateFillState(node.id, fillKey, { mode: value })}
+          options={[
+            { value: "solid", label: "단색" },
+            { value: "gradient", label: "그라디언트" },
+          ]}
+        />
+        {state.mode === "gradient" ? (
+          <div className="space-y-2">
+            <SelectField
+              label="유형"
+              value={state.fillType}
+              onChange={(value) => updateFillState(node.id, fillKey, { fillType: value })}
+              options={[
+                { value: "linear", label: "선형" },
+                { value: "radial", label: "원형" },
+                { value: "conic", label: "원추" },
+              ]}
+            />
+            {state.fillType !== "radial" ? (
+              <PropertyField
+                label="각도"
+                value={state.angle}
+                onChange={(value) => updateFillState(node.id, fillKey, { angle: value })}
+              />
+            ) : null}
+            {state.fillType !== "linear" ? (
+              <div className="grid grid-cols-2 gap-2">
+                <PropertyField
+                  label="중심 X(%)"
+                  value={state.centerX}
+                  onChange={(value) => updateFillState(node.id, fillKey, { centerX: value })}
+                />
+                <PropertyField
+                  label="중심 Y(%)"
+                  value={state.centerY}
+                  onChange={(value) => updateFillState(node.id, fillKey, { centerY: value })}
+                />
+              </div>
+            ) : null}
+            <div className="rounded-[10px] border border-neutral-200 p-2">
+              <div className="text-[10px] font-semibold text-neutral-500">스톱</div>
+              <div className="mt-2 space-y-2">
+                {state.stops.map((stop, idx) => (
+                  <div key={`stop-${idx}`} className="grid grid-cols-[1fr_80px_auto] gap-2">
+                    <ColorField
+                      label={`색상 ${idx + 1}`}
+                      value={stop.color}
+                      onChange={(value) => {
+                        const nextStops = state.stops.map((s, i) => (i === idx ? { ...s, color: value } : s));
+                        updateFillState(node.id, fillKey, { stops: nextStops });
+                      }}
+                    />
+                    <PropertyField
+                      label="%"
+                      value={Number(stop.pos)}
+                      onChange={(value) => {
+                        const nextStops = state.stops.map((s, i) =>
+                          i === idx ? { ...s, pos: Math.max(0, Math.min(100, Number(value))) } : s,
+                        );
+                        updateFillState(node.id, fillKey, { stops: nextStops });
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextStops = state.stops.filter((_, i) => i !== idx);
+                        updateFillState(node.id, fillKey, { stops: nextStops.length ? nextStops : state.stops });
+                      }}
+                      className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                    >
+                      삭제
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateFillState(node.id, fillKey, {
+                    stops: [...state.stops, { color: "#FFFFFF", pos: 100 }],
+                  })
+                }
+                className="mt-2 rounded-full border px-2 py-1 text-[10px]"
+              >
+                스톱 추가
+              </button>
+            </div>
+          </div>
+        ) : (
+          <ColorField
+            label={label}
+            value={state.from}
+            onChange={(value) => updateFillState(node.id, fillKey, { from: value })}
+          />
+        )}
+      </div>
+    );
+  }
+
+  function applyStyleToSelection(styleProps: Record<string, unknown>) {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const nextNodes = nodesRef.current.map((node) => {
+      if (!idSet.has(node.id)) return node;
+      const keys = getStyleKeysForType(node.type);
+      const patch: Record<string, unknown> = {};
+      for (const key of keys) {
+        if (key in styleProps) patch[key] = styleProps[key];
+      }
+      const normalized = normalizeStylePatchForNode(node.type, patch);
+      if (Object.keys(normalized).length === 0) return node;
+      const mapped = mapInspectorPropsForRender(node.type, normalized);
+      return { ...node, props: { ...(node.props ?? {}), ...mapped } };
+    });
+    setPresent(nextNodes, true);
+  }
+
+  function copyStyleFromSelection() {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) return;
+    const node = nodesRef.current.find((n) => n.id === ids[0]) ?? null;
+    if (!node) return;
+    styleClipboardRef.current = extractStyleProps(node);
+    setMessage("스타일을 복사했습니다.");
+  }
+
+  function pasteStyleToSelection() {
+    const style = styleClipboardRef.current;
+    if (!style) {
+      setMessage("복사된 스타일이 없습니다.");
+      return;
+    }
+    applyStyleToSelection(style);
+    setMessage("스타일을 적용했습니다.");
+  }
+
+  function saveStylePreset() {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) return;
+    const node = nodesRef.current.find((n) => n.id === ids[0]) ?? null;
+    if (!node) return;
+    const props = extractStyleProps(node);
+    if (Object.keys(props).length === 0) {
+      setMessage("저장할 스타일이 없습니다.");
+      return;
+    }
+    const nextName = presetName.trim()
+      ? presetName.trim()
+      : `프리셋 ${pickSmallestMissingPositive(stylePresets.map((p) => Number(p.name.replace(/[^\d]/g, ""))))}`;
+    const nextPreset: StylePreset = { id: genNodeId("style"), name: nextName, props };
+    setStylePresets((prev) => [...prev, nextPreset]);
+    setPresetName("");
+    setMessage("스타일 프리셋을 저장했습니다.");
+  }
+
+  function deleteStylePreset(id: string) {
+    setStylePresets((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  function addColorToken() {
+    if (!colorTokenDraft.name.trim()) {
+      setMessage("토큰 이름을 입력하세요.");
+      return;
+    }
+    const next: ColorToken = { id: genNodeId("color"), name: colorTokenDraft.name.trim(), value: colorTokenDraft.value };
+    setStyleTokens((prev) => ({ ...prev, colors: [...prev.colors, next] }));
+    setColorTokenDraft({ name: "", value: "#111111" });
+  }
+
+  function addRadiusToken() {
+    if (!radiusTokenDraft.name.trim()) {
+      setMessage("토큰 이름을 입력하세요.");
+      return;
+    }
+    const next: NumberToken = {
+      id: genNodeId("radius"),
+      name: radiusTokenDraft.name.trim(),
+      value: Math.max(0, Number(radiusTokenDraft.value) || 0),
+    };
+    setStyleTokens((prev) => ({ ...prev, radii: [...prev.radii, next] }));
+    setRadiusTokenDraft({ name: "", value: 12 });
+  }
+
+  function addTextSizeToken() {
+    if (!textSizeTokenDraft.name.trim()) {
+      setMessage("토큰 이름을 입력하세요.");
+      return;
+    }
+    const next: NumberToken = {
+      id: genNodeId("text"),
+      name: textSizeTokenDraft.name.trim(),
+      value: Math.max(1, Number(textSizeTokenDraft.value) || 1),
+    };
+    setStyleTokens((prev) => ({ ...prev, textSizes: [...prev.textSizes, next] }));
+    setTextSizeTokenDraft({ name: "", value: 14 });
+  }
+
+  function addShadowToken() {
+    if (!shadowTokenDraft.name.trim()) {
+      setMessage("토큰 이름을 입력하세요.");
+      return;
+    }
+    const next: TextToken = { id: genNodeId("shadow"), name: shadowTokenDraft.name.trim(), value: shadowTokenDraft.value.trim() };
+    setStyleTokens((prev) => ({ ...prev, shadows: [...prev.shadows, next] }));
+    setShadowTokenDraft({ name: "", value: "0 12px 30px rgba(0,0,0,0.15)" });
+  }
+
+  function addFontToken() {
+    if (!fontTokenDraft.name.trim()) {
+      setMessage("토큰 이름을 입력하세요.");
+      return;
+    }
+    const next: TextToken = { id: genNodeId("font"), name: fontTokenDraft.name.trim(), value: fontTokenDraft.value.trim() };
+    setStyleTokens((prev) => ({ ...prev, fonts: [...prev.fonts, next] }));
+    setFontTokenDraft({ name: "", value: "" });
+  }
+
+  function updateTokenName<K extends keyof StyleTokens>(key: K, id: string, name: string) {
+    setStyleTokens((prev) => ({
+      ...prev,
+      [key]: prev[key].map((token) => (token.id === id ? { ...token, name } : token)) as StyleTokens[K],
+    }));
+  }
+
+  function updateTokenValue<K extends keyof StyleTokens>(key: K, id: string, value: string | number) {
+    setStyleTokens((prev) => ({
+      ...prev,
+      [key]: prev[key].map((token) => (token.id === id ? { ...token, value } : token)) as StyleTokens[K],
+    }));
+  }
+
+  function deleteToken<K extends keyof StyleTokens>(key: K, id: string) {
+    setStyleTokens((prev) => ({
+      ...prev,
+      [key]: prev[key].filter((token) => token.id !== id) as StyleTokens[K],
+    }));
+  }
+
+  function getBoundsForNodes(nodes: CanvasNode[]) {
+    const minX = Math.min(...nodes.map((n) => n.x));
+    const minY = Math.min(...nodes.map((n) => n.y));
+    const maxX = Math.max(...nodes.map((n) => n.x + n.w));
+    const maxY = Math.max(...nodes.map((n) => n.y + n.h));
+    return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+  }
+
+  function normalizeLayoutSettings(raw?: Partial<LayoutSettings>): LayoutSettings {
+    const pad = raw?.padding ?? DEFAULT_LAYOUT_SETTINGS.padding;
+    const asNum = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+    const dir = raw?.dir === "column" ? "column" : "row";
+    const align = ["start", "center", "end", "stretch"].includes(String(raw?.align))
+      ? (raw?.align as LayoutSettings["align"])
+      : DEFAULT_LAYOUT_SETTINGS.align;
+    const justify = ["start", "center", "end", "space-between"].includes(String(raw?.justify))
+      ? (raw?.justify as LayoutSettings["justify"])
+      : DEFAULT_LAYOUT_SETTINGS.justify;
+    return {
+      dir,
+      gap: asNum(raw?.gap, DEFAULT_LAYOUT_SETTINGS.gap),
+      align,
+      justify,
+      wrap: Boolean(raw?.wrap),
+      padding: {
+        t: asNum(pad?.t, DEFAULT_LAYOUT_SETTINGS.padding.t),
+        r: asNum(pad?.r, DEFAULT_LAYOUT_SETTINGS.padding.r),
+        b: asNum(pad?.b, DEFAULT_LAYOUT_SETTINGS.padding.b),
+        l: asNum(pad?.l, DEFAULT_LAYOUT_SETTINGS.padding.l),
+      },
+      auto: raw?.auto !== undefined ? Boolean(raw?.auto) : DEFAULT_LAYOUT_SETTINGS.auto,
+      wrapSize: typeof raw?.wrapSize === "number" && Number.isFinite(raw.wrapSize) ? raw.wrapSize : undefined,
+    };
+  }
+
+  function applyLayoutGroupToNodes(nodes: CanvasNode[], group: LayoutGroup): CanvasNode[] {
+    const settings = normalizeLayoutSettings(group.settings);
+    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+    const items = group.nodeIds.map((id) => nodeMap.get(id)).filter(Boolean) as CanvasNode[];
+    if (items.length === 0) return nodes;
+    const bounds = getBoundsForNodes(items);
+    const padding = settings.padding;
+    const containerMain =
+      settings.wrap && settings.wrapSize && settings.wrapSize > 0
+        ? settings.wrapSize
+        : settings.dir === "row"
+          ? Math.max(1, bounds.w)
+          : Math.max(1, bounds.h);
+    const availableMain =
+      settings.dir === "row"
+        ? Math.max(1, containerMain - padding.l - padding.r)
+        : Math.max(1, containerMain - padding.t - padding.b);
+
+    type LineItem = { node: CanvasNode };
+    type Line = { items: LineItem[]; main: number; cross: number };
+    const lines: Line[] = [];
+    let current: Line = { items: [], main: 0, cross: 0 };
+
+    for (const node of items) {
+      const mainSize = settings.dir === "row" ? node.w : node.h;
+      const crossSize = settings.dir === "row" ? node.h : node.w;
+      const gap = current.items.length ? settings.gap : 0;
+      if (settings.wrap && current.items.length && current.main + gap + mainSize > availableMain) {
+        lines.push(current);
+        current = { items: [], main: 0, cross: 0 };
+      }
+      current.items.push({ node });
+      current.main += gap + mainSize;
+      current.cross = Math.max(current.cross, crossSize);
+    }
+    if (current.items.length) lines.push(current);
+
+    const updates = new Map<string, Partial<CanvasNode>>();
+    let crossOffset = settings.dir === "row" ? bounds.minY + padding.t : bounds.minX + padding.l;
+
+    for (const line of lines) {
+      const sumMain = line.items.reduce(
+        (acc, item) => acc + (settings.dir === "row" ? item.node.w : item.node.h),
+        0,
+      );
+      let gapBetween = settings.gap;
+      let mainOffset = settings.dir === "row" ? bounds.minX + padding.l : bounds.minY + padding.t;
+      const remaining = availableMain - line.main;
+
+      if (settings.justify === "center") mainOffset += remaining / 2;
+      if (settings.justify === "end") mainOffset += remaining;
+      if (settings.justify === "space-between" && line.items.length > 1) {
+        gapBetween = (availableMain - sumMain) / (line.items.length - 1);
+      }
+
+      for (const item of line.items) {
+        const node = item.node;
+        let x = node.x;
+        let y = node.y;
+        let w = node.w;
+        let h = node.h;
+        if (settings.dir === "row") {
+          x = mainOffset;
+          if (settings.align === "center") y = crossOffset + (line.cross - node.h) / 2;
+          else if (settings.align === "end") y = crossOffset + (line.cross - node.h);
+          else y = crossOffset;
+          if (settings.align === "stretch") h = Math.max(1, line.cross);
+          mainOffset += node.w + gapBetween;
+        } else {
+          y = mainOffset;
+          if (settings.align === "center") x = crossOffset + (line.cross - node.w) / 2;
+          else if (settings.align === "end") x = crossOffset + (line.cross - node.w);
+          else x = crossOffset;
+          if (settings.align === "stretch") w = Math.max(1, line.cross);
+          mainOffset += node.h + gapBetween;
+        }
+        updates.set(node.id, { x, y, w, h });
+      }
+      crossOffset += line.cross + (settings.wrap ? settings.gap : 0);
+    }
+
+    if (updates.size === 0) return nodes;
+    return nodes.map((node) => (updates.has(node.id) ? { ...node, ...updates.get(node.id) } : node));
+  }
+
+  function applyAutoLayoutGroups(nodesNext: CanvasNode[]) {
+    const groups = layoutGroupsRef.current;
+    if (!groups.length) return nodesNext;
+    let next = nodesNext;
+    for (const group of groups) {
+      if (!group.settings?.auto) continue;
+      next = applyLayoutGroupToNodes(next, group);
+    }
+    return next;
+  }
+
+  function createLayoutGroupFromSelection() {
+    const ids = selectedIdsRef.current;
+    if (ids.length < 2) {
+      setMessage("레이아웃 그룹은 2개 이상 선택해야 합니다.");
+      return;
+    }
+    const name = layoutGroupNameDraft.trim()
+      ? layoutGroupNameDraft.trim()
+      : `레이아웃 ${pickSmallestMissingPositive(layoutGroups.map((g) => Number(g.name.replace(/[^\d]/g, ""))))}`;
+    const next: LayoutGroup = { id: genNodeId("layout"), name, nodeIds: [...ids], settings: { ...DEFAULT_LAYOUT_SETTINGS } };
+    setLayoutGroups((prev) => [...prev, next]);
+    setLayoutGroupNameDraft("");
+    const nextNodes = applyLayoutGroupToNodes(nodesRef.current, next);
+    setPresent(nextNodes, true);
+    setMessage("레이아웃 그룹을 생성했습니다.");
+  }
+
+  function updateLayoutGroupSettings(id: string, patch: Partial<LayoutSettings>) {
+    setLayoutGroups((prev) =>
+      prev.map((g) =>
+        g.id === id ? { ...g, settings: normalizeLayoutSettings({ ...g.settings, ...patch }) } : g,
+      ),
+    );
+  }
+
+  function updateLayoutGroupNodes(id: string, nodeIds: string[]) {
+    setLayoutGroups((prev) => prev.map((g) => (g.id === id ? { ...g, nodeIds: [...nodeIds] } : g)));
+  }
+
+  function applyLayoutGroupNow(id: string) {
+    const group = layoutGroupsRef.current.find((g) => g.id === id);
+    if (!group) return;
+    const nextNodes = applyLayoutGroupToNodes(nodesRef.current, group);
+    setPresent(nextNodes, true);
+  }
+
+  function deleteLayoutGroup(id: string) {
+    setLayoutGroups((prev) => prev.filter((g) => g.id !== id));
+  }
+
+  function makeComponentNodes(nodes: CanvasNode[], bounds: { minX: number; minY: number }) {
+    return nodes.map((n) => ({
+      ...n,
+      id: n.componentNodeId ?? n.id,
+      x: n.x - bounds.minX,
+      y: n.y - bounds.minY,
+      props: { ...(n.props ?? {}) },
+      componentId: undefined,
+      componentInstanceId: undefined,
+      componentVariantId: undefined,
+      componentNodeId: undefined,
+    }));
+  }
+
+  function createComponentFromSelection() {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) {
+      setMessage("선택된 요소가 없습니다.");
+      return;
+    }
+    const selected = nodesRef.current.filter((n) => ids.includes(n.id));
+    const bounds = getBoundsForNodes(selected);
+    const name = componentNameDraft.trim()
+      ? componentNameDraft.trim()
+      : `컴포넌트 ${pickSmallestMissingPositive(components.map((c) => Number(c.name.replace(/[^\d]/g, ""))))}`;
+    const next: ComponentDefinition = {
+      id: genNodeId("component"),
+      name,
+      nodes: makeComponentNodes(selected, bounds),
+      size: { w: bounds.w, h: bounds.h },
+      variants: [],
+    };
+    setComponents((prev) => [...prev, next]);
+    setComponentNameDraft("");
+    const instanceId = genNodeId("instance");
+    const idSet = new Set(ids);
+    const nextNodes = nodesRef.current.map((node) =>
+      idSet.has(node.id)
+        ? {
+            ...node,
+            componentId: next.id,
+            componentInstanceId: instanceId,
+            componentVariantId: undefined,
+            componentNodeId: node.componentNodeId ?? node.id,
+          }
+        : node,
+    );
+    setPresent(nextNodes, true);
+    setMessage("컴포넌트를 저장하고 인스턴스로 연결했습니다.");
+  }
+
+  function cloneComponentNodes(
+    defNodes: CanvasNode[],
+    origin: { x: number; y: number },
+    componentId: string,
+    instanceId: string,
+    variantId?: string,
+  ) {
+    return defNodes.map((n) => ({
+      ...n,
+      id: genNodeId("node"),
+      x: origin.x + n.x,
+      y: origin.y + n.y,
+      props: { ...(n.props ?? {}) },
+      componentId,
+      componentInstanceId: instanceId,
+      componentVariantId: variantId,
+      componentNodeId: n.id,
+    }));
+  }
+
+  function insertComponent(componentId: string, variantId?: string) {
+    const component = components.find((c) => c.id === componentId);
+    if (!component) return;
+    const variant = variantId ? component.variants.find((v) => v.id === variantId) : null;
+    const defNodes = variant ? variant.nodes : component.nodes;
+    const size = variant ? variant.size : component.size;
+    const origin = { x: docMetaRef.current.width / 2 - size.w / 2, y: docMetaRef.current.height / 2 - size.h / 2 };
+    const instanceId = genNodeId("instance");
+    const clones = cloneComponentNodes(defNodes, origin, componentId, instanceId, variant?.id);
+    const nextNodes = [...nodesRef.current, ...clones];
+    setPresent(nextNodes, true);
+    setSelectedIds(clones.map((n) => n.id));
+    setMessage("컴포넌트를 추가했습니다.");
+  }
+
+  function replaceInstances(
+    componentId: string,
+    variantId: string | undefined,
+    defNodes: CanvasNode[],
+    preserveOverrides = true,
+  ) {
+    const nodes = nodesRef.current;
+    const matches = nodes.filter((n) =>
+      n.componentId === componentId &&
+      (variantId ? n.componentVariantId === variantId : !n.componentVariantId),
+    );
+    if (matches.length === 0) return nodes;
+    const defMap = new Map(defNodes.map((d) => [d.id, d]));
+    const instanceMap = new Map<string, CanvasNode[]>();
+    for (const node of matches) {
+      const inst = node.componentInstanceId ?? node.id;
+      const arr = instanceMap.get(inst) ?? [];
+      arr.push(node);
+      instanceMap.set(inst, arr);
+    }
+    const overridesByInstance = new Map<string, Map<string, Record<string, unknown>>>();
+    if (preserveOverrides) {
+      for (const [instId, instNodes] of instanceMap) {
+        const overrides = new Map<string, Record<string, unknown>>();
+        for (const node of instNodes) {
+          const sourceId = node.componentNodeId ?? node.id;
+          const defNode = defMap.get(sourceId);
+          if (!defNode) continue;
+          const baseProps = defNode.props ?? {};
+          const currentProps = node.props ?? {};
+          const diff: Record<string, unknown> = {};
+          for (const key of Object.keys(currentProps)) {
+            if (!isValueEqual(currentProps[key], (baseProps as Record<string, unknown>)[key])) diff[key] = currentProps[key];
+          }
+          if (Object.keys(diff).length > 0) overrides.set(sourceId, diff);
+        }
+        overridesByInstance.set(instId, overrides);
+      }
+    }
+    const clonesByInstance = new Map<string, CanvasNode[]>();
+    for (const [instId, instNodes] of instanceMap) {
+      const bounds = getBoundsForNodes(instNodes);
+      const origin = { x: bounds.minX, y: bounds.minY };
+      const overrides = overridesByInstance.get(instId);
+      const clones = cloneComponentNodes(defNodes, origin, componentId, instId, variantId).map((clone) => {
+        const override = clone.componentNodeId ? overrides?.get(clone.componentNodeId) : null;
+        if (override && Object.keys(override).length > 0) {
+          return { ...clone, props: { ...(clone.props ?? {}), ...override } };
+        }
+        return clone;
+      });
+      clonesByInstance.set(instId, clones);
+    }
+    const idsToReplace = new Set(matches.map((n) => n.id));
+    const nextNodes: CanvasNode[] = [];
+    const inserted = new Set<string>();
+    for (const node of nodes) {
+      if (!idsToReplace.has(node.id)) {
+        nextNodes.push(node);
+        continue;
+      }
+      const inst = node.componentInstanceId ?? node.id;
+      if (inserted.has(inst)) continue;
+      const clones = clonesByInstance.get(inst);
+      if (clones) {
+        nextNodes.push(...clones);
+      }
+      inserted.add(inst);
+    }
+    return nextNodes;
+  }
+
+  function updateComponentFromSelection(componentId: string, variantId?: string) {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) {
+      setMessage("선택된 요소가 없습니다.");
+      return;
+    }
+    const selected = nodesRef.current.filter((n) => ids.includes(n.id));
+    const bounds = getBoundsForNodes(selected);
+    const defNodes = makeComponentNodes(selected, bounds);
+    setComponents((prev) =>
+      prev.map((c) => {
+        if (c.id !== componentId) return c;
+        if (variantId) {
+          return {
+            ...c,
+            variants: c.variants.map((v) =>
+              v.id === variantId ? { ...v, nodes: defNodes, size: { w: bounds.w, h: bounds.h } } : v,
+            ),
+          };
+        }
+        return { ...c, nodes: defNodes, size: { w: bounds.w, h: bounds.h } };
+      }),
+    );
+    const nextNodes = replaceInstances(componentId, variantId, defNodes);
+    setPresent(nextNodes, true);
+    setMessage("컴포넌트를 업데이트했습니다.");
+  }
+
+  function createVariantFromSelection(componentId: string) {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) {
+      setMessage("선택된 요소가 없습니다.");
+      return;
+    }
+    const selected = nodesRef.current.filter((n) => ids.includes(n.id));
+    const bounds = getBoundsForNodes(selected);
+    const name = variantNameDraft.trim()
+      ? variantNameDraft.trim()
+      : `변형 ${pickSmallestMissingPositive(
+          (components.find((c) => c.id === componentId)?.variants ?? []).map((v) => Number(v.name.replace(/[^\d]/g, ""))),
+        )}`;
+    const variant: ComponentVariant = {
+      id: genNodeId("variant"),
+      name,
+      nodes: makeComponentNodes(selected, bounds),
+      size: { w: bounds.w, h: bounds.h },
+    };
+    setComponents((prev) =>
+      prev.map((c) => (c.id === componentId ? { ...c, variants: [...c.variants, variant] } : c)),
+    );
+    setVariantNameDraft("");
+    setMessage("변형을 저장했습니다.");
+  }
+
+  function applyVariantToInstance(
+    componentId: string,
+    variantId: string | null,
+    instanceId: string,
+    preserveOverrides = true,
+  ) {
+    const component = components.find((c) => c.id === componentId);
+    if (!component) return;
+    const variant = variantId ? component.variants.find((v) => v.id === variantId) : null;
+    const defNodes = variant ? variant.nodes : component.nodes;
+    const resolvedVariantId = variant ? variant.id : undefined;
+    const instanceNodes = nodesRef.current.filter(
+      (n) => n.componentId === componentId && n.componentInstanceId === instanceId,
+    );
+    if (instanceNodes.length === 0) return;
+    const defMap = new Map(defNodes.map((d) => [d.id, d]));
+    const overrides = new Map<string, Record<string, unknown>>();
+    if (preserveOverrides) {
+      for (const node of instanceNodes) {
+        const sourceId = node.componentNodeId ?? node.id;
+        const defNode = defMap.get(sourceId);
+        if (!defNode) continue;
+        const baseProps = defNode.props ?? {};
+        const currentProps = node.props ?? {};
+        const diff: Record<string, unknown> = {};
+        for (const key of Object.keys(currentProps)) {
+          if (!isValueEqual(currentProps[key], (baseProps as Record<string, unknown>)[key])) diff[key] = currentProps[key];
+        }
+        if (Object.keys(diff).length > 0) overrides.set(sourceId, diff);
+      }
+    }
+    const bounds = getBoundsForNodes(instanceNodes);
+    const origin = { x: bounds.minX, y: bounds.minY };
+    const clones = cloneComponentNodes(defNodes, origin, componentId, instanceId, resolvedVariantId).map((clone) => {
+      const override = clone.componentNodeId ? overrides.get(clone.componentNodeId) : null;
+      if (override && Object.keys(override).length > 0) {
+        return { ...clone, props: { ...(clone.props ?? {}), ...override } };
+      }
+      return clone;
+    });
+    const idsToReplace = new Set(instanceNodes.map((n) => n.id));
+    const nextNodes: CanvasNode[] = [];
+    let inserted = false;
+    for (const node of nodesRef.current) {
+      if (!idsToReplace.has(node.id)) {
+        nextNodes.push(node);
+        continue;
+      }
+      if (!inserted) {
+        nextNodes.push(...clones);
+        inserted = true;
+      }
+    }
+    setPresent(nextNodes, true);
+    setSelectedIds(clones.map((n) => n.id));
+    setMessage("변형을 적용했습니다.");
+  }
+
+  function resetInstanceOverrides(componentId: string, variantId: string | null, instanceId: string) {
+    applyVariantToInstance(componentId, variantId, instanceId, false);
+    setMessage("오버라이드를 초기화했습니다.");
+  }
+
+  function getComponentDefinitionNodes(componentId: string, variantId?: string | null) {
+    const component = components.find((c) => c.id === componentId);
+    if (!component) return [];
+    if (variantId) {
+      const variant = component.variants.find((v) => v.id === variantId);
+      return variant ? variant.nodes : component.nodes;
+    }
+    return component.nodes;
+  }
+
+  function resetInstanceNodeOverrides(
+    componentId: string,
+    variantId: string | null,
+    instanceId: string,
+    targetNodeId?: string,
+  ) {
+    const defNodes = getComponentDefinitionNodes(componentId, variantId);
+    if (defNodes.length === 0) return;
+    const defMap = new Map(defNodes.map((n) => [n.id, n]));
+    const ids = new Set<string>();
+    const nextProps = new Map<string, Record<string, unknown>>();
+    for (const node of nodesRef.current) {
+      if (node.componentId !== componentId || node.componentInstanceId !== instanceId) continue;
+      if (targetNodeId && node.id !== targetNodeId) continue;
+      const sourceId = node.componentNodeId ?? node.id;
+      const defNode = defMap.get(sourceId);
+      if (!defNode) continue;
+      ids.add(node.id);
+      nextProps.set(node.id, defNode.props ?? {});
+    }
+    if (ids.size === 0) return;
+    replaceNodeProps(ids, nextProps);
+    setMessage("인스턴스 오버라이드를 초기화했습니다.");
+  }
+
+  function detachComponentInstance(instanceId: string) {
+    const ids = selectedIdsRef.current;
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const nextNodes = nodesRef.current.map((node) => {
+      if (!idSet.has(node.id)) return node;
+      if (node.componentInstanceId !== instanceId) return node;
+      return {
+        ...node,
+        componentId: undefined,
+        componentInstanceId: undefined,
+        componentVariantId: undefined,
+        componentNodeId: undefined,
+      };
+    });
+    setPresent(nextNodes, true);
+    setMessage("인스턴스를 분리했습니다.");
+  }
+
+  function deleteComponent(componentId: string) {
+    setComponents((prev) => prev.filter((c) => c.id !== componentId));
+    const nextNodes = nodesRef.current.map((node) =>
+      node.componentId === componentId
+        ? {
+            ...node,
+            componentId: undefined,
+            componentInstanceId: undefined,
+            componentVariantId: undefined,
+            componentNodeId: undefined,
+          }
+        : node,
+    );
+    setPresent(nextNodes, true);
+    setMessage("컴포넌트를 삭제했습니다.");
   }
 
   function toggleSelect(id: string) {
@@ -952,6 +2612,20 @@ export default function EditorView() {
       candidatesY.push({ v: r.cy, guide: { kind: "h", y: r.cy } });
       candidatesY.push({ v: r.b, guide: { kind: "h", y: r.b } });
     }
+
+    // Canvas edges/center guides.
+    const canvasGuidesX = [
+      { v: 0, guide: { kind: "v" as const, x: 0 } },
+      { v: canvas.width / 2, guide: { kind: "v" as const, x: canvas.width / 2 } },
+      { v: canvas.width, guide: { kind: "v" as const, x: canvas.width } },
+    ];
+    const canvasGuidesY = [
+      { v: 0, guide: { kind: "h" as const, y: 0 } },
+      { v: canvas.height / 2, guide: { kind: "h" as const, y: canvas.height / 2 } },
+      { v: canvas.height, guide: { kind: "h" as const, y: canvas.height } },
+    ];
+    for (const c of canvasGuidesX) candidatesX.push(c);
+    for (const c of canvasGuidesY) candidatesY.push(c);
 
     let snappedX = proposedX;
     let snappedY = proposedY;
@@ -1014,18 +2688,6 @@ export default function EditorView() {
       outGuides.push(bestGuideY);
     }
 
-    // NOTE: comment removed (encoding issue).
-    const canvasX = [
-      { v: 0, guide: { kind: "v" as const, x: 0 } },
-      { v: canvas.width / 2, guide: { kind: "v" as const, x: canvas.width / 2 } },
-      { v: canvas.width, guide: { kind: "v" as const, x: canvas.width } },
-    ];
-    const canvasY = [
-      { v: 0, guide: { kind: "h" as const, y: 0 } },
-      { v: canvas.height / 2, guide: { kind: "h" as const, y: canvas.height / 2 } },
-      { v: canvas.height, guide: { kind: "h" as const, y: canvas.height } },
-    ];
-
     // Only if no other-node snap happened (feels right)
     if (!didSnapX) {
       const p2 = rectOf({ ...primary, x: snappedX, y: snappedY });
@@ -1034,7 +2696,7 @@ export default function EditorView() {
       let bestAdj: number | null = null;
       let bestGuide: GuideLine | null = null;
       for (const a of anchors) {
-        for (const c of canvasX) {
+        for (const c of canvasGuidesX) {
           const d = c.v - a;
           const ad = Math.abs(d);
           if (ad <= SNAP_THRESHOLD && ad < best) {
@@ -1057,7 +2719,7 @@ export default function EditorView() {
       let bestAdj: number | null = null;
       let bestGuide: GuideLine | null = null;
       for (const a of anchors) {
-        for (const c of canvasY) {
+        for (const c of canvasGuidesY) {
           const d = c.v - a;
           const ad = Math.abs(d);
           if (ad <= SNAP_THRESHOLD && ad < best) {
@@ -1322,7 +2984,7 @@ export default function EditorView() {
     const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
     const pageRecord = record["page"] && typeof record["page"] === "object" ? (record["page"] as Record<string, unknown>) : {};
     const candidates = [pageRecord["id"], record["pageId"], record["id"], pageRecord["pageId"]];
-    const found = candidates.find((v) => typeof v === "string" && v.length > 0);
+    const found = candidates.find((v): v is string => typeof v === "string" && v.length > 0);
     return found ?? null;
   }
 
@@ -1375,6 +3037,10 @@ export default function EditorView() {
           nodes: s.nodes,
         })),
         state: {},
+        stylePresets,
+        styleTokens,
+        components,
+        layoutGroups,
 
         // Preserve width/height/nodes snapshot when duplicating the doc
         width: docMeta.width,
@@ -1543,12 +3209,12 @@ export default function EditorView() {
         const buf = copyBufferRef.current;
         if (!buf || buf.length === 0) return;
         const offset = gridSnapRef.current ? GRID_SIZE : 8;
-        const newNodes = buf.map((n) => ({
+        const newNodes = remapComponentInstances(buf.map((n) => ({
           ...n,
           id: genNodeId("node"),
           x: n.x + offset,
           y: n.y + offset,
-        }));
+        })));
         const next = [...nodesRef.current, ...newNodes];
         setPresent(next, true);
         setSelectedIds(newNodes.map((n) => n.id));
@@ -1799,6 +3465,58 @@ export default function EditorView() {
             ))}
           </div>
 
+          {components.length > 0 ? (
+            <div className="mt-4">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">컴포넌트</div>
+              <div className="mt-2 flex flex-col gap-2">
+                {components.map((component) => (
+                  <div key={component.id} className="rounded-[10px] border border-neutral-200 p-2 text-[11px]">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={component.name}
+                        onChange={(e) =>
+                          setComponents((prev) =>
+                            prev.map((c) => (c.id === component.id ? { ...c, name: e.target.value } : c)),
+                          )
+                        }
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => insertComponent(component.id)}
+                        className="rounded-full border px-2 py-1 text-[10px]"
+                      >
+                        추가
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteComponent(component.id)}
+                        className="rounded-full border px-2 py-1 text-[10px]"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                    {component.variants.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {component.variants.map((variant) => (
+                          <button
+                            key={variant.id}
+                            type="button"
+                            onClick={() => insertComponent(component.id, variant.id)}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            {variant.name}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {/* 레이어 목록: 표시/잠금/이름 */}
           {nodes.length > 0 ? (
             <div className="mt-4">
@@ -1883,6 +3601,7 @@ export default function EditorView() {
               <div>Ctrl/Cmd+[ ]: 레이어 순서 (Shift: 맨앞/맨뒤)</div>
               <div>Ctrl/Cmd+S: 저장 | Ctrl/Cmd+Enter: 배포</div>
               <div>속성: X,Y,W,H | 회전 | 투명도 | 캔버스 W,H</div>
+              <div>스마트 가이드: 오브젝트/캔버스 기준 자동 정렬 스냅</div>
               <div>Space+드래그: 패닝 | Ctrl+휠: 줌</div>
             </div>
           </div>
@@ -2342,6 +4061,98 @@ export default function EditorView() {
                   <button type="button" onClick={deleteSelected} className="rounded-full border px-3 py-1 text-[11px]">
                     삭제
                   </button>
+                  <button type="button" onClick={() => rotateSelected(-90)} className="rounded-full border px-3 py-1 text-[11px]">
+                    90° 왼쪽
+                  </button>
+                  <button type="button" onClick={() => rotateSelected(90)} className="rounded-full border px-3 py-1 text-[11px]">
+                    90° 오른쪽
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-[12px] bg-neutral-50 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">제약</div>
+                <div className="mt-3 space-y-2 text-[10px] text-neutral-600">
+                  <div className="font-semibold text-neutral-700">가로</div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "pinLeft", ["centerX", "scaleX"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.pinLeft ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      왼쪽
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "centerX", ["pinLeft", "pinRight", "scaleX"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.centerX ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      가운데
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "pinRight", ["centerX", "scaleX"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.pinRight ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      오른쪽
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "scaleX", ["pinLeft", "pinRight", "centerX"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.scaleX ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      스케일
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateConstraint(selectedNode.id, { pinLeft: true, pinRight: true, centerX: false, scaleX: false })}
+                      className={`rounded-full border px-2 py-1 ${
+                        selectedNode.constraints?.pinLeft && selectedNode.constraints?.pinRight ? "bg-neutral-900 text-white" : ""
+                      }`}
+                    >
+                      좌우 고정
+                    </button>
+                  </div>
+                  <div className="font-semibold text-neutral-700">세로</div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "pinTop", ["centerY", "scaleY"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.pinTop ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      위
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "centerY", ["pinTop", "pinBottom", "scaleY"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.centerY ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      가운데
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "pinBottom", ["centerY", "scaleY"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.pinBottom ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      아래
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleConstraintExclusive(selectedNode.id, "scaleY", ["pinTop", "pinBottom", "centerY"])}
+                      className={`rounded-full border px-2 py-1 ${selectedNode.constraints?.scaleY ? "bg-neutral-900 text-white" : ""}`}
+                    >
+                      스케일
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateConstraint(selectedNode.id, { pinTop: true, pinBottom: true, centerY: false, scaleY: false })}
+                      className={`rounded-full border px-2 py-1 ${
+                        selectedNode.constraints?.pinTop && selectedNode.constraints?.pinBottom ? "bg-neutral-900 text-white" : ""
+                      }`}
+                    >
+                      상하 고정
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -2366,10 +4177,821 @@ export default function EditorView() {
                       options={BLEND_MODE_OPTIONS}
                     />
                   </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <PropertyField
+                      label="밝기(%)"
+                      value={Number(selectedNode.props.filterBrightness ?? 100)}
+                      onChange={(value) => updateNodeProps(selectedNode.id, { filterBrightness: Number(value) })}
+                    />
+                    <PropertyField
+                      label="대비(%)"
+                      value={Number(selectedNode.props.filterContrast ?? 100)}
+                      onChange={(value) => updateNodeProps(selectedNode.id, { filterContrast: Number(value) })}
+                    />
+                    <PropertyField
+                      label="채도(%)"
+                      value={Number(selectedNode.props.filterSaturate ?? 100)}
+                      onChange={(value) => updateNodeProps(selectedNode.id, { filterSaturate: Number(value) })}
+                    />
+                    <PropertyField
+                      label="색상 회전(°)"
+                      value={Number(selectedNode.props.filterHue ?? 0)}
+                      onChange={(value) => updateNodeProps(selectedNode.id, { filterHue: Number(value) })}
+                    />
+                    <PropertyField
+                      label="흑백(%)"
+                      value={Number(selectedNode.props.filterGrayscale ?? 0)}
+                      onChange={(value) => updateNodeProps(selectedNode.id, { filterGrayscale: Number(value) })}
+                    />
+                  </div>
                   <div className="text-[10px] text-neutral-400">예시: 0 12px 30px rgba(0,0,0,0.15)</div>
                 </div>
               </div>
 
+              <div className="rounded-[12px] bg-neutral-50 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">스타일</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" onClick={copyStyleFromSelection} className="rounded-full border px-3 py-1 text-[11px]">
+                    스타일 복사
+                  </button>
+                  <button type="button" onClick={pasteStyleToSelection} className="rounded-full border px-3 py-1 text-[11px]">
+                    스타일 붙여넣기
+                  </button>
+                  <button type="button" onClick={saveStylePreset} className="rounded-full border px-3 py-1 text-[11px]">
+                    프리셋 저장
+                  </button>
+                </div>
+                <div className="mt-3">
+                  <TextField label="프리셋 이름" value={presetName} onChange={(value) => setPresetName(value)} />
+                </div>
+                <div className="mt-3 space-y-2">
+                  {stylePresets.length === 0 ? (
+                    <div className="text-[10px] text-neutral-400">저장된 프리셋이 없습니다.</div>
+                  ) : (
+                    stylePresets.map((preset) => (
+                      <div key={preset.id} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={preset.name}
+                          onChange={(e) =>
+                            setStylePresets((prev) =>
+                              prev.map((p) => (p.id === preset.id ? { ...p, name: e.target.value } : p)),
+                            )
+                          }
+                          className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => applyStyleToSelection(preset.props)}
+                          className="rounded-full border px-2 py-1 text-[10px]"
+                        >
+                          적용
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteStylePreset(preset.id)}
+                          className="rounded-full border px-2 py-1 text-[10px]"
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[12px] bg-neutral-50 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">스타일 토큰</div>
+                <div className="mt-3 space-y-4">
+                  <div>
+                    <div className="text-[10px] font-semibold text-neutral-500">색상</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={colorTokenDraft.name}
+                        onChange={(e) => setColorTokenDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="이름"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <input
+                        type="color"
+                        value={colorTokenDraft.value}
+                        onChange={(e) => setColorTokenDraft((prev) => ({ ...prev, value: e.target.value }))}
+                        className="h-7 w-9 rounded border border-neutral-200 bg-white"
+                      />
+                      <button type="button" onClick={addColorToken} className="rounded-full border px-2 py-1 text-[10px]">
+                        추가
+                      </button>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {styleTokens.colors.length === 0 ? (
+                        <div className="text-[10px] text-neutral-400">등록된 색상이 없습니다.</div>
+                      ) : (
+                        styleTokens.colors.map((token) => (
+                          <div key={token.id} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={token.name}
+                              onChange={(e) => updateTokenName("colors", token.id, e.target.value)}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <input
+                              type="color"
+                              value={token.value}
+                              onChange={(e) => updateTokenValue("colors", token.id, e.target.value)}
+                              className="h-7 w-9 rounded border border-neutral-200 bg-white"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => applyStyleToSelection({ fill: token.value })}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              채우기
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => applyStyleToSelection({ borderColor: token.value })}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              테두리
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => applyStyleToSelection({ color: token.value })}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              텍스트
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteToken("colors", token.id)}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[10px] font-semibold text-neutral-500">모서리</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={radiusTokenDraft.name}
+                        onChange={(e) => setRadiusTokenDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="이름"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <input
+                        type="number"
+                        value={radiusTokenDraft.value}
+                        onChange={(e) => setRadiusTokenDraft((prev) => ({ ...prev, value: Number(e.target.value) }))}
+                        className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <button type="button" onClick={addRadiusToken} className="rounded-full border px-2 py-1 text-[10px]">
+                        추가
+                      </button>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {styleTokens.radii.length === 0 ? (
+                        <div className="text-[10px] text-neutral-400">등록된 모서리가 없습니다.</div>
+                      ) : (
+                        styleTokens.radii.map((token) => (
+                          <div key={token.id} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={token.name}
+                              onChange={(e) => updateTokenName("radii", token.id, e.target.value)}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <input
+                              type="number"
+                              value={token.value}
+                              onChange={(e) => updateTokenValue("radii", token.id, Number(e.target.value))}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => applyStyleToSelection({ radius: token.value })}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              적용
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteToken("radii", token.id)}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[10px] font-semibold text-neutral-500">텍스트 크기</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={textSizeTokenDraft.name}
+                        onChange={(e) => setTextSizeTokenDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="이름"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <input
+                        type="number"
+                        value={textSizeTokenDraft.value}
+                        onChange={(e) => setTextSizeTokenDraft((prev) => ({ ...prev, value: Number(e.target.value) }))}
+                        className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <button type="button" onClick={addTextSizeToken} className="rounded-full border px-2 py-1 text-[10px]">
+                        추가
+                      </button>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {styleTokens.textSizes.length === 0 ? (
+                        <div className="text-[10px] text-neutral-400">등록된 크기가 없습니다.</div>
+                      ) : (
+                        styleTokens.textSizes.map((token) => (
+                          <div key={token.id} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={token.name}
+                              onChange={(e) => updateTokenName("textSizes", token.id, e.target.value)}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <input
+                              type="number"
+                              value={token.value}
+                              onChange={(e) => updateTokenValue("textSizes", token.id, Number(e.target.value))}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => applyStyleToSelection({ fontSize: token.value })}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              적용
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteToken("textSizes", token.id)}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[10px] font-semibold text-neutral-500">그림자</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={shadowTokenDraft.name}
+                        onChange={(e) => setShadowTokenDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="이름"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <input
+                        type="text"
+                        value={shadowTokenDraft.value}
+                        onChange={(e) => setShadowTokenDraft((prev) => ({ ...prev, value: e.target.value }))}
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <button type="button" onClick={addShadowToken} className="rounded-full border px-2 py-1 text-[10px]">
+                        추가
+                      </button>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {styleTokens.shadows.length === 0 ? (
+                        <div className="text-[10px] text-neutral-400">등록된 그림자가 없습니다.</div>
+                      ) : (
+                        styleTokens.shadows.map((token) => (
+                          <div key={token.id} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={token.name}
+                              onChange={(e) => updateTokenName("shadows", token.id, e.target.value)}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <input
+                              type="text"
+                              value={token.value}
+                              onChange={(e) => updateTokenValue("shadows", token.id, e.target.value)}
+                              className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => applyStyleToSelection({ shadow: token.value })}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              적용
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteToken("shadows", token.id)}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[10px] font-semibold text-neutral-500">글꼴</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={fontTokenDraft.name}
+                        onChange={(e) => setFontTokenDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="이름"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <input
+                        type="text"
+                        value={fontTokenDraft.value}
+                        onChange={(e) => setFontTokenDraft((prev) => ({ ...prev, value: e.target.value }))}
+                        placeholder="예: Pretendard"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <button type="button" onClick={addFontToken} className="rounded-full border px-2 py-1 text-[10px]">
+                        추가
+                      </button>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {styleTokens.fonts.length === 0 ? (
+                        <div className="text-[10px] text-neutral-400">등록된 글꼴이 없습니다.</div>
+                      ) : (
+                        styleTokens.fonts.map((token) => (
+                          <div key={token.id} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={token.name}
+                              onChange={(e) => updateTokenName("fonts", token.id, e.target.value)}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <input
+                              type="text"
+                              value={token.value}
+                              onChange={(e) => updateTokenValue("fonts", token.id, e.target.value)}
+                              className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => applyStyleToSelection({ fontFamily: token.value })}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              적용
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteToken("fonts", token.id)}
+                              className="rounded-full border px-2 py-1 text-[10px]"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-[12px] bg-neutral-50 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">컴포넌트</div>
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <div className="text-[10px] font-semibold text-neutral-500">선택에서 생성</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={componentNameDraft}
+                        onChange={(e) => setComponentNameDraft(e.target.value)}
+                        placeholder="컴포넌트 이름"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={createComponentFromSelection}
+                        className="rounded-full border px-2 py-1 text-[10px]"
+                      >
+                        생성
+                      </button>
+                    </div>
+                  </div>
+
+                  {activeComponent ? (
+                    <div className="rounded-[10px] border border-neutral-200 bg-white p-2">
+                      <div className="text-[10px] font-semibold text-neutral-500">선택 컴포넌트</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={activeComponent.name}
+                          onChange={(e) =>
+                            setComponents((prev) =>
+                              prev.map((c) => (c.id === activeComponent.id ? { ...c, name: e.target.value } : c)),
+                            )
+                          }
+                          className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateComponentFromSelection(activeComponent.id, selectionVariantId ?? undefined)}
+                          className="rounded-full border px-2 py-1 text-[10px]"
+                        >
+                          업데이트
+                        </button>
+                        {selectionInstanceId ? (
+                          <button
+                            type="button"
+                            onClick={() => detachComponentInstance(selectionInstanceId)}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            분리
+                          </button>
+                        ) : null}
+                        {selectionInstanceId ? (
+                          <button
+                            type="button"
+                            onClick={() => resetInstanceOverrides(activeComponent.id, selectionVariantId ?? null, selectionInstanceId)}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            오버라이드 초기화
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="mt-2 text-[10px] text-neutral-400">
+                        {selectionInstanceId ? `인스턴스: ${selectionInstanceId}` : "인스턴스가 아닙니다."}
+                        {selectionVariantId
+                          ? ` / 변형: ${activeComponent.variants.find((v) => v.id === selectionVariantId)?.name ?? "알 수 없음"}`
+                          : " / 기본"}
+                      </div>
+                      {selectionInstanceId ? (
+                        <div className="mt-3">
+                          <div className="text-[10px] font-semibold text-neutral-500">변형 적용</div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => applyVariantToInstance(activeComponent.id, null, selectionInstanceId)}
+                              className={`rounded-full border px-2 py-1 text-[10px] ${
+                                !selectionVariantId ? "bg-neutral-900 text-white" : ""
+                              }`}
+                            >
+                              기본
+                            </button>
+                            {activeComponent.variants.map((variant) => (
+                              <button
+                                key={variant.id}
+                                type="button"
+                                onClick={() => applyVariantToInstance(activeComponent.id, variant.id, selectionInstanceId)}
+                                className={`rounded-full border px-2 py-1 text-[10px] ${
+                                  selectionVariantId === variant.id ? "bg-neutral-900 text-white" : ""
+                                }`}
+                              >
+                                {variant.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {selectionInstanceId ? (
+                        <div className="mt-3 rounded-[10px] border border-neutral-200 bg-white p-2">
+                          <div className="text-[10px] font-semibold text-neutral-500">오버라이드</div>
+                          {instanceOverrideSummary.length === 0 ? (
+                            <div className="mt-2 text-[10px] text-neutral-400">변경된 오버라이드가 없습니다.</div>
+                          ) : (
+                            <div className="mt-2 space-y-2">
+                              {instanceOverrideSummary.map((entry) => (
+                                <div key={entry.nodeId} className="rounded border border-neutral-100 bg-neutral-50 p-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-[11px] font-medium text-neutral-700">{entry.label}</div>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        resetInstanceNodeOverrides(
+                                          activeComponent.id,
+                                          selectionVariantId ?? null,
+                                          selectionInstanceId,
+                                          entry.nodeId,
+                                        )
+                                      }
+                                      className="rounded-full border px-2 py-1 text-[10px]"
+                                    >
+                                      노드 초기화
+                                    </button>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-1">
+                                    {entry.keys.map((key) => (
+                                      <span key={key} className="rounded-full bg-white px-2 py-0.5 text-[10px] text-neutral-500">
+                                        {key}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+
+                      <div className="mt-3">
+                        <div className="text-[10px] font-semibold text-neutral-500">변형 생성</div>
+                        <div className="mt-2 flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={variantNameDraft}
+                            onChange={(e) => setVariantNameDraft(e.target.value)}
+                            placeholder="변형 이름"
+                            className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => createVariantFromSelection(activeComponent.id)}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            추가
+                          </button>
+                        </div>
+                      </div>
+                      {activeComponent.variants.length > 0 ? (
+                        <div className="mt-2 space-y-2">
+                          {activeComponent.variants.map((variant) => (
+                            <div key={variant.id} className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value={variant.name}
+                                onChange={(e) =>
+                                  setComponents((prev) =>
+                                    prev.map((c) =>
+                                      c.id === activeComponent.id
+                                        ? {
+                                            ...c,
+                                            variants: c.variants.map((v) =>
+                                              v.id === variant.id ? { ...v, name: e.target.value } : v,
+                                            ),
+                                          }
+                                        : c,
+                                    ),
+                                  )
+                                }
+                                className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => updateComponentFromSelection(activeComponent.id, variant.id)}
+                                className="rounded-full border px-2 py-1 text-[10px]"
+                              >
+                                업데이트
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-neutral-400">선택된 컴포넌트가 없습니다.</div>
+                  )}
+                </div>
+              </div>
+
+
+
+              <div className="rounded-[12px] bg-neutral-50 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">레이아웃 그룹</div>
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <div className="text-[10px] font-semibold text-neutral-500">선택에서 생성</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={layoutGroupNameDraft}
+                        onChange={(e) => setLayoutGroupNameDraft(e.target.value)}
+                        placeholder="그룹 이름"
+                        className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={createLayoutGroupFromSelection}
+                        className="rounded-full border px-2 py-1 text-[10px]"
+                      >
+                        생성
+                      </button>
+                    </div>
+                  </div>
+                  {layoutGroups.length === 0 ? (
+                    <div className="text-[10px] text-neutral-400">레이아웃 그룹이 없습니다.</div>
+                  ) : (
+                    layoutGroups.map((group) => (
+                      <div key={group.id} className="rounded-[10px] border border-neutral-200 bg-white p-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="text"
+                            value={group.name}
+                            onChange={(e) =>
+                              setLayoutGroups((prev) =>
+                                prev.map((g) => (g.id === group.id ? { ...g, name: e.target.value } : g)),
+                              )
+                            }
+                            className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => applyLayoutGroupNow(group.id)}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            적용
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => selectedCount > 0 && updateLayoutGroupNodes(group.id, selectedIds)}
+                            disabled={selectedCount === 0}
+                            className="rounded-full border px-2 py-1 text-[10px] disabled:opacity-50"
+                          >
+                            선택 반영
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteLayoutGroup(group.id)}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            삭제
+                          </button>
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <SelectField
+                            label="방향"
+                            value={group.settings.dir}
+                            onChange={(value) =>
+                              updateLayoutGroupSettings(group.id, { dir: value === "column" ? "column" : "row" })
+                            }
+                            options={[
+                              { value: "row", label: "가로" },
+                              { value: "column", label: "세로" },
+                            ]}
+                          />
+                          <PropertyField
+                            label="간격"
+                            value={Number(group.settings.gap ?? 0)}
+                            onChange={(value) => updateLayoutGroupSettings(group.id, { gap: Number(value) })}
+                          />
+                          <SelectField
+                            label="정렬(교차축)"
+                            value={group.settings.align}
+                            onChange={(value) =>
+                              updateLayoutGroupSettings(group.id, {
+                                align: ["start", "center", "end", "stretch"].includes(value) ? (value as LayoutSettings["align"]) : "start",
+                              })
+                            }
+                            options={[
+                              { value: "start", label: "시작" },
+                              { value: "center", label: "중앙" },
+                              { value: "end", label: "끝" },
+                              { value: "stretch", label: "채우기" },
+                            ]}
+                          />
+                          <SelectField
+                            label="정렬(주축)"
+                            value={group.settings.justify}
+                            onChange={(value) =>
+                              updateLayoutGroupSettings(group.id, {
+                                justify: ["start", "center", "end", "space-between"].includes(value)
+                                  ? (value as LayoutSettings["justify"])
+                                  : "start",
+                              })
+                            }
+                            options={[
+                              { value: "start", label: "시작" },
+                              { value: "center", label: "중앙" },
+                              { value: "end", label: "끝" },
+                              { value: "space-between", label: "균등" },
+                            ]}
+                          />
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                          <label className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(group.settings.auto)}
+                              onChange={(e) => updateLayoutGroupSettings(group.id, { auto: e.target.checked })}
+                            />
+                            자동 정렬
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(group.settings.wrap)}
+                              onChange={(e) => updateLayoutGroupSettings(group.id, { wrap: e.target.checked })}
+                            />
+                            줄바꿈
+                          </label>
+                        </div>
+                        {group.settings.wrap ? (
+                          <div className="mt-2">
+                            <PropertyField
+                              label="줄 너비"
+                              value={Number(group.settings.wrapSize ?? 0)}
+                              onChange={(value) =>
+                                updateLayoutGroupSettings(group.id, { wrapSize: Number(value) || undefined })
+                              }
+                            />
+                          </div>
+                        ) : null}
+                        <div className="mt-2 grid grid-cols-4 gap-2">
+                          <PropertyField
+                            label="패딩 T"
+                            value={Number(group.settings.padding?.t ?? 0)}
+                            onChange={(value) =>
+                              updateLayoutGroupSettings(group.id, {
+                                padding: { ...group.settings.padding, t: Number(value) },
+                              })
+                            }
+                          />
+                          <PropertyField
+                            label="패딩 R"
+                            value={Number(group.settings.padding?.r ?? 0)}
+                            onChange={(value) =>
+                              updateLayoutGroupSettings(group.id, {
+                                padding: { ...group.settings.padding, r: Number(value) },
+                              })
+                            }
+                          />
+                          <PropertyField
+                            label="패딩 B"
+                            value={Number(group.settings.padding?.b ?? 0)}
+                            onChange={(value) =>
+                              updateLayoutGroupSettings(group.id, {
+                                padding: { ...group.settings.padding, b: Number(value) },
+                              })
+                            }
+                          />
+                          <PropertyField
+                            label="패딩 L"
+                            value={Number(group.settings.padding?.l ?? 0)}
+                            onChange={(value) =>
+                              updateLayoutGroupSettings(group.id, {
+                                padding: { ...group.settings.padding, l: Number(value) },
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+
+              {multiBooleanSelection ? (
+                <div className="rounded-[12px] bg-neutral-50 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">경로 불리언</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => runPathBoolean("union")} className="rounded-full border px-2 py-1 text-[10px]">
+                      합치기
+                    </button>
+                    <button type="button" onClick={() => runPathBoolean("subtract")} className="rounded-full border px-2 py-1 text-[10px]">
+                      빼기
+                    </button>
+                    <button type="button" onClick={() => runPathBoolean("intersect")} className="rounded-full border px-2 py-1 text-[10px]">
+                      교집합
+                    </button>
+                    <button type="button" onClick={() => runPathBoolean("exclude")} className="rounded-full border px-2 py-1 text-[10px]">
+                      제외
+                    </button>
+                  </div>
+                  {multiPathSelection ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button type="button" onClick={joinSelectedPaths} className="rounded-full border px-2 py-1 text-[10px]">
+                        경로 연결
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+
+              {convertibleSelection ? (
+                <div className="rounded-[12px] bg-neutral-50 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">경로 변환</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" onClick={convertSelectedToPath} className="rounded-full border px-2 py-1 text-[10px]">
+                      경로로 변환
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {/* Node details */}
               {selectedNode.type === "text" ? (
                 <div className="rounded-[12px] bg-white">
@@ -2444,12 +5066,10 @@ export default function EditorView() {
                     value={String(selectedNode.props.label ?? "")}
                     onChange={(value) => updateNodeProps(selectedNode.id, { label: value })}
                   />
+                  <div className="mt-3">
+                    {renderFillControls(selectedNode, "fill", "채우기")}
+                  </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
-                    <ColorField
-                      label="채우기"
-                      value={String(selectedNode.props.fill ?? "#111111")}
-                      onChange={(value) => updateNodeProps(selectedNode.id, { fill: value })}
-                    />
                     <ColorField
                       label="텍스트 색상"
                       value={String(selectedNode.props.color ?? "#FFFFFF")}
@@ -2628,11 +5248,7 @@ export default function EditorView() {
 
               {selectedNode.type === "box" ? (
                 <div className="rounded-[12px] bg-white">
-                  <ColorField
-                    label="배경"
-                    value={String(selectedNode.props.background ?? "#F5F5F5")}
-                    onChange={(value) => updateNodeProps(selectedNode.id, { background: value })}
-                  />
+                  {renderFillControls(selectedNode, "background", "배경")}
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <ColorField
                       label="테두리"
@@ -2661,11 +5277,7 @@ export default function EditorView() {
 
               {selectedNode.type === "frame" ? (
                 <div className="rounded-[12px] bg-white">
-                  <ColorField
-                    label="배경"
-                    value={String(selectedNode.props.background ?? "#FFFFFF")}
-                    onChange={(value) => updateNodeProps(selectedNode.id, { background: value })}
-                  />
+                  {renderFillControls(selectedNode, "background", "배경")}
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <ColorField
                       label="테두리"
@@ -2704,16 +5316,14 @@ export default function EditorView() {
                     value={String(selectedNode.props.href ?? "")}
                     onChange={(value) => updateNodeProps(selectedNode.id, { href: value })}
                   />
+                  <div className="mt-3">
+                    {renderFillControls(selectedNode, "background", "배경")}
+                  </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <ColorField
                       label="테두리"
                       value={String(selectedNode.props.border ?? "#3B82F6")}
                       onChange={(value) => updateNodeProps(selectedNode.id, { border: value })}
-                    />
-                    <ColorField
-                      label="배경"
-                      value={String(selectedNode.props.background ?? "rgba(59,130,246,0.10)")}
-                      onChange={(value) => updateNodeProps(selectedNode.id, { background: value })}
                     />
                     <ColorField
                       label="텍스트 색상"
@@ -2780,11 +5390,7 @@ export default function EditorView() {
 
               {selectedNode.type === "shape_rect" ? (
                 <div className="rounded-[12px] bg-white">
-                  <ColorField
-                    label="채우기"
-                    value={String(selectedNode.props.fill ?? "#EDEDED")}
-                    onChange={(value) => updateNodeProps(selectedNode.id, { fill: value })}
-                  />
+                  {renderFillControls(selectedNode, "fill", "채우기")}
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <ColorField
                       label="선"
@@ -2813,11 +5419,7 @@ export default function EditorView() {
 
               {selectedNode.type === "shape_ellipse" ? (
                 <div className="rounded-[12px] bg-white">
-                  <ColorField
-                    label="채우기"
-                    value={String(selectedNode.props.fill ?? "#EDEDED")}
-                    onChange={(value) => updateNodeProps(selectedNode.id, { fill: value })}
-                  />
+                  {renderFillControls(selectedNode, "fill", "채우기")}
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <ColorField
                       label="선"
@@ -2921,6 +5523,122 @@ export default function EditorView() {
                     />
                     <div className="mt-2 text-[10px] text-neutral-400">형식: 0.1,0.2; 0.9,0.8 (0~1 또는 0~100)</div>
                   </div>
+                  {(() => {
+                    const pts = parsePathPointsToArray(selectedNode.props.points);
+                    return (
+                      <div className="mt-3 space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => updatePathPoints(selectedNode.id, [...pts, [0.5, 0.5]])}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            포인트 추가
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updatePathPoints(selectedNode.id, [...pts].reverse())}
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            반전
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updatePathPoints(
+                                selectedNode.id,
+                                pts.map(([x, y]) => [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))]),
+                              )
+                            }
+                            className="rounded-full border px-2 py-1 text-[10px]"
+                          >
+                            정규화
+                          </button>
+                        </div>
+                        {pts.length === 0 ? (
+                          <div className="text-[10px] text-neutral-400">포인트가 없습니다.</div>
+                        ) : (
+                          pts.map(([x, y], idx) => (
+                            <div key={`pt-${idx}`} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={Number.isFinite(x) ? x : 0}
+                                onChange={(e) => {
+                                  const next = [...pts];
+                                  next[idx] = [Number(e.target.value), next[idx][1]];
+                                  updatePathPoints(selectedNode.id, next);
+                                }}
+                                className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={Number.isFinite(y) ? y : 0}
+                                onChange={(e) => {
+                                  const next = [...pts];
+                                  next[idx] = [next[idx][0], Number(e.target.value)];
+                                  updatePathPoints(selectedNode.id, next);
+                                }}
+                                className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => updatePathPoints(selectedNode.id, pts.filter((_, i) => i !== idx))}
+                                className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                              >
+                                삭제
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    );
+                  })()}
+                  <div className="mt-3 space-y-2">
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <PropertyField
+                        label="오프셋(px)"
+                        value={pathOffsetDraft}
+                        onChange={(value) => setPathOffsetDraft(Number(value))}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => offsetPath(selectedNode.id, Number(pathOffsetDraft) || 0)}
+                        className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                      >
+                        오프셋 적용
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <PropertyField
+                        label="스무딩(회)"
+                        value={pathSmoothDraft}
+                        onChange={(value) => setPathSmoothDraft(Number(value))}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => smoothPath(selectedNode.id, Number(pathSmoothDraft) || 1)}
+                        className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                      >
+                        스무딩
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <PropertyField
+                        label="단순화(0~1)"
+                        value={pathSimplifyDraft}
+                        onChange={(value) => setPathSimplifyDraft(Number(value))}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => simplifyPath(selectedNode.id, Number(pathSimplifyDraft) || 0.02)}
+                        className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                      >
+                        단순화
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : null}
 
@@ -2931,12 +5649,10 @@ export default function EditorView() {
                     value={String(selectedNode.props.placeholder ?? "")}
                     onChange={(value) => updateNodeProps(selectedNode.id, { placeholder: value })}
                   />
+                  <div className="mt-3">
+                    {renderFillControls(selectedNode, "fill", "채우기")}
+                  </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
-                    <ColorField
-                      label="채우기"
-                      value={String(selectedNode.props.fill ?? "#FFFFFF")}
-                      onChange={(value) => updateNodeProps(selectedNode.id, { fill: value })}
-                    />
                     <ColorField
                       label="테두리"
                       value={String(selectedNode.props.borderColor ?? selectedNode.props.stroke ?? "#E5E5E5")}
@@ -3008,12 +5724,10 @@ export default function EditorView() {
                     value={String(selectedNode.props.placeholder ?? "")}
                     onChange={(value) => updateNodeProps(selectedNode.id, { placeholder: value })}
                   />
+                  <div className="mt-3">
+                    {renderFillControls(selectedNode, "fill", "채우기")}
+                  </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
-                    <ColorField
-                      label="채우기"
-                      value={String(selectedNode.props.fill ?? "#FFFFFF")}
-                      onChange={(value) => updateNodeProps(selectedNode.id, { fill: value })}
-                    />
                     <ColorField
                       label="테두리"
                       value={String(selectedNode.props.borderColor ?? selectedNode.props.stroke ?? "#E5E5E5")}
@@ -3145,12 +5859,10 @@ export default function EditorView() {
                     value={formatOptionList(selectedNode.props.options)}
                     onChange={(value) => updateNodeProps(selectedNode.id, { options: parseOptionList(value) })}
                   />
+                  <div className="mt-3">
+                    {renderFillControls(selectedNode, "fill", "채우기")}
+                  </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
-                    <ColorField
-                      label="채우기"
-                      value={String(selectedNode.props.fill ?? "#FFFFFF")}
-                      onChange={(value) => updateNodeProps(selectedNode.id, { fill: value })}
-                    />
                     <ColorField
                       label="테두리"
                       value={String(selectedNode.props.borderColor ?? selectedNode.props.stroke ?? "#E5E5E5")}
@@ -3268,16 +5980,14 @@ export default function EditorView() {
                     value={String(selectedNode.props.label ?? "")}
                     onChange={(value) => updateNodeProps(selectedNode.id, { label: value })}
                   />
+                  <div className="mt-3">
+                    {renderFillControls(selectedNode, "background", "배경")}
+                  </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <ColorField
                       label="색상"
                       value={String(selectedNode.props.color ?? "#111111")}
                       onChange={(value) => updateNodeProps(selectedNode.id, { color: value })}
-                    />
-                    <ColorField
-                      label="배경"
-                      value={String(selectedNode.props.background ?? "#F1F1F1")}
-                      onChange={(value) => updateNodeProps(selectedNode.id, { background: value })}
                     />
                     <PropertyField
                       label="모서리"
@@ -3338,8 +6048,7 @@ export default function EditorView() {
                 value={docMeta.width}
                 onChange={(v) => {
                   const w = Math.max(100, Math.min(2000, Number(v)));
-                  setDocMeta((prev) => ({ ...prev, width: w }));
-                  if (activeSceneId) setScenes((prev) => prev.map((s) => (s.id === activeSceneId ? { ...s, width: w } : s)));
+                  resizeCanvas(w, docMetaRef.current.height);
                 }}
               />
               <PropertyField
@@ -3347,8 +6056,7 @@ export default function EditorView() {
                 value={docMeta.height}
                 onChange={(v) => {
                   const h = Math.max(100, Math.min(2000, Number(v)));
-                  setDocMeta((prev) => ({ ...prev, height: h }));
-                  if (activeSceneId) setScenes((prev) => prev.map((s) => (s.id === activeSceneId ? { ...s, height: h } : s)));
+                  resizeCanvas(docMetaRef.current.width, h);
                 }}
               />
             </div>

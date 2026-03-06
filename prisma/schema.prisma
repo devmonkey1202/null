@@ -64,6 +64,36 @@ enum AdminRole {
   viewer
 }
 
+enum OrgMemberRole {
+  owner
+  admin
+  member
+  viewer
+}
+
+enum OrgMemberStatus {
+  invited
+  active
+  removed
+}
+
+enum TeamMemberRole {
+  lead
+  member
+}
+
+enum BackgroundJobStatus {
+  queued
+  running
+  succeeded
+  failed
+}
+
+enum AppSsoProvider {
+  oauth
+  saml
+}
+
 model Plan {
   id          PlanTier @id
   name        String
@@ -91,12 +121,84 @@ model User {
   upvotes      Upvote[]
   reports      Report[]
   comments     Comment[]
+  app_record_versions AppRecordVersion[] @relation("AppRecordVersionActorUser")
+  app_workflow_versions AppWorkflowVersion[] @relation("AppWorkflowVersionActorUser")
+  app_audit_logs AppAuditLog[] @relation("AppAuditActorUser")
+  page_audit_logs PageAuditLog[] @relation("PageAuditActorUser")
+  owned_orgs Organization[] @relation("OrgOwner")
+  org_members OrganizationMember[]
+}
+
+model Organization {
+  id         String   @id @default(cuid())
+  name       String
+  slug       String   @unique
+  owner_id   String
+  owner      User     @relation("OrgOwner", fields: [owner_id], references: [id])
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  members OrganizationMember[]
+  teams   Team[]
+  pages   Page[]
+
+  @@index([owner_id])
+}
+
+model OrganizationMember {
+  id         String           @id @default(cuid())
+  org_id     String
+  org        Organization     @relation(fields: [org_id], references: [id], onDelete: Cascade)
+  user_id    String?
+  user       User?            @relation(fields: [user_id], references: [id])
+  email      String?
+  role       OrgMemberRole    @default(member)
+  status     OrgMemberStatus  @default(invited)
+  invited_at DateTime         @default(now())
+  joined_at  DateTime?
+  created_at DateTime         @default(now())
+  updated_at DateTime         @updatedAt
+
+  teams TeamMember[]
+
+  @@unique([org_id, user_id])
+  @@unique([org_id, email])
+  @@index([org_id, status])
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  org_id     String
+  org        Organization @relation(fields: [org_id], references: [id], onDelete: Cascade)
+  name       String
+  slug       String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  members TeamMember[]
+
+  @@unique([org_id, slug])
+  @@index([org_id])
+}
+
+model TeamMember {
+  id            String         @id @default(cuid())
+  team_id       String
+  team          Team           @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  org_member_id String
+  org_member    OrganizationMember @relation(fields: [org_member_id], references: [id], onDelete: Cascade)
+  role          TeamMemberRole @default(member)
+  created_at    DateTime       @default(now())
+
+  @@unique([team_id, org_member_id])
 }
 
 model Page {
   id                  String       @id @default(cuid())
   owner_id            String
   owner               User         @relation(fields: [owner_id], references: [id])
+  org_id              String?
+  org                 Organization? @relation(fields: [org_id], references: [id])
   title               String?
   anon_number         Int
   status              PageStatus   @default(draft)
@@ -158,6 +260,12 @@ model Page {
   app_users       AppUser[]
   app_secrets     AppSecret[]
   app_workflows   AppWorkflow[]
+  app_record_versions AppRecordVersion[]
+  app_workflow_versions AppWorkflowVersion[]
+  app_audit_logs AppAuditLog[]
+  page_audit_logs PageAuditLog[]
+  sso_connections AppSsoConnection[]
+  sso_accounts    AppSsoAccount[]
 
   chat_messages   ChatMessage[]
   todos           Todo[]
@@ -169,9 +277,32 @@ model Page {
   page_domains    PageDomain[]
   page_notifications PageNotification[]
   call_states      CallState[]
+  background_jobs  BackgroundJob[]
 
   @@index([owner_id, status])
   @@index([status, live_expires_at])
+  @@index([org_id])
+}
+
+model BackgroundJob {
+  id           String             @id @default(cuid())
+  page_id      String?
+  page         Page?              @relation(fields: [page_id], references: [id], onDelete: SetNull)
+  type         String
+  payload      Json?
+  status       BackgroundJobStatus @default(queued)
+  run_at       DateTime           @default(now())
+  locked_at    DateTime?
+  locked_by    String?
+  attempts     Int                @default(0)
+  max_attempts Int                @default(3)
+  last_error   String?
+  created_at   DateTime           @default(now())
+  updated_at   DateTime           @updatedAt
+  finished_at  DateTime?
+
+  @@index([status, run_at])
+  @@index([page_id])
 }
 
 model Comment {
@@ -442,11 +573,37 @@ model AppRecord {
   page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
   collection_slug String
   data            Json
+  created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
+  app_user_id     String?
+  app_user        AppUser? @relation("AppRecordAppUser", fields: [app_user_id], references: [id], onDelete: SetNull)
   collection      AppCollection @relation(fields: [page_id, collection_slug], references: [page_id, slug], onDelete: Cascade)
 
   @@index([page_id, collection_slug])
+  @@index([page_id, collection_slug, app_user_id])
+  @@index([app_user_id])
   @@index([page_id])
+}
+
+model AppRecordVersion {
+  id              String   @id @default(cuid())
+  page_id         String
+  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  record_id       String
+  collection_slug String
+  action          String   // created | updated | deleted
+  data            Json
+  actor_user_id   String?
+  actor_user      User?    @relation("AppRecordVersionActorUser", fields: [actor_user_id], references: [id])
+  actor_app_user_id String?
+  actor_app_user  AppUser? @relation("AppRecordVersionActorAppUser", fields: [actor_app_user_id], references: [id])
+  actor_anon_id   String?
+  created_at      DateTime @default(now())
+
+  @@index([page_id, record_id, created_at])
+  @@index([page_id, collection_slug])
+  @@index([actor_user_id])
+  @@index([actor_app_user_id])
 }
 
 model AppUser {
@@ -463,6 +620,11 @@ model AppUser {
   updated_at    DateTime @updatedAt
 
   sessions      AppSession[]
+  records       AppRecord[] @relation("AppRecordAppUser")
+  app_record_versions AppRecordVersion[] @relation("AppRecordVersionActorAppUser")
+  app_workflow_versions AppWorkflowVersion[] @relation("AppWorkflowVersionActorAppUser")
+  app_audit_logs AppAuditLog[] @relation("AppAuditActorAppUser")
+  sso_accounts AppSsoAccount[]
 
   @@unique([page_id, email])
   @@index([page_id])
@@ -480,6 +642,54 @@ model AppSession {
 
   @@index([token])
   @@index([app_user_id])
+}
+
+model AppSsoConnection {
+  id          String          @id @default(cuid())
+  page_id     String
+  page        Page            @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  provider    AppSsoProvider
+  name        String
+  enabled     Boolean         @default(true)
+  issuer      String?
+  client_id   String?
+  client_secret String?
+  authorization_url String?
+  token_url   String?
+  metadata_url String?
+  certificate_pem String?
+  entity_id   String?
+  acs_url     String?
+  sign_requests Boolean       @default(false)
+  auto_provision Boolean      @default(false)
+  allow_unlinked Boolean      @default(false)
+  default_role String?
+  created_at  DateTime        @default(now())
+  updated_at  DateTime        @updatedAt
+
+  accounts    AppSsoAccount[]
+
+  @@unique([page_id, provider, name])
+  @@index([page_id, provider])
+}
+
+model AppSsoAccount {
+  id           String          @id @default(cuid())
+  page_id      String
+  page         Page            @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  connection_id String
+  connection   AppSsoConnection @relation(fields: [connection_id], references: [id], onDelete: Cascade)
+  app_user_id  String
+  app_user     AppUser         @relation(fields: [app_user_id], references: [id], onDelete: Cascade)
+  provider     AppSsoProvider
+  subject      String
+  email        String?
+  created_at   DateTime        @default(now())
+  updated_at   DateTime        @updatedAt
+
+  @@unique([connection_id, subject])
+  @@index([page_id, app_user_id])
+  @@index([page_id, provider])
 }
 
 model AppSecret {
@@ -507,6 +717,68 @@ model AppWorkflow {
   updated_at DateTime @updatedAt
 
   @@index([page_id])
+}
+
+model AppWorkflowVersion {
+  id              String   @id @default(cuid())
+  page_id         String
+  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  workflow_id     String
+  name            String
+  trigger         Json
+  steps           Json
+  enabled         Boolean
+  version         Int
+  actor_user_id   String?
+  actor_user      User?    @relation("AppWorkflowVersionActorUser", fields: [actor_user_id], references: [id])
+  actor_app_user_id String?
+  actor_app_user  AppUser? @relation("AppWorkflowVersionActorAppUser", fields: [actor_app_user_id], references: [id])
+  actor_anon_id   String?
+  created_at      DateTime @default(now())
+
+  @@index([page_id, workflow_id, version])
+  @@index([page_id, created_at])
+  @@index([actor_user_id])
+  @@index([actor_app_user_id])
+}
+
+model AppAuditLog {
+  id                String   @id @default(cuid())
+  page_id           String
+  page              Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  action            String
+  target_type       String?
+  target_id         String?
+  actor_user_id     String?
+  actor_user        User?    @relation("AppAuditActorUser", fields: [actor_user_id], references: [id])
+  actor_app_user_id String?
+  actor_app_user    AppUser? @relation("AppAuditActorAppUser", fields: [actor_app_user_id], references: [id])
+  actor_anon_id     String?
+  meta              Json?
+  created_at        DateTime @default(now())
+
+  @@index([page_id, created_at])
+  @@index([action, created_at])
+  @@index([actor_user_id])
+  @@index([actor_app_user_id])
+}
+
+model PageAuditLog {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  action        String
+  target_type   String?
+  target_id     String?
+  actor_user_id String?
+  actor_user    User?    @relation("PageAuditActorUser", fields: [actor_user_id], references: [id])
+  actor_anon_id String?
+  meta          Json?
+  created_at    DateTime @default(now())
+
+  @@index([page_id, created_at])
+  @@index([action, created_at])
+  @@index([actor_user_id])
 }
 
 model AppWorkflowLog {
