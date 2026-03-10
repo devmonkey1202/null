@@ -1,11 +1,39 @@
 import type { PluginManifest } from "@/lib/app-plugins";
+import { createHash } from "crypto";
 
 export type StorePlugin = PluginManifest & {
   storeId: string;
   category: "editor" | "export" | "runtime" | "ops";
 };
 
-const STORE_VERSION = "2026.03.05";
+const STORE_VERSION = "2026.03.08";
+
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    const body = entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",");
+    return `{${body}}`;
+  }
+  return JSON.stringify(String(value));
+}
+
+function computeDigest(manifest: PluginManifest) {
+  const payload = {
+    id: manifest.id,
+    name: manifest.name,
+    description: manifest.description,
+    version: manifest.version,
+    permissions: manifest.permissions ?? [],
+    actions: manifest.actions ?? [],
+  };
+  return createHash("sha256").update(stableStringify(payload)).digest("hex");
+}
 
 const CATALOG: StorePlugin[] = [
   {
@@ -54,14 +82,29 @@ const CATALOG: StorePlugin[] = [
 ];
 
 export function listStorePlugins() {
-  return { version: STORE_VERSION, plugins: CATALOG };
+  const plugins = CATALOG.map((plugin) => {
+    const digest = computeDigest(plugin);
+    return { ...plugin, digest, storeVersion: STORE_VERSION, frozen: true };
+  });
+  return { version: STORE_VERSION, plugins };
 }
 
 export function getStorePlugin(storeId: string) {
-  return CATALOG.find((p) => p.storeId === storeId) ?? null;
+  const plugin = CATALOG.find((p) => p.storeId === storeId) ?? null;
+  if (!plugin) return null;
+  const digest = computeDigest(plugin);
+  return { ...plugin, digest, storeVersion: STORE_VERSION, frozen: true };
 }
 
 export function toManifest(storePlugin: StorePlugin): PluginManifest {
-  const { storeId: _storeId, category: _category, ...manifest } = storePlugin;
-  return manifest;
+  const { storeId, category: _category, ...manifest } = storePlugin;
+  const digest = storePlugin.digest ?? computeDigest(manifest);
+  return {
+    ...manifest,
+    storeId,
+    storeVersion: STORE_VERSION,
+    digest,
+    frozen: true,
+    installedAt: new Date().toISOString(),
+  };
 }

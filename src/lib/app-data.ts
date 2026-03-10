@@ -3,6 +3,7 @@
  */
 
 import { prisma } from "@/lib/db";
+import { type AppEnv, DEV_SUFFIX, toEnvSlug, stripDevSuffix } from "@/lib/app-env";
 import { randomBytes } from "crypto";
 import {
   buildListCacheKey,
@@ -50,6 +51,33 @@ export type SetSchemaOptions = {
   recordRollback?: boolean;
   migrationId?: string;
 };
+
+function envCollectionFilter(env: AppEnv) {
+  return env === "dev"
+    ? ({ slug: { endsWith: DEV_SUFFIX } } as const)
+    : ({ slug: { not: { endsWith: DEV_SUFFIX } } } as const);
+}
+
+function envRecordFilter(env: AppEnv) {
+  return env === "dev"
+    ? ({ collection_slug: { endsWith: DEV_SUFFIX } } as const)
+    : ({ collection_slug: { not: { endsWith: DEV_SUFFIX } } } as const);
+}
+
+function mapMigrationsToEnv(migrations: AppSchemaMigrations, env: AppEnv): AppSchemaMigrations {
+  if (env === "prod") return migrations;
+  const mapKeys = <T>(input?: Record<string, T>) => {
+    if (!input) return undefined;
+    return Object.fromEntries(
+      Object.entries(input).map(([slug, value]) => [toEnvSlug(slug, env), value])
+    ) as Record<string, T>;
+  };
+  return {
+    renameFields: mapKeys(migrations.renameFields),
+    deleteFields: mapKeys(migrations.deleteFields),
+    defaults: mapKeys(migrations.defaults),
+  };
+}
 
 export type AppRecordActor = {
   userId?: string;
@@ -292,15 +320,15 @@ export async function expandRelations(
   });
 }
 
-export async function getCollections(pageId: string) {
+export async function getCollections(pageId: string, env: AppEnv = "prod") {
   const list = await prisma.appCollection.findMany({
-    where: { page_id: pageId },
+    where: { page_id: pageId, ...envCollectionFilter(env) },
     orderBy: { slug: "asc" },
     select: { id: true, slug: true, name: true, strict: true, fields: true, created_at: true, updated_at: true },
   });
   return list.map((c) => ({
     id: c.id,
-    slug: c.slug,
+    slug: env === "dev" ? stripDevSuffix(c.slug) : c.slug,
     name: c.name,
     strict: c.strict ?? false,
     fields: c.fields as AppFieldDef[],
@@ -404,7 +432,8 @@ async function applyFieldMigrations(
 export async function rollbackSchemaMigration(
   pageId: string,
   migrationId: string,
-  options: { batchSize?: number } = {}
+  options: { batchSize?: number } = {},
+  env: AppEnv = "prod"
 ) {
   if (!migrationId) throw new Error("migration_id_required");
   const batchSize = Math.min(Math.max(options.batchSize ?? 200, 20), 1000);
@@ -415,7 +444,7 @@ export async function rollbackSchemaMigration(
 
   while (true) {
     const versions = await prisma.appRecordVersion.findMany({
-      where: { page_id: pageId, action },
+      where: { page_id: pageId, action, ...envRecordFilter(env) },
       orderBy: { id: "asc" },
       take: batchSize,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -459,14 +488,19 @@ export async function rollbackSchemaMigration(
 export async function setSchema(
   pageId: string,
   collections: AppCollectionDef[],
-  options: SetSchemaOptions = {}
+  options: SetSchemaOptions = {},
+  env: AppEnv = "prod"
 ) {
   const mode: SchemaMode = options.mode ?? "preserve";
   const batchSize = Math.min(Math.max(options.batchSize ?? 200, 20), 1000);
-  const normalized = collections.filter((c) => c && c.slug && c.name);
+  const normalized = collections.filter((c) => c && c.slug && c.name).map((c) => ({
+    ...c,
+    slug: toEnvSlug(c.slug, env),
+  }));
   const slugs = normalized.map((c) => c.slug);
+  const scopedMigrations = options.migrations ? mapMigrationsToEnv(options.migrations, env) : undefined;
   const migrationId =
-    options.migrations && options.recordRollback !== false
+    scopedMigrations && options.recordRollback !== false
       ? options.migrationId ?? randomBytes(6).toString("hex")
       : options.migrationId;
 
@@ -492,21 +526,33 @@ export async function setSchema(
 
     if (mode === "prune") {
       await tx.appRecord.deleteMany({
-        where: { page_id: pageId, collection_slug: { notIn: slugs.length ? slugs : ["__none__"] } },
+        where: {
+          page_id: pageId,
+          AND: [
+            envRecordFilter(env),
+            { collection_slug: { notIn: slugs.length ? slugs : ["__none__"] } },
+          ],
+        },
       });
       await tx.appCollection.deleteMany({
-        where: { page_id: pageId, slug: { notIn: slugs.length ? slugs : ["__none__"] } },
+        where: {
+          page_id: pageId,
+          AND: [
+            envCollectionFilter(env),
+            { slug: { notIn: slugs.length ? slugs : ["__none__"] } },
+          ],
+        },
       });
     }
   });
 
-  if (options.migrations) {
+  if (scopedMigrations) {
     const targets = new Set<string>();
-    Object.keys(options.migrations.renameFields ?? {}).forEach((slug) => targets.add(slug));
-    Object.keys(options.migrations.deleteFields ?? {}).forEach((slug) => targets.add(slug));
-    Object.keys(options.migrations.defaults ?? {}).forEach((slug) => targets.add(slug));
+    Object.keys(scopedMigrations.renameFields ?? {}).forEach((slug) => targets.add(slug));
+    Object.keys(scopedMigrations.deleteFields ?? {}).forEach((slug) => targets.add(slug));
+    Object.keys(scopedMigrations.defaults ?? {}).forEach((slug) => targets.add(slug));
     for (const slug of targets) {
-      await applyFieldMigrations(pageId, slug, options.migrations, batchSize, {
+      await applyFieldMigrations(pageId, slug, scopedMigrations, batchSize, {
         migrationId,
         recordRollback: options.recordRollback,
       });
@@ -520,9 +566,10 @@ export async function setSchema(
   return { migrationId };
 }
 
-export async function getCollectionBySlug(pageId: string, slug: string) {
+export async function getCollectionBySlug(pageId: string, slug: string, env: AppEnv = "prod") {
+  const targetSlug = toEnvSlug(slug, env);
   return prisma.appCollection.findUnique({
-    where: { page_id_slug: { page_id: pageId, slug } },
+    where: { page_id_slug: { page_id: pageId, slug: targetSlug } },
   });
 }
 
@@ -535,22 +582,24 @@ export async function listRecords(
     orderBy?: "created_at" | "updated_at";
     orderDir?: "asc" | "desc";
     appUserId?: string | null;
-  }
+  },
+  env: AppEnv = "prod"
 ) {
+  const resolvedSlug = toEnvSlug(collectionSlug, env);
   const limit = Math.min(Math.max(options?.limit ?? 50, 1), 200);
   const offset = Math.max(options?.offset ?? 0, 0);
   const orderBy = options?.orderBy ?? "created_at";
   const orderDir = options?.orderDir ?? "desc";
   const where: { page_id: string; collection_slug: string; app_user_id?: string } = {
     page_id: pageId,
-    collection_slug: collectionSlug,
+    collection_slug: resolvedSlug,
   };
   if (options?.appUserId) where.app_user_id = options.appUserId;
 
-  const version = await getCollectionCacheVersion(pageId, collectionSlug);
+  const version = await getCollectionCacheVersion(pageId, resolvedSlug);
   const cacheKey = buildListCacheKey(
     pageId,
-    collectionSlug,
+    resolvedSlug,
     version,
     limit,
     offset,
@@ -577,15 +626,22 @@ export async function listRecords(
   return result;
 }
 
-export async function getRecord(pageId: string, collectionSlug: string, id: string, options?: { appUserId?: string | null }) {
+export async function getRecord(
+  pageId: string,
+  collectionSlug: string,
+  id: string,
+  options?: { appUserId?: string | null },
+  env: AppEnv = "prod"
+) {
+  const resolvedSlug = toEnvSlug(collectionSlug, env);
   const where: { id: string; page_id: string; collection_slug: string; app_user_id?: string } = {
     id,
     page_id: pageId,
-    collection_slug: collectionSlug,
+    collection_slug: resolvedSlug,
   };
   if (options?.appUserId) where.app_user_id = options.appUserId;
-  const version = await getCollectionCacheVersion(pageId, collectionSlug);
-  const cacheKey = buildRecordCacheKey(pageId, collectionSlug, version, id, options?.appUserId ?? null);
+  const version = await getCollectionCacheVersion(pageId, resolvedSlug);
+  const cacheKey = buildRecordCacheKey(pageId, resolvedSlug, version, id, options?.appUserId ?? null);
   const cached = await getCachedValue<unknown>(cacheKey);
   if (cached) return cached as Awaited<ReturnType<typeof prisma.appRecord.findFirst>>;
   const record = await prisma.appRecord.findFirst({ where });
@@ -620,18 +676,20 @@ export async function createRecord(
   collectionSlug: string,
   data: Record<string, unknown>,
   actor?: AppRecordActor,
-  options?: { appUserId?: string | null }
+  options?: { appUserId?: string | null },
+  env: AppEnv = "prod"
 ) {
+  const resolvedSlug = toEnvSlug(collectionSlug, env);
   const record = await prisma.appRecord.create({
     data: {
       page_id: pageId,
-      collection_slug: collectionSlug,
+      collection_slug: resolvedSlug,
       data: data as object,
       ...(options?.appUserId !== undefined ? { app_user_id: options.appUserId } : {}),
     },
   });
-  await logRecordVersion(pageId, collectionSlug, record.id, "created", record.data as Record<string, unknown>, actor);
-  await bumpCollectionCacheVersion(pageId, collectionSlug);
+  await logRecordVersion(pageId, resolvedSlug, record.id, "created", record.data as Record<string, unknown>, actor);
+  await bumpCollectionCacheVersion(pageId, resolvedSlug);
   return record;
 }
 
@@ -642,9 +700,11 @@ export async function updateRecord(
   data: Partial<Record<string, unknown>>,
   options?: { replace?: boolean; appUserId?: string | null },
   actor?: AppRecordActor,
+  env: AppEnv = "prod",
 ) {
+  const resolvedSlug = toEnvSlug(collectionSlug, env);
   const existing = await prisma.appRecord.findFirst({
-    where: { id, page_id: pageId, collection_slug: collectionSlug },
+    where: { id, page_id: pageId, collection_slug: resolvedSlug },
   });
   if (!existing) return null;
   const merged = options?.replace
@@ -658,8 +718,8 @@ export async function updateRecord(
       ...(options?.appUserId !== undefined ? { app_user_id: options.appUserId } : {}),
     },
   });
-  await logRecordVersion(pageId, collectionSlug, record.id, "updated", record.data as Record<string, unknown>, actor);
-  await bumpCollectionCacheVersion(pageId, collectionSlug);
+  await logRecordVersion(pageId, resolvedSlug, record.id, "updated", record.data as Record<string, unknown>, actor);
+  await bumpCollectionCacheVersion(pageId, resolvedSlug);
   return record;
 }
 
@@ -668,9 +728,11 @@ export async function deleteRecord(
   collectionSlug: string,
   id: string,
   actor?: AppRecordActor,
+  env: AppEnv = "prod",
 ) {
+  const resolvedSlug = toEnvSlug(collectionSlug, env);
   const existing = await prisma.appRecord.findFirst({
-    where: { id, page_id: pageId, collection_slug: collectionSlug },
+    where: { id, page_id: pageId, collection_slug: resolvedSlug },
   });
   if (!existing) return null;
   await prisma.$transaction(async (tx) => {
@@ -678,7 +740,7 @@ export async function deleteRecord(
       data: {
         page_id: pageId,
         record_id: existing.id,
-        collection_slug: collectionSlug,
+        collection_slug: resolvedSlug,
         action: "deleted",
         data: existing.data as object,
         actor_user_id: actor?.userId ?? null,
@@ -688,6 +750,6 @@ export async function deleteRecord(
     });
     await tx.appRecord.delete({ where: { id } });
   });
-  await bumpCollectionCacheVersion(pageId, collectionSlug);
+  await bumpCollectionCacheVersion(pageId, resolvedSlug);
   return existing;
 }

@@ -17,6 +17,7 @@ import { parseJsonObject } from "@/lib/validation";
 import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
 import { resolveAppUserFromRequest } from "@/lib/app-request";
 import { isAppActionAllowedWithContext } from "@/lib/app-permissions";
+import { ensureDevCollections, readEnvFromRequest, resolveAppEnv } from "@/lib/app-env";
 
 type Params = { pageId: string; model: string; id: string };
 
@@ -50,7 +51,11 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     return apiErrorJson("permission_denied", 403, { detail: "app_user_read_required" });
   }
 
-  const coll = await getCollectionBySlug(pageId, model);
+  const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev" && isOwner) {
+    await ensureDevCollections(pageId);
+  }
+  const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);
   const fields = (coll.fields ?? []) as AppFieldDef[];
   const appUserField = getAppUserField(fields);
@@ -59,9 +64,15 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
   if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
   if (!isOwner && requiresAppUser && !appUser) return apiErrorJson("auth_required", 401);
 
-  const record = await getRecord(pageId, model, id, {
-    appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
-  });
+  const record = await getRecord(
+    pageId,
+    model,
+    id,
+    {
+      appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
+    },
+    env
+  );
   if (!record) return apiErrorJson("not_found", 404);
   if (appUser && !isAppActionAllowedWithContext(appUser.role, "read", {
     isOwner,
@@ -133,7 +144,11 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     return apiErrorJson("permission_denied", 403, { detail: "app_user_update_required" });
   }
 
-  const coll = await getCollectionBySlug(pageId, model);
+  const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev" && isOwner) {
+    await ensureDevCollections(pageId);
+  }
+  const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);
   const fields = (coll.fields ?? []) as AppFieldDef[];
   const appUserField = getAppUserField(fields);
@@ -156,9 +171,15 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     }
   }
 
-  const existing = await getRecord(pageId, model, id, {
-    appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
-  });
+  const existing = await getRecord(
+    pageId,
+    model,
+    id,
+    {
+      appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
+    },
+    env
+  );
   if (!existing) return apiErrorJson("not_found", 404);
   if (appUser && !isAppActionAllowedWithContext(appUser.role, "update", {
     isOwner,
@@ -193,6 +214,7 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     validated.data as Record<string, unknown>,
     updateOptions,
     { userId: user?.id, anonId: anonUserId ?? undefined, appUserId: appUser?.id },
+    env
   );
   if (!record) return apiErrorJson("not_found", 404);
   const changedFields = Object.keys(data as Record<string, unknown>);
@@ -253,7 +275,11 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
     return apiErrorJson("permission_denied", 403, { detail: "app_user_delete_required" });
   }
 
-  const coll = await getCollectionBySlug(pageId, model);
+  const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev" && isOwner) {
+    await ensureDevCollections(pageId);
+  }
+  const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);
   const fields = (coll.fields ?? []) as AppFieldDef[];
   const appUserField = getAppUserField(fields);
@@ -268,9 +294,15 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
     }
   }
 
-  const existing = await getRecord(pageId, model, id, {
-    appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
-  });
+  const existing = await getRecord(
+    pageId,
+    model,
+    id,
+    {
+      appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
+    },
+    env
+  );
   if (!existing) return apiErrorJson("not_found", 404);
   if (appUser && !isAppActionAllowedWithContext(appUser.role, "delete", {
     isOwner,
@@ -284,7 +316,7 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
     userId: user?.id,
     anonId: anonUserId ?? undefined,
     appUserId: appUser?.id,
-  });
+  }, env);
   if (!record) return apiErrorJson("not_found", 404);
   await logAppAudit({
     pageId,

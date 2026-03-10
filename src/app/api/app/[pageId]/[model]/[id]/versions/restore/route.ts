@@ -5,6 +5,7 @@ import { resolveAnonUserId } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { getCollectionBySlug, validateRecordData, type AppFieldDef } from "@/lib/app-data";
 import { logAppAudit } from "@/lib/app-audit";
+import { ensureDevCollections, readEnvFromRequest, resolveAppEnv, toEnvSlug } from "@/lib/app-env";
 
 type Params = { pageId: string; model: string; id: string };
 
@@ -32,16 +33,22 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   const { error, userId, anonId } = await requireOwner(pageId, req);
   if (error) return error;
 
+  const env = await resolveAppEnv(pageId, { isOwner: true, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev") {
+    await ensureDevCollections(pageId);
+  }
+  const resolvedSlug = toEnvSlug(model, env);
+
   const parsed = await req.json().catch(() => null);
   const body = bodySchema.safeParse(parsed);
   if (!body.success) return apiErrorJson("invalid_body", 400);
 
   const version = await prisma.appRecordVersion.findFirst({
-    where: { id: body.data.versionId, page_id: pageId, record_id: id, collection_slug: model },
+    where: { id: body.data.versionId, page_id: pageId, record_id: id, collection_slug: resolvedSlug },
   });
   if (!version) return apiErrorJson("not_found", 404);
 
-  const coll = await getCollectionBySlug(pageId, model);
+  const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);
   const fields = (coll.fields ?? []) as AppFieldDef[];
   const strict = Boolean((coll as { strict?: boolean }).strict);
@@ -52,7 +59,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   }
 
   const existing = await prisma.appRecord.findFirst({
-    where: { id, page_id: pageId, collection_slug: model },
+    where: { id, page_id: pageId, collection_slug: resolvedSlug },
   });
 
   const record = existing
@@ -64,7 +71,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
         data: {
           id,
           page_id: pageId,
-          collection_slug: model,
+          collection_slug: resolvedSlug,
           data: validated.data as object,
         },
       });
@@ -73,7 +80,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     data: {
       page_id: pageId,
       record_id: record.id,
-      collection_slug: model,
+      collection_slug: resolvedSlug,
       action: "restored",
       data: record.data as object,
       actor_user_id: userId,

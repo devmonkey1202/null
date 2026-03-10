@@ -142,6 +142,15 @@ export type Variable = {
   };
 };
 
+export type GlobalStateType = "string" | "number" | "boolean" | "json";
+
+export type GlobalStateItem = {
+  id: string;
+  key: string;
+  type: GlobalStateType;
+  defaultValue?: string | number | boolean | Record<string, unknown> | unknown[] | null;
+};
+
 export type StyleTokenType = "fill" | "stroke" | "text" | "effect";
 
 export type StyleToken = {
@@ -185,6 +194,7 @@ export type PrototypeAction =
   | { type: "url"; url: string; openInNewTab?: boolean; transition?: PrototypeTransition; delayMs?: number; condition?: PrototypeCondition }
   | { type: "submit"; url: string; method?: "POST" | "GET" | "PATCH" | "DELETE" | "PUT"; nextPageId?: string; delayMs?: number; condition?: PrototypeCondition }
   | { type: "setVariable"; variableId: string; value?: string | number | boolean; mode?: string }
+  | { type: "setGlobalState"; key: string; value?: string | number | boolean | Record<string, unknown> | unknown[] | null }
   | { type: "scrollTo"; targetNodeId: string; axis?: "x" | "y" | "both"; offset?: number; transition?: PrototypeTransition; delayMs?: number; condition?: PrototypeCondition }
   | { type: "setVariant"; variantId: string; targetNodeId?: string; delayMs?: number; condition?: PrototypeCondition }
   | { type: "apiCall"; url: string; method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; headers?: Record<string, string>; body?: Record<string, unknown>; responseVariable?: string; errorVariable?: string; onSuccess?: PrototypeAction; onError?: PrototypeAction; delayMs?: number; condition?: PrototypeCondition }
@@ -249,6 +259,29 @@ export type NodeDataBinding =
       editable?: boolean;
       allowDelete?: boolean;
     };
+
+export type WidgetExecution = "iframe" | "worker";
+export type WidgetCachePolicy = "default" | "no-store" | "immutable";
+
+export type NodeWidget = {
+  kind: "sandbox";
+  execution?: WidgetExecution;
+  src?: string;
+  html?: string;
+  script?: string;
+  title?: string;
+  sandbox?: string;
+  allow?: string;
+  referrerPolicy?: string;
+  timeoutMs?: number;
+  maxMessagesPerSec?: number;
+  allowedActions?: string[];
+  allowedHosts?: string[];
+  version?: string;
+  cachePolicy?: WidgetCachePolicy;
+  allowedScopes?: string[];
+  actionScopes?: Record<string, string[]>;
+};
 
 export type Frame = {
   x: number;
@@ -324,6 +357,7 @@ export type NodeOverrides = {
   heightPercent?: number;
   /** NOCODE 8: 슬롯 채우기. slotId -> 페이지 내 노드 id 배열 (해당 슬롯에 넣을 자식들) */
   slotContents?: Record<string, string[]>;
+  widget?: NodeWidget;
 };
 
 export interface Node {
@@ -375,6 +409,7 @@ export interface Node {
   slotId?: string;
   /** N1: 테이블 노드. 열 개수·헤더 행 여부. 자식들은 행×열 그리드로 배치됨 */
   table?: NodeTable;
+  widget?: NodeWidget;
   breakpointOverrides?: Record<string, {
     frame?: Partial<Frame>;
     style?: Partial<NodeStyle>;
@@ -435,6 +470,7 @@ export interface Doc {
   variables: Variable[];
   variableModes?: string[];
   variableMode?: string;
+  globalState?: GlobalStateItem[];
   components: Record<string, string>;
   componentVersions?: Record<string, ComponentVersion[]>;
   /** C1: 이 문서가 사용하는 팀/외부 라이브러리 목록. */
@@ -610,6 +646,7 @@ export function createDoc(): Doc {
     view: { zoom: 1, panX: -200, panY: -200 },
     styles: [],
     variables: [],
+    globalState: [],
     variableModes: ["기본"],
     variableMode: "기본",
     components: {},
@@ -741,6 +778,7 @@ export function cloneDoc(doc: Doc): Doc {
     variables: doc.variables.map((v) => ({ ...v, modes: v.modes ? { ...v.modes } : undefined })),
     variableModes: doc.variableModes ? [...doc.variableModes] : undefined,
     variableMode: doc.variableMode,
+    globalState: doc.globalState ? doc.globalState.map((item) => ({ ...item })) : undefined,
     components: { ...doc.components },
     componentVersions: doc.componentVersions ? JSON.parse(JSON.stringify(doc.componentVersions)) : undefined,
     libraries: doc.libraries ? doc.libraries.map((l) => ({ ...l })) : undefined,
@@ -772,6 +810,7 @@ export function hydrateDoc(raw: unknown): Doc {
     view: r.view && typeof r.view === "object" ? (r.view as Doc["view"]) : base.view,
     styles: Array.isArray(r.styles) ? (r.styles as StyleToken[]) : base.styles,
     variables: Array.isArray(r.variables) ? (r.variables as Variable[]) : base.variables,
+    globalState: Array.isArray(r.globalState) ? (r.globalState as GlobalStateItem[]) : base.globalState,
     components: r.components && typeof r.components === "object" ? (r.components as Record<string, string>) : base.components,
     componentVersions: r.componentVersions && typeof r.componentVersions === "object" ? (r.componentVersions as Doc["componentVersions"]) : base.componentVersions,
     libraries: Array.isArray(r.libraries) ? (r.libraries as Doc["libraries"]) : base.libraries,

@@ -23,9 +23,31 @@ export type PluginManifest = {
   maxAppVersion?: string;
   permissions?: string[];
   actions: PluginAction[];
+  storeId?: string;
+  storeVersion?: string;
+  digest?: string;
+  frozen?: boolean;
+  installedAt?: string;
+};
+
+export type PluginPermissionGrant = {
+  id: string;
+  name: string;
+  version?: string;
+  permissions: string[];
+  grantedAt: string;
+};
+
+export type PluginUpdatePolicy = {
+  id: string;
+  policy: "manual" | "auto" | "pinned";
+  pinnedVersion?: string;
+  updatedAt: string;
 };
 
 const PLUGIN_SETTING_KEY = "app_plugins";
+const PLUGIN_PERMISSION_KEY = "app_plugin_permissions";
+const PLUGIN_UPDATE_POLICY_KEY = "app_plugin_update_policies";
 const MAX_PLUGIN_MANIFESTS = 50;
 const MAX_PLUGIN_ACTIONS = 200;
 const MAX_PLUGIN_STEPS = 50;
@@ -52,6 +74,10 @@ const ALLOWED_PERMISSIONS = new Set([
   "export",
   "network",
   "ui",
+  "data_read",
+  "data_write",
+  "workflow",
+  "secrets_read",
 ]);
 
 const ACTION_PERMISSION: Record<string, string | null> = {
@@ -147,6 +173,12 @@ function normalizePluginManifest(raw: unknown): PluginManifest | null {
 
   if (!actions.length) return null;
 
+  const storeId = typeof input.storeId === "string" ? input.storeId : undefined;
+  const storeVersion = typeof input.storeVersion === "string" ? input.storeVersion : undefined;
+  const digest = typeof input.digest === "string" ? input.digest : undefined;
+  const frozen = typeof input.frozen === "boolean" ? input.frozen : undefined;
+  const installedAt = typeof input.installedAt === "string" ? input.installedAt : undefined;
+
   return {
     id: String(input.id),
     name: String(input.name),
@@ -156,6 +188,11 @@ function normalizePluginManifest(raw: unknown): PluginManifest | null {
     maxAppVersion: typeof input.maxAppVersion === "string" ? input.maxAppVersion : undefined,
     permissions: permissions.length ? permissions : undefined,
     actions,
+    storeId,
+    storeVersion,
+    digest,
+    frozen,
+    installedAt,
   };
 }
 
@@ -170,6 +207,10 @@ function normalizePluginList(raw: unknown): PluginManifest[] {
   return Array.from(map.values());
 }
 
+export function previewPlugins(raw: unknown): PluginManifest[] {
+  return normalizePluginList(raw);
+}
+
 export async function getPlugins(pageId: string) {
   const row = await prisma.pageSetting.findUnique({
     where: { page_id_key: { page_id: pageId, key: PLUGIN_SETTING_KEY } },
@@ -180,19 +221,105 @@ export async function getPlugins(pageId: string) {
 
 export async function setPlugins(pageId: string, plugins: PluginManifest[]) {
   const normalized = normalizePluginList(plugins);
+  const current = await getPlugins(pageId);
+  const currentMap = new Map(current.map((p) => [p.id, p]));
+  const merged = normalized.map((plugin) => {
+    const existing = currentMap.get(plugin.id);
+    if (existing?.frozen) {
+      const digestChanged = existing.digest && plugin.digest ? existing.digest !== plugin.digest : true;
+      if (digestChanged) {
+        return existing;
+      }
+    }
+    if (existing?.installedAt && !plugin.installedAt) {
+      return { ...plugin, installedAt: existing.installedAt };
+    }
+    return plugin;
+  });
   await prisma.pageSetting.upsert({
     where: { page_id_key: { page_id: pageId, key: PLUGIN_SETTING_KEY } },
-    update: { value: normalized as unknown as object },
-    create: { page_id: pageId, key: PLUGIN_SETTING_KEY, value: normalized as unknown as object },
+    update: { value: merged as unknown as object },
+    create: { page_id: pageId, key: PLUGIN_SETTING_KEY, value: merged as unknown as object },
   });
-  return normalized;
+  return merged;
+}
+
+export async function getPluginPermissionGrants(pageId: string) {
+  const row = await prisma.pageSetting.findUnique({
+    where: { page_id_key: { page_id: pageId, key: PLUGIN_PERMISSION_KEY } },
+    select: { value: true },
+  });
+  return (Array.isArray(row?.value) ? row?.value : []) as PluginPermissionGrant[];
+}
+
+export async function setPluginPermissionGrants(pageId: string, grants: PluginPermissionGrant[]) {
+  await prisma.pageSetting.upsert({
+    where: { page_id_key: { page_id: pageId, key: PLUGIN_PERMISSION_KEY } },
+    update: { value: grants as unknown as object },
+    create: { page_id: pageId, key: PLUGIN_PERMISSION_KEY, value: grants as unknown as object },
+  });
+  return grants;
+}
+
+export async function grantPluginPermissions(pageId: string, plugin: PluginManifest) {
+  const current = await getPluginPermissionGrants(pageId);
+  const next = current.filter((g) => g.id !== plugin.id);
+  next.push({
+    id: plugin.id,
+    name: plugin.name,
+    version: plugin.version,
+    permissions: Array.isArray(plugin.permissions) ? plugin.permissions : [],
+    grantedAt: new Date().toISOString(),
+  });
+  return setPluginPermissionGrants(pageId, next);
+}
+
+export async function revokePluginPermissions(pageId: string, pluginId: string) {
+  const current = await getPluginPermissionGrants(pageId);
+  const next = current.filter((g) => g.id !== pluginId);
+  return setPluginPermissionGrants(pageId, next);
+}
+
+export async function getPluginUpdatePolicies(pageId: string) {
+  const row = await prisma.pageSetting.findUnique({
+    where: { page_id_key: { page_id: pageId, key: PLUGIN_UPDATE_POLICY_KEY } },
+    select: { value: true },
+  });
+  return (Array.isArray(row?.value) ? row?.value : []) as PluginUpdatePolicy[];
+}
+
+export async function setPluginUpdatePolicies(pageId: string, policies: PluginUpdatePolicy[]) {
+  await prisma.pageSetting.upsert({
+    where: { page_id_key: { page_id: pageId, key: PLUGIN_UPDATE_POLICY_KEY } },
+    update: { value: policies as unknown as object },
+    create: { page_id: pageId, key: PLUGIN_UPDATE_POLICY_KEY, value: policies as unknown as object },
+  });
+  return policies;
+}
+
+export async function upsertPluginUpdatePolicy(pageId: string, policy: PluginUpdatePolicy) {
+  const current = await getPluginUpdatePolicies(pageId);
+  const next = current.filter((p) => p.id !== policy.id);
+  next.push(policy);
+  return setPluginUpdatePolicies(pageId, next);
 }
 
 export async function addPlugins(pageId: string, plugins: PluginManifest[]) {
   const current = await getPlugins(pageId);
   const map = new Map(current.map((p) => [p.id, p]));
   for (const plugin of normalizePluginList(plugins)) {
-    map.set(plugin.id, plugin);
+    const existing = map.get(plugin.id);
+    let next = plugin;
+    if (existing?.frozen) {
+      const digestChanged = existing.digest && plugin.digest ? existing.digest !== plugin.digest : true;
+      if (digestChanged) {
+        next = existing;
+      }
+    }
+    if (existing?.installedAt && !next.installedAt) {
+      next = { ...next, installedAt: existing.installedAt };
+    }
+    map.set(plugin.id, next);
   }
   return setPlugins(pageId, Array.from(map.values()));
 }

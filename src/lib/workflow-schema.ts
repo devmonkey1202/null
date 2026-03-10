@@ -99,6 +99,16 @@ const workflowStepSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
       type: z.literal("log"),
       message: z.string().min(1),
     }).merge(retrySchema),
+    z.object({
+      type: z.literal("serverless_node"),
+      code: z.string().min(1).max(80_000),
+      inputs: z.unknown().optional(),
+      timeoutMs: z.number().int().min(100).max(30_000).optional(),
+      memoryMb: z.number().int().min(64).max(1024).optional(),
+      secrets: z.array(z.string().min(1)).max(50).optional(),
+      responseVariable: z.string().min(1).optional(),
+      errorVariable: z.string().min(1).optional(),
+    }).merge(retrySchema),
   ])
 );
 

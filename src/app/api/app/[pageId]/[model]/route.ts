@@ -17,6 +17,7 @@ import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
 import { resolveAppUserFromRequest } from "@/lib/app-request";
 import { handleAppRecordQuery } from "@/lib/app-record-query";
 import { isAppActionAllowedWithContext } from "@/lib/app-permissions";
+import { ensureDevCollections, readEnvFromRequest, resolveAppEnv } from "@/lib/app-env";
 
 type Params = { pageId: string; model: string };
 
@@ -50,7 +51,11 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     return apiErrorJson("permission_denied", 403, { detail: "app_user_read_required" });
   }
 
-  const coll = await getCollectionBySlug(pageId, model);
+  const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev" && isOwner) {
+    await ensureDevCollections(pageId);
+  }
+  const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);
   const fields = (coll.fields ?? []) as AppFieldDef[];
   const appUserField = getAppUserField(fields);
@@ -81,7 +86,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     orderBy,
     orderDir,
     appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
-  });
+  }, env);
   let items = result.items.map((r) => ({
     id: r.id,
     data: (r.data as Record<string, unknown>) ?? {},
@@ -114,16 +119,28 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   const { pageId, model } = await context.params;
   if (!pageId || !model) return apiErrorJson("bad_request", 400);
 
+  const anonUserId = await resolveAnonUserId(req);
   const url = new URL(req.url, "http://localhost");
   const action = url.searchParams.get("action") ?? req.headers.get("x-null-action");
   const validateRelations =
     url.searchParams.get("validate_relations") === "1" ||
     req.headers.get("x-null-validate-relations") === "1";
   if (action === "query") {
-    return handleAppRecordQuery(req, pageId, model);
+    const user = anonUserId
+      ? await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } })
+      : null;
+    const page = await prisma.page.findFirst({
+      where: { id: pageId, is_deleted: false },
+      select: { id: true, owner_id: true },
+    });
+    const isOwner = Boolean(user && page?.owner_id === user.id);
+    const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });
+    if (env === "dev" && isOwner) {
+      await ensureDevCollections(pageId);
+    }
+    return handleAppRecordQuery(req, pageId, model, env);
   }
 
-  const anonUserId = await resolveAnonUserId(req);
   const appUser = await resolveAppUserFromRequest(pageId, req);
   const user = anonUserId
     ? await prisma.user.findUnique({ where: { anon_id: anonUserId }, select: { id: true } })
@@ -142,7 +159,11 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     return apiErrorJson("permission_denied", 403, { detail: "app_user_create_required" });
   }
 
-  const coll = await getCollectionBySlug(pageId, model);
+  const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev" && isOwner) {
+    await ensureDevCollections(pageId);
+  }
+  const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);
 
   const parsed = await parseJsonObject(req);
@@ -197,7 +218,8 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
       anonId: anonUserId ?? undefined,
       appUserId: appUser?.id,
     },
-    createOptions
+    createOptions,
+    env
   );
   await logAppAudit({
     pageId,

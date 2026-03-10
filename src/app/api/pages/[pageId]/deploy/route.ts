@@ -7,6 +7,7 @@ import { apiErrorJson } from "@/lib/api-error";
 import { substituteAlertTemplate } from "@/lib/alert-template";
 import { parseJsonBody } from "@/lib/validation";
 import { logPageAudit } from "@/lib/page-audit";
+import { cloneDevToProd, computeDeployHash, setProdVersionMeta } from "@/lib/app-env";
 
 type Params = { pageId: string };
 
@@ -39,7 +40,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
 
   const page = await prisma.page.findUnique({
     where: { id: pageId, is_deleted: false },
-    include: { owner: true },
+    include: { owner: true, current_version: true },
   });
 
   if (!page) return apiErrorJson("not_found", 404);
@@ -52,10 +53,37 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   }
 
   const deploy = body.deploy === true;
-  const updated = await prisma.page.update({
-    where: { id: pageId },
-    data: { deployed_at: deploy ? new Date() : null },
-  });
+  let updated = page;
+  let deployMeta: { deployHash: string | null; copiedCollections: number; copiedRecords: number } | null = null;
+
+  if (deploy) {
+    const version = page.current_version;
+    if (!version) {
+      return apiErrorJson("no_version", 400, "저장된 버전이 없습니다. 저장 후 배포해 주세요.");
+    }
+    const deployHash = computeDeployHash(version.content_json);
+    const now = new Date();
+    const result = await prisma.$transaction(async (tx) => {
+      const clone = await cloneDevToProd(pageId, tx);
+      await setProdVersionMeta(
+        pageId,
+        { versionId: version.id, deployedAt: now.toISOString(), deployHash },
+        tx
+      );
+      const updatedPage = await tx.page.update({
+        where: { id: pageId },
+        data: { deployed_at: now },
+      });
+      return { updatedPage, clone };
+    });
+    updated = result.updatedPage;
+    deployMeta = { deployHash, copiedCollections: result.clone.collections, copiedRecords: result.clone.records };
+  } else {
+    updated = await prisma.page.update({
+      where: { id: pageId },
+      data: { deployed_at: null },
+    });
+  }
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
   const deployUrl = baseUrl ? `${baseUrl}/p/${pageId}` : `/p/${pageId}`;
@@ -93,7 +121,13 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     action: "page_deploy",
     targetType: "page",
     targetId: updated.id,
-    meta: { deployed: deploy, deployed_at: updated.deployed_at?.toISOString() ?? null },
+    meta: {
+      deployed: deploy,
+      deployed_at: updated.deployed_at?.toISOString() ?? null,
+      deploy_hash: deployMeta?.deployHash ?? null,
+      copied_collections: deployMeta?.copiedCollections ?? 0,
+      copied_records: deployMeta?.copiedRecords ?? 0,
+    },
     actor: { userId: page.owner.id, anonId: anonUserId },
   });
 
@@ -103,5 +137,8 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     deployed: deploy,
     deployed_at: updated.deployed_at,
     deploy_url: deploy ? deployUrl : null,
+    deploy_hash: deployMeta?.deployHash ?? null,
+    copied_collections: deployMeta?.copiedCollections ?? 0,
+    copied_records: deployMeta?.copiedRecords ?? 0,
   });
 }

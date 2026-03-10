@@ -35,6 +35,8 @@ import {
   type TextStyle,
   type Variable,
   type VariableType,
+  type GlobalStateItem,
+  type GlobalStateType,
   type LayoutGridItem,
   type PageBreakpoint,
   type BlendMode,
@@ -97,6 +99,7 @@ import {
 import { PRESET_GROUPS } from "./AdvancedEditor.presets";
 import { ASSET_LIBRARY_PRESET_GROUPS } from "./AdvancedEditor.assetLibraryPresets";
 import { makeRuntimeId, snap, snapToPixel, clamp, getRulerStep } from "./AdvancedEditor.utils";
+import { describePermissions } from "../../lib/plugin-permissions";
 
 const BLEND_MODE_OPTIONS: { value: BlendMode; label: string }[] = [
   { value: "normal", label: "Normal" },
@@ -346,6 +349,24 @@ type PluginManifest = {
   description?: string;
   permissions?: string[];
   actions: PluginAction[];
+  version?: string;
+  storeId?: string;
+  storeVersion?: string;
+  digest?: string;
+  frozen?: boolean;
+};
+
+type PluginPermissionSummary = {
+  pluginId: string;
+  pluginName: string;
+  permissions: Array<{ key: string; label: string }>;
+};
+
+type PluginUpdatePolicy = {
+  id: string;
+  policy: "manual" | "auto" | "pinned";
+  pinnedVersion?: string;
+  updatedAt: string;
 };
 
 type EditorEvent = {
@@ -384,6 +405,20 @@ const ALLOWED_PLUGIN_ACTIONS = new Set([
   "openUrl",
 ]);
 
+const ACTION_PERMISSION: Record<string, string | null> = {
+  align: "editor",
+  distribute: "editor",
+  exportTokens: "export",
+  exportSelectionPng: "export",
+  exportSelectionSvg: "export",
+  toggleGrid: "ui",
+  togglePixelGrid: "ui",
+  toggleAudit: "ui",
+  togglePerformance: "ui",
+  openUrl: "network",
+  macro: null,
+};
+
 function isSafeExternalUrl(raw: string): string | null {
   try {
     const url = new URL(raw);
@@ -394,12 +429,14 @@ function isSafeExternalUrl(raw: string): string | null {
   }
 }
 
-function normalizePluginAction(raw: unknown, depth: number, budget: { count: number }): PluginAction | null {
+function normalizePluginAction(raw: unknown, depth: number, budget: { count: number }, permissions?: Set<string>): PluginAction | null {
   if (!raw || typeof raw !== "object") return null;
   const input = raw as Record<string, unknown>;
   if (typeof input.id !== "string" || typeof input.label !== "string" || typeof input.type !== "string") return null;
   if (depth > MAX_PLUGIN_DEPTH) return null;
   if (!ALLOWED_PLUGIN_ACTIONS.has(input.type)) return null;
+  const requiredPermission = ACTION_PERMISSION[input.type] ?? null;
+  if (requiredPermission && permissions && !permissions.has(requiredPermission)) return null;
   if (budget.count >= MAX_PLUGIN_ACTIONS) return null;
 
   const action: PluginAction = {
@@ -423,7 +460,7 @@ function normalizePluginAction(raw: unknown, depth: number, budget: { count: num
     const stepsRaw = Array.isArray(input.steps) ? input.steps : [];
     const steps: PluginAction[] = [];
     for (const step of stepsRaw) {
-      const normalized = normalizePluginAction(step, depth + 1, budget);
+      const normalized = normalizePluginAction(step, depth + 1, budget, permissions);
       if (normalized) steps.push(normalized);
       if (steps.length >= MAX_PLUGIN_STEPS) break;
     }
@@ -2092,6 +2129,10 @@ export default function AdvancedEditor() {
   const [newVariableValue, setNewVariableValue] = useState<string>("#111111");
   const [newVariableBool, setNewVariableBool] = useState<boolean>(false);
   const [newVariableModeName, setNewVariableModeName] = useState<string>("");
+  const [newGlobalStateKey, setNewGlobalStateKey] = useState<string>("");
+  const [newGlobalStateType, setNewGlobalStateType] = useState<GlobalStateType>("string");
+  const [newGlobalStateValue, setNewGlobalStateValue] = useState<string>("");
+  const [newGlobalStateBool, setNewGlobalStateBool] = useState<boolean>(false);
   const [swapComponentId, setSwapComponentId] = useState<string>("");
   const [componentSearch, setComponentSearch] = useState<string>("");
   const [componentPropName, setComponentPropName] = useState<string>("");
@@ -2208,10 +2249,22 @@ export default function AdvancedEditor() {
   const [eventLogFilter, setEventLogFilter] = useState<EditorEvent["kind"] | "all">("all");
   const [eventLogPaused, setEventLogPaused] = useState(false);
   const [installedPlugins, setInstalledPlugins] = useState<PluginManifest[]>([]);
+  const [pluginPolicies, setPluginPolicies] = useState<PluginUpdatePolicy[]>([]);
+  const [pluginConsent, setPluginConsent] = useState<{ plugins: PluginManifest[]; summary: PluginPermissionSummary[] } | null>(null);
+  const [pluginConsentBusy, setPluginConsentBusy] = useState(false);
   const eventLogPausedRef = useRef(eventLogPaused);
   useEffect(() => {
     eventLogPausedRef.current = eventLogPaused;
   }, [eventLogPaused]);
+  const summarizePluginPermissions = useCallback((plugins: PluginManifest[]) => {
+    return plugins
+      .map((plugin) => ({
+        pluginId: plugin.id,
+        pluginName: plugin.name,
+        permissions: describePermissions(plugin.actions, plugin.permissions),
+      }))
+      .filter((item) => item.permissions.length > 0);
+  }, []);
   const pushEditorEvent = useCallback((kind: EditorEvent["kind"], detail: string) => {
     if (eventLogPausedRef.current) return;
     setEventLog((prev) => {
@@ -2256,6 +2309,7 @@ export default function AdvancedEditor() {
     prototype: true,
     dataBinding: true,
     variables: true,
+    globalState: true,
   });
   /** NOTE: comment removed (encoding issue). */
   const [toolbarDropdown, setToolbarDropdown] = useState<string | null>(null);
@@ -2604,6 +2658,36 @@ export default function AdvancedEditor() {
     return () => {
       cancelled = true;
     };
+  }, [pageId]);
+
+  const installPlugins = useCallback(async (normalized: PluginManifest[], consent: boolean) => {
+    if (!normalized.length) return false;
+    if (pageId) {
+      const res = await fetch(`/api/app/${pageId}/plugins`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ plugins: normalized, consent }),
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (Array.isArray(data?.plugins)) {
+          setInstalledPlugins(data.plugins);
+        }
+        if (Array.isArray(data?.policies)) {
+          setPluginPolicies(data.policies);
+        }
+        return true;
+      }
+      setPluginError("Failed to install plugin.");
+      return false;
+    }
+    setInstalledPlugins((prev) => {
+      const map = new Map(prev.map((p) => [p.id, p]));
+      normalized.forEach((p) => map.set(p.id, p));
+      return Array.from(map.values());
+    });
+    return true;
   }, [pageId]);
 
   useEffect(() => {
@@ -3305,6 +3389,7 @@ export default function AdvancedEditor() {
             if (action.type === "url") actionLabel = "url";
             if (action.type === "submit") actionLabel = "submit";
             if (action.type === "setVariable") actionLabel = `set var: ${action.variableId}`;
+            if (action.type === "setGlobalState") actionLabel = `set state: ${action.key}`;
             if (action.type === "scrollTo") actionLabel = "scroll to";
             if (action.type === "setVariant") actionLabel = `set variant: ${action.variantId}`;
             if (action.type === "apiCall") actionLabel = "api call";
@@ -3351,6 +3436,7 @@ export default function AdvancedEditor() {
             if (action.type === "url") actionLabel = `URL: ${action.url}`;
             if (action.type === "submit") actionLabel = "Label";
             if (action.type === "setVariable") actionLabel = "Label";
+            if (action.type === "setGlobalState") actionLabel = "Label";
             if (action.type === "scrollTo") actionLabel = "Label";
             if (action.type === "setVariant") actionLabel = "Label";
             if (action.type === "apiCall") actionLabel = "Label";
@@ -6260,6 +6346,62 @@ export default function AdvancedEditor() {
     Object.values(draft.nodes).forEach((node) => {
       if (node.style.fillRef === id) node.style.fillRef = undefined;
     });
+    commit(draft);
+  }, [commit]);
+
+  const coerceGlobalStateInput = useCallback(
+    (type: GlobalStateType, raw: string, rawBool: boolean) => {
+      if (type === "number") {
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (type === "boolean") return rawBool;
+      if (type === "json") {
+        const trimmed = raw.trim();
+        if (!trimmed) return null;
+        try {
+          return JSON.parse(trimmed) as Record<string, unknown> | unknown[] | null;
+        } catch {
+          return raw;
+        }
+      }
+      return raw;
+    },
+    [],
+  );
+
+  const addGlobalState = useCallback(() => {
+    const draft = cloneDoc(docRef.current);
+    const items = draft.globalState ?? [];
+    const key = newGlobalStateKey.trim() || `state_${items.length + 1}`;
+    if (items.some((item) => item.key === key)) return;
+    const defaultValue = coerceGlobalStateInput(newGlobalStateType, newGlobalStateValue, newGlobalStateBool);
+    const next: GlobalStateItem = { id: makeRuntimeId("gstate"), key, type: newGlobalStateType, defaultValue };
+    draft.globalState = [...items, next];
+    commit(draft);
+    setNewGlobalStateKey("");
+    setNewGlobalStateValue("");
+    setNewGlobalStateBool(false);
+  }, [commit, coerceGlobalStateInput, newGlobalStateBool, newGlobalStateKey, newGlobalStateType, newGlobalStateValue]);
+
+  const updateGlobalState = useCallback((id: string, patch: Partial<GlobalStateItem>) => {
+    const draft = cloneDoc(docRef.current);
+    const items = draft.globalState ?? [];
+    const nextItems = items.map((item) => {
+      if (item.id !== id) return item;
+      const nextKey = typeof patch.key === "string" ? patch.key.trim() : item.key;
+      if (nextKey !== item.key && items.some((other) => other.id !== id && other.key === nextKey)) {
+        return item;
+      }
+      return { ...item, ...patch, key: nextKey };
+    });
+    draft.globalState = nextItems;
+    commit(draft);
+  }, [commit]);
+
+  const removeGlobalState = useCallback((id: string) => {
+    const draft = cloneDoc(docRef.current);
+    draft.globalState = (draft.globalState ?? []).filter((item) => item.id !== id);
     commit(draft);
   }, [commit]);
 
@@ -9458,14 +9600,18 @@ export default function AdvancedEditor() {
         .map((item) => {
           const budget = { count: 0 };
           const actionsRaw = Array.isArray(item.actions) ? item.actions : [];
+          const permissions = Array.isArray(item.permissions)
+            ? item.permissions.filter((p: unknown) => typeof p === "string")
+            : [];
+          const permissionSet = new Set(permissions);
           const actions = actionsRaw
-            .map((a: unknown) => normalizePluginAction(a, 0, budget))
+            .map((a: unknown) => normalizePluginAction(a, 0, budget, permissionSet))
             .filter((a: PluginAction | null): a is PluginAction => Boolean(a));
           return {
             id: String(item.id),
             name: String(item.name),
             description: typeof item.description === "string" ? item.description : undefined,
-            permissions: Array.isArray(item.permissions) ? item.permissions.filter((p: unknown) => typeof p === "string") : undefined,
+            permissions: permissions.length ? permissions : undefined,
             actions,
           };
         })
@@ -9476,35 +9622,30 @@ export default function AdvancedEditor() {
         return;
       }
 
-      if (pageId) {
-        const res = await fetch(`/api/app/${pageId}/plugins`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ plugins: normalized }),
-        });
-        if (res.ok) {
-          const data = await res.json().catch(() => null);
-          if (Array.isArray(data?.plugins)) {
-            setInstalledPlugins(data.plugins);
-          }
-        } else {
-          setPluginError("Failed to install plugin.");
-          return;
-        }
-      } else {
-        setInstalledPlugins((prev) => {
-          const map = new Map(prev.map((p) => [p.id, p]));
-          normalized.forEach((p) => map.set(p.id, p));
-          return Array.from(map.values());
-        });
+      const summary = summarizePluginPermissions(normalized);
+      if (summary.length > 0) {
+        setPluginConsent({ plugins: normalized, summary });
+        return;
       }
+      const ok = await installPlugins(normalized, false);
+      if (!ok) return;
       setPluginJson("");
       pushMessage("Plugin installed.");
     } catch (e) {
       setPluginError(e instanceof Error ? e.message : "Failed to parse JSON.");
     }
-  }, [pluginJson, pushMessage, pageId]);
+  }, [pluginJson, pushMessage, installPlugins, summarizePluginPermissions]);
+
+  const confirmPluginConsent = useCallback(async () => {
+    if (!pluginConsent) return;
+    setPluginConsentBusy(true);
+    const ok = await installPlugins(pluginConsent.plugins, true);
+    setPluginConsentBusy(false);
+    if (!ok) return;
+    setPluginJson("");
+    pushMessage("Plugin installed.");
+    setPluginConsent(null);
+  }, [pluginConsent, installPlugins, pushMessage]);
 
   const removePlugin = useCallback(
     async (id: string) => {
@@ -9532,6 +9673,14 @@ export default function AdvancedEditor() {
     },
     [pageId]
   );
+
+  const pluginPermissionMap = useMemo(() => {
+    const map = new Map<string, Array<{ key: string; label: string }>>();
+    allPlugins.forEach((plugin) => {
+      map.set(plugin.id, describePermissions(plugin.actions, plugin.permissions));
+    });
+    return map;
+  }, [allPlugins]);
 
   const runPluginAction = useCallback(
     (action: PluginAction, depth = 0) => {
@@ -10267,6 +10416,11 @@ export default function AdvancedEditor() {
     return variable.name.toLowerCase().includes(variableSearchText);
   });
   const colorVariables = doc.variables.filter((variable) => variable.type === "color");
+  const globalStateItems = doc.globalState ?? [];
+  const globalStateByKey = useMemo(
+    () => new Map(globalStateItems.map((item) => [item.key, item] as const)),
+    [globalStateItems],
+  );
   const variableModes = doc.variableModes?.length ? doc.variableModes : ["Default"];
   const activeVariableMode = doc.variableMode ?? variableModes[0];
   const selectedIsComponent = selectedNode?.type === "component";
@@ -15372,6 +15526,159 @@ export default function AdvancedEditor() {
                   ) : null}
               </div>
 
+              <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100"
+                  onClick={() => setRightPanelSections((s) => ({ ...s, globalState: !s.globalState }))}
+                >
+                  <span>전역 상태</span>
+                  <span className={`shrink-0 transition-transform ${rightPanelSections.globalState ? "rotate-180" : ""}`} aria-hidden>▾</span>
+                </button>
+                {rightPanelSections.globalState ? (
+                  <div className="px-2 pb-2">
+                    <div className="mt-2 space-y-2">
+                      <div className="space-y-2 rounded-md border border-neutral-200 bg-white p-2">
+                        <input
+                          type="text"
+                          value={newGlobalStateKey}
+                          onChange={(e) => setNewGlobalStateKey(e.target.value)}
+                          placeholder="키"
+                          className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                        />
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={newGlobalStateType}
+                            onChange={(e) => setNewGlobalStateType(e.target.value as GlobalStateType)}
+                            className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                          >
+                            <option value="string">문자</option>
+                            <option value="number">숫자</option>
+                            <option value="boolean">불리언</option>
+                            <option value="json">JSON</option>
+                          </select>
+                          {newGlobalStateType === "number" ? (
+                            <input
+                              type="number"
+                              value={newGlobalStateValue}
+                              onChange={(e) => setNewGlobalStateValue(e.target.value)}
+                              className="w-24 rounded border border-neutral-200 px-2 py-1 text-xs"
+                            />
+                          ) : null}
+                          {newGlobalStateType === "string" ? (
+                            <input
+                              type="text"
+                              value={newGlobalStateValue}
+                              onChange={(e) => setNewGlobalStateValue(e.target.value)}
+                              className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                            />
+                          ) : null}
+                          {newGlobalStateType === "boolean" ? (
+                            <label className="flex items-center gap-2 text-xs text-neutral-600">
+                              <input
+                                type="checkbox"
+                                checked={newGlobalStateBool}
+                                onChange={(e) => setNewGlobalStateBool(e.target.checked)}
+                              />
+                              기본값
+                            </label>
+                          ) : null}
+                        </div>
+                        {newGlobalStateType === "json" ? (
+                          <textarea
+                            value={newGlobalStateValue}
+                            onChange={(e) => setNewGlobalStateValue(e.target.value)}
+                            className="min-h-[72px] w-full rounded border border-neutral-200 px-2 py-1 text-[11px] font-mono"
+                            placeholder='{"key":"value"}'
+                          />
+                        ) : null}
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                          onClick={addGlobalState}
+                        >
+                          전역 상태 추가
+                        </button>
+                      </div>
+
+                      {globalStateItems.length ? (
+                        <div className="space-y-1">
+                          {globalStateItems.map((item) => (
+                            <div key={item.id} className="rounded-md border border-neutral-200 bg-white px-2 py-2 space-y-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={item.key}
+                                  onChange={(e) => updateGlobalState(item.id, { key: e.target.value })}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                                <select
+                                  value={item.type}
+                                  onChange={(e) => {
+                                    const nextType = e.target.value as GlobalStateType;
+                                    const nextDefault =
+                                      nextType === "number" ? 0 : nextType === "boolean" ? false : nextType === "json" ? null : "";
+                                    updateGlobalState(item.id, { type: nextType, defaultValue: nextDefault });
+                                  }}
+                                  className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                >
+                                  <option value="string">문자</option>
+                                  <option value="number">숫자</option>
+                                  <option value="boolean">불리언</option>
+                                  <option value="json">JSON</option>
+                                </select>
+                                <button
+                                  type="button"
+                                  className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]"
+                                  onClick={() => removeGlobalState(item.id)}
+                                >
+                                  삭제
+                                </button>
+                              </div>
+                              {item.type === "number" ? (
+                                <input
+                                  type="number"
+                                  value={Number(item.defaultValue ?? 0)}
+                                  onChange={(e) => updateGlobalState(item.id, { defaultValue: Number(e.target.value) })}
+                                  className="w-28 rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              ) : null}
+                              {item.type === "string" ? (
+                                <input
+                                  type="text"
+                                  value={String(item.defaultValue ?? "")}
+                                  onChange={(e) => updateGlobalState(item.id, { defaultValue: e.target.value })}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              ) : null}
+                              {item.type === "boolean" ? (
+                                <label className="flex items-center gap-2 text-xs text-neutral-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(item.defaultValue)}
+                                    onChange={(e) => updateGlobalState(item.id, { defaultValue: e.target.checked })}
+                                  />
+                                  기본값
+                                </label>
+                              ) : null}
+                              {item.type === "json" ? (
+                                <textarea
+                                  value={typeof item.defaultValue === "string" ? item.defaultValue : JSON.stringify(item.defaultValue ?? "", null, 2)}
+                                  onChange={(e) =>
+                                    updateGlobalState(item.id, { defaultValue: coerceGlobalStateInput("json", e.target.value, false) })
+                                  }
+                                  className="min-h-[72px] w-full rounded border border-neutral-200 px-2 py-1 text-[11px] font-mono"
+                                />
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
             </div>
             ) : null}
             {panelMode === "prototype" ? (
@@ -15537,12 +15844,26 @@ export default function AdvancedEditor() {
                   <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">플러그인</div>
                   {allPlugins.length ? (
                     <div className="space-y-2">
-                      {allPlugins.map((plugin) => (
+                      {allPlugins.map((plugin) => {
+                        const policy = pluginPolicies.find((p) => p.id === plugin.id);
+                        const isStore = Boolean(plugin.storeId);
+                        const isFrozen = plugin.frozen === true;
+                        return (
                         <div key={plugin.id} className="rounded border border-neutral-100 bg-neutral-50/70 px-2 py-2">
                           <div className="flex items-center justify-between gap-2">
                             <div>
                               <div className="text-[11px] font-medium text-neutral-700">{plugin.name}</div>
                               {plugin.description ? <div className="text-[10px] text-neutral-400">{plugin.description}</div> : null}
+                              {pluginPermissionMap.get(plugin.id)?.length ? (
+                                <div className="mt-1 text-[10px] text-neutral-500">
+                                  권한: {pluginPermissionMap.get(plugin.id)?.map((p) => p.label).join(", ")}
+                                </div>
+                              ) : null}
+                              {isStore ? (
+                                <div className="mt-1 text-[10px] text-neutral-400">
+                                  {plugin.version ? `v${plugin.version}` : "버전 없음"} · {isFrozen ? "고정됨" : "변경 가능"}
+                                </div>
+                              ) : null}
                             </div>
                             {!builtinPluginIds.has(plugin.id) ? (
                               <button type="button" className="rounded border border-neutral-200 px-2 py-0.5 text-[10px]" onClick={() => removePlugin(plugin.id)}>삭제</button>
@@ -15566,8 +15887,44 @@ export default function AdvancedEditor() {
                           ) : (
                             <div className="mt-2 text-[10px] text-neutral-400">액션 없음</div>
                           )}
+                          {isStore ? (
+                            <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-neutral-500">
+                              <span>업데이트 정책</span>
+                              <select
+                                value={policy?.policy ?? "manual"}
+                                onChange={async (e) => {
+                                  if (!pageId) return;
+                                  const nextPolicy = e.target.value as "manual" | "auto" | "pinned";
+                                  const pinnedVersion = nextPolicy === "pinned" ? (plugin.version ?? "") : undefined;
+                                  const res = await fetch(`/api/app/${pageId}/plugins`, {
+                                    method: "PATCH",
+                                    headers: { "Content-Type": "application/json" },
+                                    credentials: "include",
+                                    body: JSON.stringify({ id: plugin.id, policy: nextPolicy, pinnedVersion }),
+                                  });
+                                  if (res.ok) {
+                                    const data = await res.json().catch(() => null);
+                                    if (Array.isArray(data?.policies)) {
+                                      setPluginPolicies(data.policies);
+                                    }
+                                  } else {
+                                    setPluginError("Failed to update policy.");
+                                  }
+                                }}
+                                className="rounded border border-neutral-200 bg-white px-2 py-0.5"
+                              >
+                                <option value="manual">수동</option>
+                                <option value="auto">자동</option>
+                                <option value="pinned">고정</option>
+                              </select>
+                              {policy?.policy === "pinned" ? (
+                                <span>고정 버전: {policy.pinnedVersion ?? plugin.version ?? "-"}</span>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </div>
-                      ))}
+                      );
+                    })}
                     </div>
                   ) : (
                     <div className="text-[11px] text-neutral-400">설치된 플러그인 없음</div>
@@ -15725,6 +16082,10 @@ export default function AdvancedEditor() {
                         <div className="space-y-2">
                           {selectedInteractions.map((interaction) => {
                             const actionType = interaction.action.type;
+                            const globalStateKey = interaction.action.type === "setGlobalState" ? interaction.action.key : "";
+                            const globalStateDef = globalStateByKey.get(globalStateKey);
+                            const globalStateType = globalStateDef?.type ?? "string";
+                            const globalStateValue = interaction.action.type === "setGlobalState" ? interaction.action.value : undefined;
                             const needsTarget = actionType === "navigate" || actionType === "overlay";
                             const startPageForScroll = doc.pages.find((p) => p.id === (prototypeStartPageId ?? doc.pages[0]?.id));
                             const scrollTargetNodeIds = startPageForScroll
@@ -15736,7 +16097,7 @@ export default function AdvancedEditor() {
                               : [];
                             const scrollableContainerIds = scrollTargetNodeIds.filter((id) => doc.nodes[id]?.overflowScrolling);
                             const scrollToTargetId = actionType === "scrollTo" && "targetNodeId" in interaction.action ? interaction.action.targetNodeId : scrollTargetNodeIds[0] ?? "";
-                            const supportsTransition = actionType !== "url" && actionType !== "submit" && actionType !== "setVariable" && actionType !== "nativeCall";
+                            const supportsTransition = actionType !== "url" && actionType !== "submit" && actionType !== "setVariable" && actionType !== "setGlobalState" && actionType !== "nativeCall";
                             const transitionType = ("transition" in interaction.action && interaction.action.transition?.type) ?? "instant";
                             const transitionDuration = ("transition" in interaction.action && interaction.action.transition?.duration) ?? 300;
                             const durationNum = typeof transitionDuration === "number" ? transitionDuration : 300;
@@ -15903,6 +16264,12 @@ export default function AdvancedEditor() {
                                                   value: interaction.action.type === "setVariable" ? interaction.action.value : undefined,
                                                   mode: interaction.action.type === "setVariable" ? interaction.action.mode : undefined,
                                                 }
+                                              : nextType === "setGlobalState"
+                                                ? {
+                                                    type: "setGlobalState",
+                                                    key: interaction.action.type === "setGlobalState" ? interaction.action.key : (globalStateItems[0]?.key ?? ""),
+                                                    value: interaction.action.type === "setGlobalState" ? interaction.action.value : undefined,
+                                                  }
                                               : nextType === "scrollTo"
                                                 ? {
                                                     type: "scrollTo",
@@ -15969,6 +16336,7 @@ export default function AdvancedEditor() {
                                   <option value="scrollTo">스크롤 이동</option>
                                   <option value="setVariant">변형 설정</option>
                                   <option value="setVariable">변수 설정</option>
+                                  <option value="setGlobalState">전역 상태 설정</option>
                                   <option value="apiCall">API 호출</option>
                                   <option value="nativeCall">네이티브 호출</option>
                                   <option value="appAuth">앱 인증</option>
@@ -16379,6 +16747,95 @@ export default function AdvancedEditor() {
                                   </label>
                                 </>
                               ) : null}
+                              {actionType === "setGlobalState" ? (
+                                <>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">키</span>
+                                    {globalStateItems.length ? (
+                                      <select
+                                        value={interaction.action.type === "setGlobalState" ? interaction.action.key : ""}
+                                        onChange={(e) =>
+                                          updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                            action: { ...(interaction.action as PrototypeAction), key: e.target.value } as PrototypeAction,
+                                          })
+                                        }
+                                        className="w-32 rounded border border-neutral-200 px-2 py-1"
+                                      >
+                                        {globalStateItems.map((item) => (
+                                          <option key={item.id} value={item.key}>
+                                            {item.key}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        value={interaction.action.type === "setGlobalState" ? interaction.action.key : ""}
+                                        onChange={(e) =>
+                                          updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                            action: { ...(interaction.action as PrototypeAction), key: e.target.value } as PrototypeAction,
+                                          })
+                                        }
+                                        className="w-32 rounded border border-neutral-200 px-2 py-1"
+                                        placeholder="stateKey"
+                                      />
+                                    )}
+                                  </label>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">값</span>
+                                    {globalStateType === "boolean" ? (
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(globalStateValue)}
+                                        onChange={(e) =>
+                                          updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                            action: { ...(interaction.action as PrototypeAction), value: e.target.checked } as PrototypeAction,
+                                          })
+                                        }
+                                      />
+                                    ) : globalStateType === "number" ? (
+                                      <input
+                                        type="number"
+                                        value={Number.isFinite(Number(globalStateValue)) ? Number(globalStateValue) : 0}
+                                        onChange={(e) =>
+                                          updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                            action: { ...(interaction.action as PrototypeAction), value: Number(e.target.value) } as PrototypeAction,
+                                          })
+                                        }
+                                        className="w-24 rounded border border-neutral-200 px-2 py-1"
+                                        placeholder="0"
+                                      />
+                                    ) : globalStateType === "json" ? (
+                                      <textarea
+                                        value={
+                                          typeof globalStateValue === "string"
+                                            ? globalStateValue
+                                            : JSON.stringify(globalStateValue ?? "", null, 2)
+                                        }
+                                        onChange={(e) =>
+                                          updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                            action: { ...(interaction.action as PrototypeAction), value: e.target.value } as PrototypeAction,
+                                          })
+                                        }
+                                        className="min-h-[72px] w-40 rounded border border-neutral-200 px-2 py-1 text-[11px] font-mono"
+                                        placeholder='{"key":"value"}'
+                                      />
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        value={globalStateValue !== undefined ? String(globalStateValue) : ""}
+                                        onChange={(e) =>
+                                          updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                            action: { ...(interaction.action as PrototypeAction), value: e.target.value } as PrototypeAction,
+                                          })
+                                        }
+                                        className="w-24 rounded border border-neutral-200 px-2 py-1"
+                                        placeholder="값"
+                                      />
+                                    )}
+                                  </label>
+                                </>
+                              ) : null}
                               {supportsTransition ? (
                                 <>
                                   <label className="flex items-center justify-between gap-2">
@@ -16458,7 +16915,7 @@ export default function AdvancedEditor() {
                                   ) : null}
                                 </>
                               ) : null}
-                              {actionType !== "setVariable" ? (
+                              {actionType !== "setVariable" && actionType !== "setGlobalState" ? (
                                 <div className="space-y-1 rounded border border-neutral-100 bg-neutral-50 p-2">
                                   <span className="text-[10px] text-neutral-400">조건 (만족 시 실행)</span>
                                   <label className="flex items-center justify-between gap-2">
@@ -17406,6 +17863,48 @@ export default function AdvancedEditor() {
         </div>
         </div>
       </main>
+      {pluginConsent && typeof document !== "undefined"
+        ? createPortal(
+            <>
+              <div className="fixed inset-0 z-[9998] bg-black/40" onClick={() => setPluginConsent(null)} />
+              <div className="fixed left-1/2 top-1/2 z-[9999] w-[420px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-neutral-200 bg-white p-4 shadow-xl">
+                <div className="text-sm font-semibold text-neutral-800">플러그인 권한 동의</div>
+                <div className="mt-2 text-[11px] text-neutral-500">
+                  설치하려는 플러그인이 다음 권한을 요청합니다. 승인하지 않으면 설치되지 않습니다.
+                </div>
+                <div className="mt-3 max-h-60 space-y-2 overflow-y-auto">
+                  {pluginConsent.summary.map((item) => (
+                    <div key={item.pluginId} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2">
+                      <div className="text-[11px] font-medium text-neutral-700">{item.pluginName}</div>
+                      <div className="mt-1 text-[10px] text-neutral-500">
+                        {item.permissions.map((p) => p.label).join(", ")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-neutral-200 px-3 py-1 text-xs"
+                    disabled={pluginConsentBusy}
+                    onClick={() => setPluginConsent(null)}
+                  >
+                    취소
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50"
+                    disabled={pluginConsentBusy}
+                    onClick={confirmPluginConsent}
+                  >
+                    승인하고 설치
+                  </button>
+                </div>
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
       {showOnboarding ? (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40">
           <div className="w-[440px] rounded-lg bg-white p-6 shadow-xl">

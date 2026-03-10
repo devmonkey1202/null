@@ -10,6 +10,7 @@ import {
   type SchemaMode,
   type AppSchemaMigrations,
 } from "@/lib/app-data";
+import { ensureDevCollections, readEnvFromRequest, resolveAppEnv } from "@/lib/app-env";
 import { logAppAudit } from "@/lib/app-audit";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
@@ -38,7 +39,11 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     if (page.is_hidden || page.status !== "live") return apiErrorJson("not_found", 404);
   }
 
-  const collections = await getCollections(pageId);
+  const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev" && isOwner) {
+    await ensureDevCollections(pageId);
+  }
+  const collections = await getCollections(pageId, env);
   return NextResponse.json({ collections });
 }
 
@@ -81,7 +86,11 @@ export async function PUT(req: Request, context: { params: Promise<Params> }) {
   const mode = parsed.data.mode as SchemaMode | undefined;
   const migrations = parsed.data.migrations as AppSchemaMigrations | undefined;
   const batchSize = parsed.data.batchSize as number | undefined;
-  const result = await setSchema(pageId, collections, { mode, migrations, batchSize, recordRollback: true });
+  const env = await resolveAppEnv(pageId, { isOwner: true, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev") {
+    await ensureDevCollections(pageId);
+  }
+  const result = await setSchema(pageId, collections, { mode, migrations, batchSize, recordRollback: true }, env);
   await logAppAudit({
     pageId,
     action: "schema_update",
@@ -92,10 +101,11 @@ export async function PUT(req: Request, context: { params: Promise<Params> }) {
       mode: mode ?? "preserve",
       migrations: Boolean(migrations),
       migration_id: result.migrationId ?? null,
+      env,
     },
     actor: { userId: user.id, anonId: anonUserId },
   });
-  const list = await getCollections(pageId);
+  const list = await getCollections(pageId, env);
   return NextResponse.json({ ok: true, collections: list, migration_id: result.migrationId ?? null });
 }
 
@@ -127,16 +137,22 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
   );
   if (parsed.error) return parsed.error;
 
-  const result = await rollbackSchemaMigration(pageId, parsed.data.migration_id, {
-    batchSize: parsed.data.batchSize,
-  });
+  const env = await resolveAppEnv(pageId, { isOwner: true, requestEnv: readEnvFromRequest(req) });
+  const result = await rollbackSchemaMigration(
+    pageId,
+    parsed.data.migration_id,
+    {
+      batchSize: parsed.data.batchSize,
+    },
+    env
+  );
 
   await logAppAudit({
     pageId,
     action: "schema_rollback",
     targetType: "schema",
     targetId: pageId,
-    meta: { migration_id: parsed.data.migration_id, restored: result.restored },
+    meta: { migration_id: parsed.data.migration_id, restored: result.restored, env },
     actor: { userId: user.id, anonId: anonUserId },
   });
 

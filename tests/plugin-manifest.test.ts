@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   pageSetting: {
+    findUnique: vi.fn(),
     upsert: vi.fn(),
   },
 }));
@@ -14,6 +15,8 @@ import { setPlugins } from "@/lib/app-plugins";
 describe("plugin manifest normalization", () => {
   beforeEach(() => {
     prismaMock.pageSetting.upsert.mockReset();
+    prismaMock.pageSetting.findUnique.mockReset();
+    prismaMock.pageSetting.findUnique.mockResolvedValue({ value: [] });
   });
 
   it("filters invalid manifests and actions", async () => {

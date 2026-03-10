@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { safeParseBody, withErrorHandler } from "@/lib/api-handler";
-import { addPlugins } from "@/lib/app-plugins";
+import { addPlugins, grantPluginPermissions } from "@/lib/app-plugins";
 import { getStorePlugin, toManifest } from "@/lib/plugin-store";
 
 type Params = { pageId: string };
@@ -28,10 +28,16 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
   if (error) return error;
   const body = await safeParseBody(req);
   const storeId = typeof (body as { storeId?: string })?.storeId === "string" ? (body as { storeId: string }).storeId : "";
+  const consent = (body as { consent?: boolean })?.consent === true;
   if (!storeId) return apiErrorJson("store_id_required", 400);
   const storePlugin = getStorePlugin(storeId);
   if (!storePlugin) return apiErrorJson("store_plugin_not_found", 404);
   const manifest = toManifest(storePlugin);
+  const needsConsent = (manifest.permissions?.length ?? 0) > 0;
+  if (needsConsent && !consent) return apiErrorJson("permission_consent_required", 400);
   const plugins = await addPlugins(pageId, [manifest]);
+  if (consent) {
+    await grantPluginPermissions(pageId, manifest);
+  }
   return NextResponse.json({ ok: true, plugins });
 });

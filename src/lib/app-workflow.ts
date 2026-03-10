@@ -5,6 +5,7 @@
 
 import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
+import { executeServerlessNode } from "@/lib/serverless-executor";
 
 export type WorkflowTrigger =
   | { type: "record_created"; collection: string }
@@ -40,7 +41,17 @@ export type WorkflowStep =
   | ({ type: "condition"; if: { field: string; op: string; value: unknown }; then: WorkflowStep[]; else?: WorkflowStep[] } & RetryOptions)
   | ({ type: "loop"; items: string; variable: string; steps: WorkflowStep[]; maxItems?: number } & RetryOptions)
   | ({ type: "delay"; ms: number } & RetryOptions)
-  | ({ type: "log"; message: string } & RetryOptions);
+  | ({ type: "log"; message: string } & RetryOptions)
+  | ({
+      type: "serverless_node";
+      code: string;
+      inputs?: unknown;
+      timeoutMs?: number;
+      memoryMb?: number;
+      secrets?: string[];
+      responseVariable?: string;
+      errorVariable?: string;
+    } & RetryOptions);
 
 type WorkflowContext = {
   pageId: string;
@@ -78,6 +89,19 @@ function interpolateObj(obj: Record<string, unknown>, ctx: WorkflowContext): Rec
     result[k] = typeof v === "string" ? interpolate(v, ctx) : v;
   }
   return result;
+}
+
+function interpolateDeep(value: unknown, ctx: WorkflowContext): unknown {
+  if (typeof value === "string") return interpolate(value, ctx);
+  if (Array.isArray(value)) return value.map((item) => interpolateDeep(item, ctx));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = interpolateDeep(v, ctx);
+    }
+    return out;
+  }
+  return value;
 }
 
 function evaluateCondition(cond: { field: string; op: string; value: unknown }, ctx: WorkflowContext): boolean {
@@ -228,6 +252,28 @@ async function executeStepOnce(step: WorkflowStep, ctx: WorkflowContext): Promis
     case "log":
       ctx.logs.push(interpolate(step.message, ctx));
       break;
+    case "serverless_node": {
+      const inputs = interpolateDeep(step.inputs, ctx);
+      const result = await executeServerlessNode({
+        pageId: ctx.pageId,
+        code: step.code,
+        inputs,
+        secrets: step.secrets,
+        timeoutMs: step.timeoutMs,
+        memoryMb: step.memoryMb,
+        variables: ctx.variables,
+        triggerData: ctx.triggerData,
+      });
+      if (result.logs?.length) ctx.logs.push(...result.logs);
+      if (result.ok) {
+        const key = step.responseVariable ?? "$serverless_result";
+        ctx.variables[key] = result.result ?? null;
+        break;
+      }
+      const errKey = step.errorVariable ?? "$serverless_error";
+      ctx.variables[errKey] = result.error ?? "serverless_failed";
+      throw new Error(result.error ?? "serverless_failed");
+    }
   }
 }
 

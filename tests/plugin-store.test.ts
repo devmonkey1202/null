@@ -21,7 +21,7 @@ describe("plugin store catalog", () => {
     const catalog = listStorePlugins();
     const first = catalog.plugins[0];
     const manifest = toManifest(first);
-    expect((manifest as any).storeId).toBeUndefined();
+    expect(manifest.storeId).toBe(first.storeId);
     expect(manifest.id).toBe(first.id);
   });
 });

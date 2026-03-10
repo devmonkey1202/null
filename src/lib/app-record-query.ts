@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { getCollectionBySlug, type AppFieldDef } from "@/lib/app-data";
+import { type AppEnv, toEnvSlug } from "@/lib/app-env";
 import { resolveAppUserFromRequest } from "@/lib/app-request";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonObject } from "@/lib/validation";
@@ -219,7 +220,12 @@ function buildFilterClause(filter: FilterInput, fieldType: AppFieldDef["type"] |
   return { error: "unsupported_op" } as const;
 }
 
-export async function handleAppRecordQuery(req: Request, pageId: string, modelOverride?: string | null) {
+export async function handleAppRecordQuery(
+  req: Request,
+  pageId: string,
+  modelOverride?: string | null,
+  env: AppEnv = "prod"
+) {
   const bodyRes = await parseJsonObject(req);
   if (bodyRes.error) return bodyRes.error;
   const body = bodyRes.data as QueryInput;
@@ -243,8 +249,9 @@ export async function handleAppRecordQuery(req: Request, pageId: string, modelOv
   const isOwner = Boolean(user && page.owner_id === user.id);
   if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
 
-  const coll = await getCollectionBySlug(pageId, model);
+  const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);
+  const resolvedModel = toEnvSlug(model, env);
   const fields = (coll.fields ?? []) as AppFieldDef[];
   const fieldMap = new Map(fields.map((f) => [f.name, f]));
   const hasAppUserField = fieldMap.has("app_user_id");
@@ -279,7 +286,7 @@ export async function handleAppRecordQuery(req: Request, pageId: string, modelOv
 
   const whereClauses: Prisma.Sql[] = [
     Prisma.sql`"page_id" = ${pageId}`,
-    Prisma.sql`"collection_slug" = ${model}`,
+    Prisma.sql`"collection_slug" = ${resolvedModel}`,
   ];
 
   if (!isOwner && hasAppUserField && appUser) {

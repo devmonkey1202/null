@@ -183,6 +183,7 @@ import { layoutDoc } from "../layout/engine";
 import type { Doc, Node, SerializableDoc, Fill, Stroke, StyleToken, TextStyle, PrototypeAction, PrototypeTrigger, PrototypeInteraction, Variable, NodeDataBinding } from "../doc/scene";
 import { getPageContentBounds, getNodeChildrenBounds } from "./bounds";
 import { getCustomNodeRenderer } from "./plugins";
+import { WidgetSandbox } from "./widget-sandbox";
 import { buildBindingDecision } from "./data-binding";
 
 function getEffectFilterId(prefix: string, nodeId: string) {
@@ -326,6 +327,7 @@ function findStyleToken(doc: Doc, id: string | undefined, type: StyleToken["type
 export type VariableRuntime = {
   mode?: string;
   variableOverrides?: Record<string, string | number | boolean>;
+  globalState?: Record<string, unknown>;
   /** NOCODE 3: 리스트/테이블 바인딩 시 현재 행 데이터. 텍스트에서 {{ row.필드명 }} 으로 참조 */
   rowContext?: Record<string, unknown>;
 };
@@ -460,6 +462,13 @@ function resolveTextTokens(doc: Doc, value: string, variableRuntime?: VariableRu
   return value.replace(/\{\{\s*([^}]+)\s*\}\}/g, (_match, raw) => {
     const key = String(raw ?? "").trim();
     if (!key) return "";
+    if (key.startsWith("state.")) {
+      const field = key.slice(6).trim();
+      const val = field ? variableRuntime?.globalState?.[field] : undefined;
+      if (val == null) return "";
+      if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return String(val);
+      return JSON.stringify(val);
+    }
     if (key.startsWith("row.")) {
       const field = key.slice(4).trim();
       const row = variableRuntime?.rowContext;
@@ -1449,7 +1458,13 @@ function CollectionBound({
   renderChildWithRuntime: (childId: string, variableRuntimeOverride?: VariableRuntime) => React.ReactNode;
 }) {
   const [items, setItems] = useState<Array<Record<string, unknown> & { id?: string }>>([]);
-  const overrides = variableRuntime?.variableOverrides ?? {};
+  const overrides = useMemo(
+    () => ({
+      ...(variableRuntime?.variableOverrides ?? {}),
+      ...(variableRuntime?.globalState ?? {}),
+    }),
+    [variableRuntime?.globalState, variableRuntime?.variableOverrides],
+  );
   const bindingKey = useMemo(() => JSON.stringify({ binding, overrides }), [binding, overrides]);
   useEffect(() => {
     let cancelled = false;
@@ -2180,6 +2195,7 @@ function renderNodeTree(
       focusOtpSibling(-1);
     }
   };
+  const widget = node.overrides?.widget ?? node.widget;
   const shouldClip = Boolean(node.clipContent) && node.children.length > 0;
   const clipId = shouldClip ? `rt-clip-${node.id}` : null;
   const filePreview = filePreviewUrl && filePreviewClipId ? (
@@ -2199,9 +2215,25 @@ function renderNodeTree(
       />
     </>
   ) : null;
+  const widgetContent = widget ? (
+    <foreignObject x={0} y={0} width={frame.w} height={frame.h}>
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "stretch",
+          justifyContent: "stretch",
+        }}
+      >
+        <WidgetSandbox widget={widget} width={frame.w} height={frame.h} interactive={interactive} pageId={pageId} />
+      </div>
+    </foreignObject>
+  ) : null;
   const content = (
     <>
       {filePreview}
+      {widgetContent}
       {showInput && inputRole ? (
         <foreignObject x={0} y={0} width={frame.w} height={frame.h}>
           <div
