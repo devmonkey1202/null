@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -49,6 +49,7 @@ import {
 } from "../doc/scene";
 
 import AdvancedRuntimeRenderer from "../runtime/renderer";
+import type { BridgeActionResult } from "../runtime/widget-bridge";
 import AdvancedRuntimePlayer from "../runtime/player";
 import { NATIVE_COMMANDS, findNativeCommand, formatNativeArgsExample } from "../runtime/native-commands";
 import { applyConstraintsOnResize, layoutDoc } from "../layout/engine";
@@ -94,6 +95,7 @@ import {
   makeEllipseNode,
   makeGroupNode,
   makeTextNode,
+  makeWidgetNode,
   fieldPlaceholder,
 } from "./AdvancedEditor.nodes";
 import { PRESET_GROUPS } from "./AdvancedEditor.presets";
@@ -403,6 +405,7 @@ const ALLOWED_PLUGIN_ACTIONS = new Set([
   "toggleAudit",
   "togglePerformance",
   "openUrl",
+  "createWidget",
 ]);
 
 const ACTION_PERMISSION: Record<string, string | null> = {
@@ -2276,6 +2279,10 @@ export default function AdvancedEditor() {
   const [pluginJson, setPluginJson] = useState("");
   const [pluginError, setPluginError] = useState<string | null>(null);
 
+  const [widgetInput, setWidgetInput] = useState("");
+  const [widgetMode, setWidgetMode] = useState<"html" | "url">("html");
+  const [widgetError, setWidgetError] = useState<string | null>(null);
+
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   /** NOTE: comment removed (encoding issue). */
   const [planFeatures, setPlanFeatures] = useState<{ maxButtons: number; maxTexts: number; maxImages: number } | null>(null);
@@ -2340,6 +2347,26 @@ export default function AdvancedEditor() {
     const r = el.getBoundingClientRect();
     setToolbarOverflowRect({ left: r.right - 180, top: r.bottom + 4 });
   }, [toolbarOverflowOpen]);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const viewMenuRef = useRef<HTMLButtonElement | null>(null);
+  const [viewMenuRect, setViewMenuRect] = useState({ left: 0, top: 0 });
+  useLayoutEffect(() => {
+    if (!viewMenuOpen) return;
+    const el = viewMenuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setViewMenuRect({ left: r.left, top: r.bottom + 4 });
+  }, [viewMenuOpen]);
+  const [arrangeMenuOpen, setArrangeMenuOpen] = useState(false);
+  const arrangeMenuRef = useRef<HTMLButtonElement | null>(null);
+  const [arrangeMenuRect, setArrangeMenuRect] = useState({ left: 0, top: 0 });
+  useLayoutEffect(() => {
+    if (!arrangeMenuOpen) return;
+    const el = arrangeMenuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setArrangeMenuRect({ left: r.left, top: r.bottom + 4 });
+  }, [arrangeMenuOpen]);
   const [elementQuery, setElementQuery] = useState("");
   const [templateQuery, setTemplateQuery] = useState("");
   const [assetTagFilters, setAssetTagFilters] = useState<string[]>([]);
@@ -9647,6 +9674,138 @@ export default function AdvancedEditor() {
     setPluginConsent(null);
   }, [pluginConsent, installPlugins, pushMessage]);
 
+  const handleWidgetBridgeAction = useCallback((action: string, payload: unknown): BridgeActionResult => {
+    const p = (payload ?? {}) as Record<string, unknown>;
+    const doc = docRef.current;
+
+    // --- READ ---
+    if (action === "get_doc_info") {
+      return { status: "ok", payload: { pageCount: doc.pages.length, nodeCount: Object.keys(doc.nodes).length, activePageId } };
+    }
+    if (action === "get_node") {
+      const id = typeof p.id === "string" ? p.id : null;
+      if (!id || !doc.nodes[id]) return { status: "error", error: { code: "node_not_found" } };
+      const n = doc.nodes[id];
+      return { status: "ok", payload: { id: n.id, type: n.type, name: n.name, frame: n.frame, style: n.style, parentId: n.parentId, children: n.children, text: n.text ?? null } };
+    }
+    if (action === "get_nodes") {
+      const ids = Array.isArray(p.ids) ? (p.ids as string[]).filter((i) => typeof i === "string") : Object.keys(doc.nodes);
+      const nodes = ids.map((id) => { const n = doc.nodes[id]; return n ? { id: n.id, type: n.type, name: n.name, frame: n.frame } : null; }).filter(Boolean);
+      return { status: "ok", payload: { nodes } };
+    }
+    if (action === "get_selection") {
+      return { status: "ok", payload: { ids: Array.from(doc.selection) } };
+    }
+    if (action === "get_variables") {
+      return { status: "ok", payload: { variables: doc.variables ?? [] } };
+    }
+    if (action === "get_page_nodes") {
+      const root = ensurePageRoot(doc, activePageId);
+      const collectIds = (nodeId: string): string[] => {
+        const n = doc.nodes[nodeId];
+        if (!n) return [];
+        return [nodeId, ...n.children.flatMap(collectIds)];
+      };
+      return { status: "ok", payload: { ids: collectIds(root) } };
+    }
+    if (action === "get_pages") {
+      return { status: "ok", payload: { pages: doc.pages.map((pg) => ({ id: pg.id, name: pg.name, rootId: pg.rootId })) } };
+    }
+
+    // --- WRITE ---
+    if (action === "update_node") {
+      const id = typeof p.id === "string" ? p.id : null;
+      const patch = p.patch && typeof p.patch === "object" ? p.patch as Partial<Node> : null;
+      if (!id || !patch || !doc.nodes[id]) return { status: "error", error: { code: "invalid_params" } };
+      updateNode(id, patch, true);
+      return { status: "ok" };
+    }
+    if (action === "create_node") {
+      const type = typeof p.type === "string" ? p.type as NodeType : "frame";
+      const name = typeof p.name === "string" ? p.name : type;
+      const frame = p.frame && typeof p.frame === "object" ? p.frame as Frame : { x: 0, y: 0, w: 200, h: 200, rotation: 0 };
+      const draft = cloneDoc(doc);
+      const root = ensurePageRoot(draft, activePageId);
+      const node = createNode(type, { name, frame: { ...{ x: 0, y: 0, w: 200, h: 200, rotation: 0 }, ...frame } });
+      addNode(draft, node, root);
+      draft.selection = new Set([node.id]);
+      replace(draft);
+      return { status: "ok", payload: { id: node.id } };
+    }
+    if (action === "delete_node") {
+      const id = typeof p.id === "string" ? p.id : null;
+      if (!id || !doc.nodes[id]) return { status: "error", error: { code: "node_not_found" } };
+      const draft = cloneDoc(doc);
+      const target = draft.nodes[id];
+      if (target.parentId) {
+        const parent = draft.nodes[target.parentId];
+        if (parent) parent.children = parent.children.filter((c) => c !== id);
+      }
+      delete draft.nodes[id];
+      draft.selection.delete(id);
+      commit(draft);
+      return { status: "ok" };
+    }
+    if (action === "set_variable") {
+      const varId = typeof p.id === "string" ? p.id : null;
+      const value = p.value;
+      if (!varId) return { status: "error", error: { code: "invalid_params" } };
+      const draft = cloneDoc(doc);
+      const vars = draft.variables ?? [];
+      const idx = vars.findIndex((v) => v.id === varId);
+      if (idx >= 0) {
+        vars[idx] = { ...vars[idx], value: value as Variable["value"] };
+      }
+      draft.variables = vars;
+      replace(draft);
+      return { status: "ok" };
+    }
+    if (action === "set_selection") {
+      const ids = Array.isArray(p.ids) ? (p.ids as string[]).filter((i) => typeof i === "string" && doc.nodes[i]) : [];
+      const draft = cloneDoc(doc);
+      draft.selection = new Set(ids);
+      replace(draft);
+      return { status: "ok" };
+    }
+    if (action === "notify") {
+      const msg = typeof p.message === "string" ? p.message : "위젯 알림";
+      pushMessage(msg);
+      return { status: "ok" };
+    }
+
+    return { status: "error", error: { code: "unknown_action" } };
+  }, [activePageId, replace, pushMessage]);
+
+  const insertWidgetNode = useCallback(() => {
+    setWidgetError(null);
+    const raw = widgetInput.trim();
+    if (!raw) return;
+    const draft = cloneDoc(docRef.current);
+    const root = ensurePageRoot(draft, activePageId);
+    const zoom = draft.view.zoom || 1;
+    const cx = draft.view.panX + (canvasSize.width / zoom) / 2;
+    const cy = draft.view.panY + (canvasSize.height / zoom) / 2;
+    const w = 640;
+    const h = 480;
+    const isUrl = widgetMode === "url";
+    if (isUrl) {
+      try { new URL(raw); } catch { setWidgetError("올바른 URL이 아닙니다."); return; }
+    }
+    const widget = {
+      kind: "sandbox" as const,
+      ...(isUrl ? { src: raw } : { html: raw }),
+      sandbox: "allow-scripts allow-forms allow-modals allow-same-origin allow-popups",
+      timeoutMs: 0,
+      allowedHosts: ["*"],
+    };
+    const node = makeWidgetNode("위젯", { x: cx - w / 2, y: cy - h / 2, w, h, rotation: 0 }, widget);
+    addNode(draft, node, root);
+    draft.selection = new Set([node.id]);
+    replace(draft);
+    setWidgetInput("");
+    pushMessage("위젯이 캔버스에 추가되었습니다.");
+  }, [widgetInput, widgetMode, activePageId, canvasSize, replace, pushMessage]);
+
   const removePlugin = useCallback(
     async (id: string) => {
       if (pageId) {
@@ -9743,9 +9902,39 @@ export default function AdvancedEditor() {
         window.open(safe, "_blank");
         return;
       }
+      if (action.type === "createWidget") {
+        const html = typeof params.html === "string" ? params.html : undefined;
+        const src = typeof params.src === "string" ? params.src : undefined;
+        if (!html && !src) { pushMessage("위젯에 html 또는 src가 필요합니다."); return; }
+        const draft = cloneDoc(docRef.current);
+        const root = ensurePageRoot(draft, activePageId);
+        const zoom = draft.view.zoom || 1;
+        const cx = draft.view.panX + (canvasSize.width / zoom) / 2;
+        const cy = draft.view.panY + (canvasSize.height / zoom) / 2;
+        const w = Number(params.width) || 640;
+        const h = Number(params.height) || 480;
+        const widgetDef = {
+          kind: "sandbox" as const,
+          ...(src ? { src } : { html }),
+          sandbox: typeof params.sandbox === "string" ? params.sandbox : "allow-scripts allow-forms allow-modals allow-same-origin allow-popups",
+          title: typeof params.title === "string" ? params.title : undefined,
+          timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 0,
+          allowedHosts: ["*"],
+        };
+        const node = makeWidgetNode(
+          typeof params.name === "string" ? params.name : "위젯",
+          { x: cx - w / 2, y: cy - h / 2, w, h, rotation: 0 },
+          widgetDef,
+        );
+        addNode(draft, node, root);
+        draft.selection = new Set([node.id]);
+        replace(draft);
+        pushMessage("위젯이 캔버스에 추가되었습니다.");
+        return;
+      }
       pushMessage("Unsupported action.");
     },
-    [exportSelectionPng, exportSelectionSvg, exportTokensJson, pushMessage],
+    [exportSelectionPng, exportSelectionSvg, exportTokensJson, pushMessage, activePageId, canvasSize, replace],
   );
 
   const createBranch = useCallback(() => {
@@ -10193,16 +10382,25 @@ export default function AdvancedEditor() {
     };
   }, [versionListOpen, shortcutHelpOpen, figmaImportOpen, saveDraft]);
 
-  function handleWheel(e: React.WheelEvent) {
+  function handleCanvasWheel(e: React.WheelEvent) {
     if (contextMenu) { setContextMenuSubMenu(null); setContextMenu(null); }
+    const el = canvasRef.current;
+    if (!el) return;
     if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
+      const view = docRef.current.view;
+      const oldZoom = view.zoom;
       const delta = e.deltaY > 0 ? -0.1 : 0.1;
-      const nextZoom = clamp(docRef.current.view.zoom + delta, 0.2, 4);
-      replace({ ...docRef.current, view: { ...docRef.current.view, zoom: nextZoom } });
+      const nextZoom = clamp(oldZoom + delta, 0.2, 4);
+      const rect = el.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left;
+      const cursorY = e.clientY - rect.top;
+      const worldX = cursorX / oldZoom - view.panX;
+      const worldY = cursorY / oldZoom - view.panY;
+      const newPanX = cursorX / nextZoom - worldX;
+      const newPanY = cursorY / nextZoom - worldY;
+      replace({ ...docRef.current, view: { ...view, zoom: nextZoom, panX: newPanX, panY: newPanY } });
       return;
     }
-    e.preventDefault();
     const zoom = docRef.current.view.zoom;
     replace({
       ...docRef.current,
@@ -10213,6 +10411,13 @@ export default function AdvancedEditor() {
       },
     });
   }
+  useEffect(() => {
+    const blockBrowserZoom = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) e.preventDefault();
+    };
+    document.addEventListener("wheel", blockBrowserZoom, { passive: false });
+    return () => document.removeEventListener("wheel", blockBrowserZoom);
+  }, []);
 
   const layers = useMemo(() => {
     const base = flattenIds(doc, pageRoot)
@@ -10999,16 +11204,16 @@ export default function AdvancedEditor() {
     <>
       {selectedNode ? (
       <div className="space-y-4" key="with-node">
-        <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden" role="region" aria-label="���� �б�">
+        <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden" role="region" aria-label="텍스트 읽기">
           <div className="px-2 py-1.5 flex items-center gap-2">
             <button
               type="button"
               className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
               onClick={readSelectionAloud}
               disabled={!doc.selection.size}
-              aria-label="������ ���̾� �Ӽ��� �о��ݴϴ�"
+              aria-label="선택한 요소의 속성을 읽습니다"
             >
-              ���� �б�
+              텍스트 읽기
             </button>
             <span className="sr-only" aria-live="polite" aria-atomic>
               {selectionAnnounceText}
@@ -11022,14 +11227,14 @@ export default function AdvancedEditor() {
               className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100"
               onClick={() => setRightPanelSections((s) => ({ ...s, dataBinding: !s.dataBinding }))}
             >
-              <span>������ ���ε�</span>
+              <span>데이터 바인딩</span>
               <span className={`shrink-0 transition-transform ${rightPanelSections.dataBinding ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.dataBinding && (
               <div className="px-2 pb-2">
                 <div className="mt-2 space-y-2">
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">�÷��� ���ε�</span>
+                    <span className="text-neutral-500">컬렉션 바인딩</span>
                     <input
                       type="checkbox"
                       checked={Boolean(selectedDataBinding)}
@@ -11051,7 +11256,7 @@ export default function AdvancedEditor() {
                   {selectedDataBinding ? (
                     <>
                       <label className="flex flex-col gap-1">
-                        <span className="text-neutral-500">�÷��� ID</span>
+                        <span className="text-neutral-500">컬렉션 ID</span>
                         <input
                           type="text"
                           value={selectedDataBinding.collectionId ?? ""}
@@ -11068,7 +11273,7 @@ export default function AdvancedEditor() {
                         />
                       </label>
                       <label className="flex items-center justify-between gap-2">
-                        <span className="text-neutral-500">���</span>
+                        <span className="text-neutral-500">모드</span>
                         <select
                           value={selectedDataBinding.mode ?? "list"}
                           onChange={(e) =>
@@ -11081,12 +11286,12 @@ export default function AdvancedEditor() {
                           }
                           className="rounded border border-neutral-200 px-2 py-1 text-xs"
                         >
-                          <option value="list">����Ʈ</option>
-                          <option value="table">���̺�</option>
+                          <option value="list">리스트</option>
+                          <option value="table">테이블</option>
                         </select>
                       </label>
                       <label className="flex flex-col gap-1">
-                        <span className="text-neutral-500">�ʵ�(��ǥ)</span>
+                        <span className="text-neutral-500">필드(키)</span>
                         <input
                           type="text"
                           value={selectedDataBindingFields}
@@ -11314,7 +11519,7 @@ export default function AdvancedEditor() {
                         </button>
                       </div>
                       <label className="flex items-center justify-between gap-2">
-                        <span className="text-neutral-500">���� ���</span>
+                        <span className="text-neutral-500">첫 자식</span>
                         <input
                           type="checkbox"
                           checked={Boolean(selectedDataBinding.editable)}
@@ -11329,7 +11534,7 @@ export default function AdvancedEditor() {
                         />
                       </label>
                       <label className="flex items-center justify-between gap-2">
-                        <span className="text-neutral-500">���� ���</span>
+                        <span className="text-neutral-500">첫 자식</span>
                         <input
                           type="checkbox"
                           checked={Boolean(selectedDataBinding.allowDelete)}
@@ -11345,15 +11550,15 @@ export default function AdvancedEditor() {
                       </label>
                       {selectedNode.children.length === 0 ? (
                         <p className="text-[11px] text-amber-600">
-                          ù �ڽ� ��尡 �ݺ� ���ø��Դϴ�. �ڽ� ��带 �߰��ϼ���.
+                          첫 자식 노드가 반복 대상입니다. 자식 노드를 추가하세요.
                         </p>
                       ) : (
-                        <p className="text-[11px] text-neutral-500">ù �ڽ� ��带 �ݺ� �������մϴ�.</p>
+                        <p className="text-[11px] text-neutral-500">첫 자식 노드를 반복 적용합니다.</p>
                       )}
                     </>
                   ) : (
                     <p className="text-[11px] text-neutral-500">
-                      �÷��� ���ε��� �Ѹ� ù �ڽ��� �ݺ� �������մϴ�.
+                      컬렉션 바인딩 시 첫 자식 노드를 반복 적용합니다.
                     </p>
                   )}
                 </div>
@@ -11363,7 +11568,7 @@ export default function AdvancedEditor() {
         )}
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, geometry: !s.geometry }))}>
-            <span>����</span>
+            <span>지오메트리</span>
             <span className={`shrink-0 transition-transform ${rightPanelSections.geometry ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.geometry && (
@@ -11388,22 +11593,22 @@ export default function AdvancedEditor() {
                 {selectedNode.parentId ? (
                   <>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">���� %</span>
+                      <span className="text-neutral-500">너비 %</span>
                       <input type="number" min={0} max={100} step={1} placeholder="?" value={selectedNode.widthPercent ?? ""} onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); updateNode(selectedNode.id, { widthPercent: v }, true); }} className="w-20 rounded border border-neutral-200 px-2 py-1" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">���� %</span>
+                      <span className="text-neutral-500">높이 %</span>
                       <input type="number" min={0} max={100} step={1} placeholder="?" value={selectedNode.heightPercent ?? ""} onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); updateNode(selectedNode.id, { heightPercent: v }, true); }} className="w-20 rounded border border-neutral-200 px-2 py-1" />
                     </label>
                   </>
                 ) : null}
                 <label className="flex items-center justify-between gap-2">
-                  <span className="text-neutral-500">ȸ��</span>
+                  <span className="text-neutral-500">회전</span>
                   <input type="number" value={Math.round(selectedNode.frame.rotation)} onChange={(e) => updateNode(selectedNode.id, { frame: { ...selectedNode.frame, rotation: Number(e.target.value) } }, true)} className="w-20 rounded border border-neutral-200 px-2 py-1" />
                 </label>
               </div>
               <div className="mt-2">
-                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={fitSelectionToContent} disabled={!selectedNode.children?.length && !autoLayout}>���� ����</button>
+                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={fitSelectionToContent} disabled={!selectedNode.children?.length && !autoLayout}>내용 맞춤</button>
               </div>
               {vectorOpsEnabled ? (
                 <div className="mt-3 rounded-md border border-neutral-200 bg-white px-2 py-2">
@@ -11428,7 +11633,7 @@ export default function AdvancedEditor() {
               ) : null}
               {selectedIsPageRoot && activePageMeta ? (
                 <div className="mt-3 border-t border-neutral-100 pt-2 space-y-2">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">�극��ũ����Ʈ</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">브레이크포인트</div>
                   <div className="flex flex-wrap gap-2">
                     {BREAKPOINT_PRESETS.map((preset) => (
                       <button
@@ -11437,7 +11642,7 @@ export default function AdvancedEditor() {
                         className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                         onClick={() => applyPageBreakpoint(activePageMeta.id, preset)}
                       >
-                        {preset.name} {preset.width}��{preset.height}
+                        {preset.name} {preset.width}×{preset.height}
                       </button>
                     ))}
                     <button
@@ -11448,7 +11653,7 @@ export default function AdvancedEditor() {
                         setNewBreakpointHeight(Math.round(selectedNode.frame.h));
                       }}
                     >
-                      ���� ũ�� �ݿ�
+                      맞춤 크기 추가
                     </button>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -11456,7 +11661,7 @@ export default function AdvancedEditor() {
                       type="text"
                       value={newBreakpointName}
                       onChange={(e) => setNewBreakpointName(e.target.value)}
-                      placeholder="�̸� (����)"
+                      placeholder="이름 (선택)"
                       className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
                     />
                     <button
@@ -11464,45 +11669,45 @@ export default function AdvancedEditor() {
                       className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                       onClick={() =>
                         applyPageBreakpoint(activePageMeta.id, {
-                          name: newBreakpointName || "Ŀ����",
+                          name: newBreakpointName || "데스크톱",
                           width: newBreakpointWidth,
                           height: newBreakpointHeight,
                         })
                       }
                     >
-                      �߰� + ����
+                      추가 + 적용
                     </button>
                     <input
                       type="number"
                       value={newBreakpointWidth}
                       onChange={(e) => setNewBreakpointWidth(Number(e.target.value) || 0)}
                       className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
-                      placeholder="��"
+                      placeholder="너비"
                     />
                     <input
                       type="number"
                       value={newBreakpointHeight}
                       onChange={(e) => setNewBreakpointHeight(Number(e.target.value) || 0)}
                       className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
-                      placeholder="����"
+                      placeholder="높이"
                     />
                   </div>
                   {pageBreakpoints.length === 0 ? (
-                    <p className="text-[11px] text-neutral-400">����� �극��ũ����Ʈ�� �����ϴ�.</p>
+                    <p className="text-[11px] text-neutral-400">페이지 브레이크포인트가 없습니다.</p>
                   ) : (
                     <div className="space-y-1">
                       {pageBreakpoints.map((bp) => (
                         <div key={bp.id} className="flex items-center justify-between gap-2 rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]">
                           <div className="flex items-center gap-2">
                             <span className="text-neutral-700">{bp.name}</span>
-                            <span className="text-neutral-400">{bp.width}��{bp.height}</span>
+                            <span className="text-neutral-400">{bp.width}×{bp.height}</span>
                             {activePageBreakpointId === bp.id && (
-                              <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">����</span>
+                              <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">적용</span>
                             )}
                           </div>
                           <div className="flex items-center gap-1">
-                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => applyPageBreakpoint(activePageMeta.id, bp)}>����</button>
-                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => removePageBreakpoint(activePageMeta.id, bp.id)}>����</button>
+                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => applyPageBreakpoint(activePageMeta.id, bp)}>적용</button>
+                            <button type="button" className="rounded border border-neutral-200 px-2 py-0.5" onClick={() => removePageBreakpoint(activePageMeta.id, bp.id)}>삭제</button>
                           </div>
                         </div>
                       ))}
@@ -11512,7 +11717,7 @@ export default function AdvancedEditor() {
               ) : null}
               {!selectedIsPageRoot && pageBreakpoints.length > 0 && selectedNode ? (
                 <div className="mt-3 border-t border-neutral-100 pt-2 space-y-2">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">������ �������̵�</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">노드별 브레이크포인트</div>
                   {pageBreakpoints.map((bp) => {
                     const bpOverride = selectedNode.breakpointOverrides?.[bp.id];
                     const isHidden = bpOverride?.hidden ?? false;
@@ -11530,7 +11735,7 @@ export default function AdvancedEditor() {
                               node.breakpointOverrides[bp.id].hidden = e.target.checked;
                               commit(draft);
                             }} />
-                            ����
+                            숨김
                           </label>
                         </div>
                         <div className="grid grid-cols-2 gap-1">
@@ -11571,42 +11776,42 @@ export default function AdvancedEditor() {
         </div>
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, layout: !s.layout }))}>
-            <span>���̾ƿ�</span>
+            <span>레이아웃</span>
             <span className={`shrink-0 transition-transform ${rightPanelSections.layout ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.layout && (
             <div className="px-2 pb-2">
               <div className="mt-2 space-y-2">
                 <label className="flex items-center justify-between gap-2">
-                  <span className="text-neutral-500">�ڵ�</span>
+                  <span className="text-neutral-500">자동</span>
                   <input type="checkbox" checked={Boolean(autoLayout)} onChange={(e) => { if (e.target.checked) updateNode(selectedNode.id, { layout: { ...DEFAULT_AUTO_LAYOUT } }, true); else updateNode(selectedNode.id, { layout: { mode: "fixed" } }, true); }} />
                 </label>
                 {autoLayout && (
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">���� ���</span>
+                    <span className="text-neutral-500">첫 자식</span>
                     <select value={resolvedAutoLayout.gapMode ?? "fixed"} onChange={(e) => updateNode(selectedNode.id, { layout: { ...resolvedAutoLayout, gapMode: e.target.value as "fixed" | "space-between" } }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                      <option value="fixed">���� ����</option>
-                      <option value="space-between">���� �й�</option>
+                      <option value="fixed">고정 간격</option>
+                      <option value="space-between">간격 채움</option>
                     </select>
                   </label>
                 )}
                 {parentIsAutoLayout && (
                   <>
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">�ڽ� ũ��</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">자식 크기</div>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">����</span>
+                      <span className="text-neutral-500">너비</span>
                       <select value={sizing.width} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, width: e.target.value as "fixed" | "fill" | "hug" } }, true)} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
-                        <option value="fixed">����</option>
-                        <option value="fill">ä���</option>
-                        <option value="hug">���α�</option>
+                        <option value="fixed">고정</option>
+                        <option value="fill">채움</option>
+                        <option value="hug">허그</option>
                       </select>
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">����</span>
+                      <span className="text-neutral-500">높이</span>
                       <select value={sizing.height} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, height: e.target.value as "fixed" | "fill" | "hug" } }, true)} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
-                        <option value="fixed">����</option>
-                        <option value="fill">ä���</option>
-                        <option value="hug">���α�</option>
+                        <option value="fixed">고정</option>
+                        <option value="fill">채움</option>
+                        <option value="hug">허그</option>
                       </select>
                     </label>
                     <div className="grid grid-cols-2 gap-1 text-[11px]">
@@ -11619,37 +11824,37 @@ export default function AdvancedEditor() {
                 )}
                 {canEditConstraints && (
                   <div className="border-t border-neutral-100 pt-2">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">����</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">제약</div>
                     <div className="grid grid-cols-3 gap-1 text-[11px]">
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, top: true })}>�»�</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, top: true })}>���</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, top: true })}>���</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, vCenter: true })}>��</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, vCenter: true })}>�߾�</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, vCenter: true })}>��</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, bottom: true })}>����</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, bottom: true })}>�ϴ�</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, bottom: true })}>����</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, top: true })}>좌상</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, top: true })}>중상</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, top: true })}>우상</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, vCenter: true })}>좌</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, vCenter: true })}>중앙</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, vCenter: true })}>우</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, bottom: true })}>좌하</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, bottom: true })}>중하</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, bottom: true })}>우하</button>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.left)} onChange={(e) => updateConstraintFlag("left", e.target.checked)} />����</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.right)} onChange={(e) => updateConstraintFlag("right", e.target.checked)} />������</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.top)} onChange={(e) => updateConstraintFlag("top", e.target.checked)} />��</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.bottom)} onChange={(e) => updateConstraintFlag("bottom", e.target.checked)} />�Ʒ�</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.hCenter)} onChange={(e) => updateConstraintFlag("hCenter", e.target.checked)} />���� �߾�</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.vCenter)} onChange={(e) => updateConstraintFlag("vCenter", e.target.checked)} />���� �߾�</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.left)} onChange={(e) => updateConstraintFlag("left", e.target.checked)} />좌</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.right)} onChange={(e) => updateConstraintFlag("right", e.target.checked)} />우측</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.top)} onChange={(e) => updateConstraintFlag("top", e.target.checked)} />상</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.bottom)} onChange={(e) => updateConstraintFlag("bottom", e.target.checked)} />하</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.hCenter)} onChange={(e) => updateConstraintFlag("hCenter", e.target.checked)} />가로 중앙</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.vCenter)} onChange={(e) => updateConstraintFlag("vCenter", e.target.checked)} />세로 중앙</label>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true })}>���� ���̱�</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ top: true, bottom: true })}>���� ���̱�</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true, top: true, bottom: true })}>��ü ���̱�</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={clearConstraints}>���� �ʱ�ȭ</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true })}>좌우 고정</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ top: true, bottom: true })}>상하 고정</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true, top: true, bottom: true })}>전체 고정</button>
+                      <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={clearConstraints}>제약 초기화</button>
                     </div>
                   </div>
                 )}
                 {canEditLayoutGrid ? (
                   <div className="border-t border-neutral-100 pt-2">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">���̾ƿ� �׸���</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">레이아웃 패턴</div>
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -11661,7 +11866,7 @@ export default function AdvancedEditor() {
                           ])
                         }
                       >
-                        �� �߰�
+                        열 추가
                       </button>
                       <button
                         type="button"
@@ -11673,7 +11878,7 @@ export default function AdvancedEditor() {
                           ])
                         }
                       >
-                        �� �߰�
+                        행 추가
                       </button>
                       <button
                         type="button"
@@ -11685,16 +11890,16 @@ export default function AdvancedEditor() {
                           ])
                         }
                       >
-                        �׸��� �߰�
+                        패턴 추가
                       </button>
                     </div>
                     {layoutGridItems.length === 0 ? (
-                      <p className="mt-2 text-[11px] text-neutral-400">���̾ƿ� �׸��尡 �����ϴ�.</p>
+                      <p className="mt-2 text-[11px] text-neutral-400">레이아웃 패턴이 없습니다.</p>
                     ) : (
                       <div className="mt-2 space-y-2">
                         {layoutGridItems.map((item, idx) => {
                           const label =
-                            item.type === "columns" ? "��" : item.type === "rows" ? "��" : "�׸���";
+                            item.type === "columns" ? "열" : item.type === "rows" ? "행" : "패턴";
                           const updateItem = (patch: Partial<LayoutGridItem>) => {
                             const next = layoutGridItems.map((g, i) => (i === idx ? ({ ...g, ...patch } as LayoutGridItem) : g));
                             updateLayoutGridItems(next);
@@ -11708,14 +11913,14 @@ export default function AdvancedEditor() {
                                   className="rounded border border-neutral-200 px-2 py-0.5 text-[10px]"
                                   onClick={() => updateLayoutGridItems(layoutGridItems.filter((_, i) => i !== idx))}
                                 >
-                                  ����
+                                  삭제
                                 </button>
                               </div>
                               {item.type === "columns" && (
                                 <>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>����</span>
+                                      <span>개수</span>
                                       <input
                                         type="number"
                                         min={1}
@@ -11725,7 +11930,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>�ʺ�</span>
+                                      <span>너비</span>
                                       <input
                                         type="number"
                                         value={item.width ?? ""}
@@ -11739,7 +11944,7 @@ export default function AdvancedEditor() {
                                   </div>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>����</span>
+                                      <span>간격</span>
                                       <input
                                         type="number"
                                         value={item.gutter ?? 0}
@@ -11748,7 +11953,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>������</span>
+                                      <span>오프셋</span>
                                       <input
                                         type="number"
                                         value={item.offset ?? 0}
@@ -11763,7 +11968,7 @@ export default function AdvancedEditor() {
                                 <>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>����</span>
+                                      <span>개수</span>
                                       <input
                                         type="number"
                                         min={1}
@@ -11773,7 +11978,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>����</span>
+                                      <span>높이</span>
                                       <input
                                         type="number"
                                         value={item.height ?? ""}
@@ -11787,7 +11992,7 @@ export default function AdvancedEditor() {
                                   </div>
                                   <div className="grid grid-cols-2 gap-2">
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>����</span>
+                                      <span>간격</span>
                                       <input
                                         type="number"
                                         value={item.gutter ?? 0}
@@ -11796,7 +12001,7 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                     <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                      <span>������</span>
+                                      <span>오프셋</span>
                                       <input
                                         type="number"
                                         value={item.offset ?? 0}
@@ -11809,7 +12014,7 @@ export default function AdvancedEditor() {
                               )}
                               {item.type === "grid" && (
                                 <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                  <span>�� ũ��</span>
+                                  <span>셀 크기</span>
                                   <input
                                     type="number"
                                     min={1}
@@ -11821,7 +12026,7 @@ export default function AdvancedEditor() {
                               )}
                               <div className="grid grid-cols-2 gap-2">
                                 <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                  <span>����</span>
+                                  <span>색상</span>
                                   <input
                                     type="color"
                                     value={item.color ?? "#94A3B8"}
@@ -11830,7 +12035,7 @@ export default function AdvancedEditor() {
                                   />
                                 </label>
                                 <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                                  <span>�����</span>
+                                  <span>불투명도</span>
                                   <input
                                     type="number"
                                     step={0.05}
@@ -11852,16 +12057,16 @@ export default function AdvancedEditor() {
                 {["frame", "section", "component", "instance", "group", "table"].includes(selectedNode.type) && (
                   <>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">Ŭ��</span>
+                      <span className="text-neutral-500">클릭</span>
                       <input type="checkbox" checked={Boolean(selectedNode.clipContent)} onChange={(e) => updateNode(selectedNode.id, { clipContent: e.target.checked }, true)} />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">�����÷ο�</span>
+                      <span className="text-neutral-500">오버플로우</span>
                       <select value={selectedNode.overflowScrolling ?? "none"} onChange={(e) => updateNode(selectedNode.id, { overflowScrolling: e.target.value === "none" ? undefined : (e.target.value as "vertical" | "horizontal" | "both") }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                        <option value="none">����</option>
-                        <option value="horizontal">����</option>
-                        <option value="vertical">����</option>
-                        <option value="both">�� ��</option>
+                        <option value="none">없음</option>
+                        <option value="horizontal">가로</option>
+                        <option value="vertical">세로</option>
+                        <option value="both">둘 다</option>
                       </select>
                     </label>
                   </>
@@ -11869,18 +12074,18 @@ export default function AdvancedEditor() {
                 {selectedNode.type === "table" && (
                   <>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">�� ��</span>
+                      <span className="text-neutral-500">열 개수</span>
                       <input type="number" min={1} value={selectedNode.table?.columns ?? 3} onChange={(e) => updateNode(selectedNode.id, { table: { ...selectedNode.table, columns: Math.max(1, Math.round(Number(e.target.value) || 1)), headerRow: selectedNode.table?.headerRow } }, true)} className="w-14 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">��� ��</span>
+                      <span className="text-neutral-500">간격 값</span>
                       <input type="checkbox" checked={Boolean(selectedNode.table?.headerRow)} onChange={(e) => updateNode(selectedNode.id, { table: { ...selectedNode.table, columns: selectedNode.table?.columns ?? 3, headerRow: e.target.checked } }, true)} />
                     </label>
                   </>
                 )}
                 {selectedNode.parentId && doc.nodes[selectedNode.parentId]?.overflowScrolling ? (
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">��ũ�� �� ����</span>
+                    <span className="text-neutral-500">스택 순서</span>
                     <input type="checkbox" checked={Boolean(selectedNode.sticky)} onChange={(e) => updateNode(selectedNode.id, { sticky: e.target.checked }, true)} />
                   </label>
                 ) : null}
@@ -11946,7 +12151,7 @@ export default function AdvancedEditor() {
               className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100"
               onClick={() => setRightPanelSections((s) => ({ ...s, media: !s.media }))}
             >
-              <span>�̵��</span>
+              <span>이미지</span>
               <span className={`shrink-0 transition-transform ${rightPanelSections.media ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.media && (
@@ -11964,7 +12169,7 @@ export default function AdvancedEditor() {
                   </label>
                   {selectedNode?.type === "image" ? (
                     <label className="flex flex-col gap-1">
-                      <span className="text-neutral-500">���� ���ε�</span>
+                      <span className="text-neutral-500">이미지 바인딩</span>
                       <input
                         type="file"
                         accept={IMAGE_FILE_ACCEPT}
@@ -11981,19 +12186,19 @@ export default function AdvancedEditor() {
                     </label>
                   ) : null}
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">����</span>
+                    <span className="text-neutral-500">비율</span>
                     <select
                       value={selectedMedia?.fit ?? "cover"}
                       onChange={(e) => updateSelectedMedia({ fit: e.target.value as "cover" | "contain" | "fill" })}
                       className="rounded border border-neutral-200 px-2 py-1 text-xs"
                     >
-                      <option value="cover">ä���(cover)</option>
-                      <option value="contain">����(contain)</option>
-                      <option value="fill">�ø���(fill)</option>
+                      <option value="cover">채움(cover)</option>
+                      <option value="contain">맞춤(contain)</option>
+                      <option value="fill">늘림(fill)</option>
                     </select>
                   </label>
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">������</span>
+                    <span className="text-neutral-500">정렬</span>
                     <input
                       type="number"
                       step={0.05}
@@ -12005,7 +12210,7 @@ export default function AdvancedEditor() {
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">������ X</span>
+                      <span className="text-neutral-500">오프셋 X</span>
                       <input
                         type="number"
                         value={selectedMedia?.offsetX ?? 0}
@@ -12014,7 +12219,7 @@ export default function AdvancedEditor() {
                       />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">������ Y</span>
+                      <span className="text-neutral-500">오프셋 Y</span>
                       <input
                         type="number"
                         value={selectedMedia?.offsetY ?? 0}
@@ -12073,21 +12278,21 @@ export default function AdvancedEditor() {
                     </div>
                   )}
                   <div className="border-t border-neutral-100 pt-2">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">�̹��� �ϰ� ��ü</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">이미지와 그룹</div>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">����</span>
+                      <span className="text-neutral-500">비율</span>
                       <select
                         value={bulkImageScope}
                         onChange={(e) => setBulkImageScope(e.target.value as "selection" | "page" | "document")}
                         className="rounded border border-neutral-200 px-2 py-1 text-xs"
                       >
-                        <option value="selection">����</option>
-                        <option value="page">������</option>
-                        <option value="document">���� ��ü</option>
+                        <option value="selection">선택</option>
+                        <option value="page">페이지</option>
+                        <option value="document">문서 전체</option>
                       </select>
                     </label>
                     <label className="flex flex-col gap-1 mt-2">
-                      <span className="text-neutral-500">�̹��� URL</span>
+                      <span className="text-neutral-500">이미지 URL</span>
                       <input
                         type="text"
                         value={bulkImageUrl}
@@ -12097,7 +12302,7 @@ export default function AdvancedEditor() {
                       />
                     </label>
                     <label className="flex flex-col gap-1 mt-2">
-                      <span className="text-neutral-500">���� ���ε�</span>
+                      <span className="text-neutral-500">이미지 바인딩</span>
                       <input
                         type="file"
                         accept={IMAGE_FILE_ACCEPT}
@@ -12117,7 +12322,7 @@ export default function AdvancedEditor() {
                       className="mt-2 w-full rounded border border-neutral-200 bg-white px-2 py-1 text-xs"
                       onClick={() => applyBulkImageReplace(bulkImageUrl, bulkImageScope)}
                     >
-                      �ϰ� ����
+                      그룹 해제
                     </button>
                   </div>
                 </div>
@@ -12127,7 +12332,7 @@ export default function AdvancedEditor() {
         )}
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, fillStroke: !s.fillStroke }))}>
-            <span>ä��⡤�׵θ���ȿ��</span>
+            <span>채움·레이어·효과</span>
             <span className={`shrink-0 transition-transform ${rightPanelSections.fillStroke ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.fillStroke && (
@@ -12150,8 +12355,8 @@ export default function AdvancedEditor() {
                     <>
                       <label className="flex items-center justify-between gap-2">
                         <span className="flex items-center gap-1.5">
-                          <span className="text-neutral-500">ä���</span>
-                          {selectedNode.style.fillRef ? <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800">����</span> : null}
+                          <span className="text-neutral-500">채움</span>
+                          {selectedNode.style.fillRef ? <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800">참조</span> : null}
                         </span>
                         <select
                           value={isSolid ? "solid" : isLinear ? "linear" : isRadial ? "radial" : isImage ? "image" : "solid"}
@@ -12164,26 +12369,26 @@ export default function AdvancedEditor() {
                           }}
                           className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                         >
-                          <option value="solid">�ܻ�</option>
-                          <option value="linear">���� �׶���Ʈ</option>
+                          <option value="solid">단색</option>
+                          <option value="linear">선형 그라데이션</option>
                           <option value="radial">Radial</option>
-                          <option value="image">�̹���</option>
+                          <option value="image">이미지</option>
                         </select>
                       </label>
                       {isSolid && (
                         <label className="flex items-center justify-between gap-2">
-                          <span className="text-neutral-500">��</span>
+                          <span className="text-neutral-500">각도</span>
                           <input type="color" value={primaryFill.color} onChange={(e) => setFills([{ type: "solid", color: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                         </label>
                       )}
                       {isImage && (
                         <>
                           <label className="flex flex-col gap-1">
-                            <span className="text-neutral-500">�̹��� URL</span>
+                            <span className="text-neutral-500">이미지 URL</span>
                             <input type="text" value={primaryFill.src} onChange={(e) => setFills([{ ...primaryFill, src: e.target.value }])} placeholder="https://..." className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                           </label>
                           <label className="flex flex-col gap-1">
-                            <span className="text-neutral-500">���� ���ε�</span>
+                            <span className="text-neutral-500">이미지 바인딩</span>
                             <input
                               type="file"
                               accept={IMAGE_FILE_ACCEPT}
@@ -12199,11 +12404,11 @@ export default function AdvancedEditor() {
                             />
                           </label>
                           <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">����</span>
+                            <span className="text-neutral-500">비율</span>
                             <select value={primaryFill.fit} onChange={(e) => setFills([{ ...primaryFill, fit: e.target.value as "cover" | "contain" | "fill" }])} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
-                              <option value="cover">ä���(cover)</option>
-                              <option value="contain">����(contain)</option>
-                              <option value="fill">�ø���(fill)</option>
+                              <option value="cover">채움(cover)</option>
+                              <option value="contain">맞춤(contain)</option>
+                              <option value="fill">늘림(fill)</option>
                             </select>
                           </label>
                         </>
@@ -12211,16 +12416,16 @@ export default function AdvancedEditor() {
                       {(isLinear || isRadial) && (
                         <>
                           <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">���� ��</span>
+                            <span className="text-neutral-500">비율 값</span>
                             <input type="color" value={gradientFill?.from ?? "#000000"} onChange={(e) => gradientFill && setFills([{ ...gradientFill, from: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                           </label>
                           <label className="flex items-center justify-between gap-2">
-                            <span className="text-neutral-500">�� ��</span>
+                            <span className="text-neutral-500">끝 색</span>
                             <input type="color" value={gradientFill?.to ?? "#ffffff"} onChange={(e) => gradientFill && setFills([{ ...gradientFill, to: e.target.value }])} className="h-7 w-12 rounded border border-neutral-200" />
                           </label>
                           {isLinear && (
                             <label className="flex items-center justify-between gap-2">
-                              <span className="text-neutral-500">����(��)</span>
+                              <span className="text-neutral-500">색상(정지)</span>
                               <input type="number" value={gradientFill?.angle ?? 0} onChange={(e) => gradientFill && setFills([{ ...gradientFill, angle: Number(e.target.value) }])} className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                             </label>
                           )}
@@ -12241,13 +12446,13 @@ export default function AdvancedEditor() {
                             </div>
                           )}
                           <div className="border-t border-neutral-100 pt-2 mt-1">
-                            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">������ (stops)</div>
+                            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">그라데이션 (stops)</div>
                             {gradientStops.map((stop, idx) => (
                               <div key={idx} className="flex items-center gap-2 mb-2 rounded border border-neutral-200 bg-white p-2">
                                 <input type="number" min={0} max={1} step={0.05} value={stop.offset} onChange={(e) => {
                                   const next = gradientStops.map((s, i) => (i === idx ? { ...s, offset: Number(e.target.value) } : s)).sort((a, b) => a.offset - b.offset);
                                   gradientFill && setFills([{ ...gradientFill, stops: next }]);
-                                }} className="w-14 rounded border border-neutral-200 px-1.5 py-0.5 text-[11px]" title="��ġ 0~1" />
+                                }} className="w-14 rounded border border-neutral-200 px-1.5 py-0.5 text-[11px]" title="위치 0~1" />
                                 <input type="color" value={stop.color} onChange={(e) => {
                                   const next = gradientStops.map((s, i) => (i === idx ? { ...s, color: e.target.value } : s));
                                   gradientFill && setFills([{ ...gradientFill, stops: next }]);
@@ -12255,13 +12460,13 @@ export default function AdvancedEditor() {
                                 <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => {
                                   const next = gradientStops.filter((_, i) => i !== idx);
                                   gradientFill && setFills([{ ...gradientFill, stops: next.length >= 2 ? next : undefined }]);
-                                }} disabled={gradientStops.length <= 2}>����</button>
+                                }} disabled={gradientStops.length <= 2}>삭제</button>
                               </div>
                             ))}
                             <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => {
                               const next = [...gradientStops, { offset: 0.5, color: "#888888" }].sort((a, b) => a.offset - b.offset);
                               gradientFill && setFills([{ ...gradientFill, stops: next }]);
-                            }}>������ �߰�</button>
+                            }}>그라데이션 추가</button>
                           </div>
                         </>
                       )}
@@ -12284,11 +12489,11 @@ export default function AdvancedEditor() {
                       }, true)
                     }
                   >
-                    ��Ÿ�� ����
+                    레이어 정렬
                   </button>
                 </div>
                 <label className="flex items-center justify-between gap-2">
-                  <span className="text-neutral-500">�����</span>
+                  <span className="text-neutral-500">불투명도</span>
                   <select
                     value={selectedNode.style.blendMode ?? "normal"}
                     onChange={(e) => updateNode(selectedNode.id, { style: { ...selectedNode.style, blendMode: e.target.value as BlendMode } }, true)}
@@ -12300,14 +12505,14 @@ export default function AdvancedEditor() {
                   </select>
                 </label>
                 <div className="border-t border-neutral-100 pt-2 mt-2">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">ȿ��</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">효과</div>
                   {selectedEffects.map((effect, idx) => (
                     <div key={idx} className="rounded border border-neutral-200 bg-white p-2 mb-2 space-y-1.5">
                       <div className="flex items-center justify-between gap-1">
                         <span className="text-[11px] font-medium text-neutral-700">
-                          {effect.type === "shadow" ? "�׸���" : effect.type === "blur" ? "���" : "������"}
+                          {effect.type === "shadow" ? "그림자" : effect.type === "blur" ? "블러" : "노이즈"}
                         </span>
-                        <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => removeEffectAt(idx)}>����</button>
+                        <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => removeEffectAt(idx)}>삭제</button>
                       </div>
                       {effect.type === "shadow" && (
                         <>
@@ -12320,35 +12525,35 @@ export default function AdvancedEditor() {
                             <input type="number" value={effect.y} onChange={(e) => updateEffectAt(idx, { y: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                           </label>
                           <label className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="text-neutral-500">���</span>
+                            <span className="text-neutral-500">모드</span>
                             <input type="number" min={0} value={effect.blur} onChange={(e) => updateEffectAt(idx, { blur: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                           </label>
                           <label className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="text-neutral-500">��</span>
+                            <span className="text-neutral-500">각도</span>
                             <input type="color" value={effect.color} onChange={(e) => updateEffectAt(idx, { color: e.target.value })} className="h-6 w-10 rounded border border-neutral-200" />
                           </label>
                           <label className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="text-neutral-500">������</span>
+                            <span className="text-neutral-500">정렬</span>
                             <input type="number" min={0} max={1} step={0.05} value={effect.opacity ?? 1} onChange={(e) => updateEffectAt(idx, { opacity: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                           </label>
                         </>
                       )}
                       {effect.type === "blur" && (
                         <label className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-neutral-500">���</span>
+                          <span className="text-neutral-500">모드</span>
                           <input type="number" min={0} value={effect.blur} onChange={(e) => updateEffectAt(idx, { blur: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                         </label>
                       )}
                       {effect.type === "noise" && (
                         <label className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-neutral-500">���� (0~1)</span>
+                          <span className="text-neutral-500">불투명도 (0~1)</span>
                           <input type="number" min={0} max={1} step={0.05} value={effect.amount ?? 0.5} onChange={(e) => updateEffectAt(idx, { amount: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                         </label>
                       )}
                     </div>
                   ))}
                   <div className="flex items-center gap-1">
-                    <span className="text-[11px] text-neutral-500">ȿ�� �߰�</span>
+                    <span className="text-[11px] text-neutral-500">효과 추가</span>
                     <select
                       value=""
                       onChange={(e) => {
@@ -12357,10 +12562,10 @@ export default function AdvancedEditor() {
                       }}
                       className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                     >
-                      <option value="">����</option>
-                      <option value="shadow">�׸���</option>
-                      <option value="blur">���</option>
-                      <option value="noise">������</option>
+                      <option value="">없음</option>
+                      <option value="shadow">그림자</option>
+                      <option value="blur">블러</option>
+                      <option value="noise">노이즈</option>
                     </select>
                   </div>
                 </div>
@@ -12371,7 +12576,7 @@ export default function AdvancedEditor() {
         {selectedNode.type === "path" && (
           <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
             <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, pathSegments: !s.pathSegments }))}>
-              <span>Vector network (I5) ? ���׸�Ʈ</span>
+              <span>Vector network (I5) ? 세그먼트</span>
               <span className={`shrink-0 transition-transform ${rightPanelSections.pathSegments ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.pathSegments && (
@@ -12385,7 +12590,7 @@ export default function AdvancedEditor() {
                     if (segments.length === 0) {
                       return (
                         <>
-                          <p className="text-[11px] text-neutral-500">���� path �Ǵ� ���׸�Ʈ ��� ���</p>
+                          <p className="text-[11px] text-neutral-500">선택 path 또는 세그먼트 노드만 가능</p>
                           <button
                             type="button"
                             className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
@@ -12395,7 +12600,7 @@ export default function AdvancedEditor() {
                               segments: [{ d: pathData, fills: selectedNode.style.fills?.length ? [...selectedNode.style.fills] : [{ type: "solid", color: "#EDEDED" }] }],
                             })}
                           >
-                            ���׸�Ʈ ���� ��ȯ
+                            세그먼트 경로 변환
                           </button>
                         </>
                       );
@@ -12411,15 +12616,15 @@ export default function AdvancedEditor() {
                           return (
                             <div key={idx} className="rounded border border-neutral-200 bg-white p-2 space-y-1.5">
                               <div className="flex items-center justify-between gap-1">
-                                <span className="text-[10px] font-medium text-neutral-600">���׸�Ʈ {idx + 1}</span>
-                                <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => setShape({ ...selectedNode.shape, segments: segments.filter((_, i) => i !== idx) })} disabled={segments.length <= 1}>����</button>
+                                <span className="text-[10px] font-medium text-neutral-600">세그먼트 {idx + 1}</span>
+                                <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => setShape({ ...selectedNode.shape, segments: segments.filter((_, i) => i !== idx) })} disabled={segments.length <= 1}>삭제</button>
                               </div>
                               <label className="flex flex-col gap-0.5">
                                 <span className="text-neutral-500 text-[10px]">path d</span>
                                 <input type="text" value={seg.d} onChange={(e) => { const next = segments.map((s, i) => (i === idx ? { ...s, d: e.target.value } : s)); setShape({ ...selectedNode.shape, segments: next }); }} placeholder="M 0 0 L 100 100" className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] font-mono" />
                               </label>
                               <div className="flex items-center gap-2">
-                                <span className="text-neutral-500 text-[10px]">ä���</span>
+                                <span className="text-neutral-500 text-[10px]">채움</span>
                                 <select
                                   value={primaryFill.type === "solid" ? "solid" : primaryFill.type === "linear" ? "linear" : primaryFill.type === "radial" ? "radial" : "image"}
                                   onChange={(e) => {
@@ -12431,10 +12636,10 @@ export default function AdvancedEditor() {
                                   }}
                                   className="rounded border border-neutral-200 px-2 py-0.5 text-[10px]"
                                 >
-                                  <option value="solid">�ܻ�</option>
-                                  <option value="linear">�׶���Ʈ</option>
+                                  <option value="solid">단색</option>
+                                  <option value="linear">그라데이션</option>
                                   <option value="radial">Radial</option>
-                                  <option value="image">�̹���</option>
+                                  <option value="image">이미지</option>
                                 </select>
                                 {primaryFill.type === "solid" && <input type="color" value={primaryFill.color} onChange={(e) => setSegFills([{ type: "solid", color: e.target.value }])} className="h-6 w-8 rounded border border-neutral-200" />}
                               </div>
@@ -12446,7 +12651,7 @@ export default function AdvancedEditor() {
                           className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
                           onClick={() => setShape({ ...selectedNode.shape, segments: [...segments, { d: "", fills: [{ type: "solid", color: "#EDEDED" }] }] })}
                         >
-                          ���׸�Ʈ �߰�
+                          세그먼트 추가
                         </button>
                         <button
                           type="button"
@@ -12457,7 +12662,7 @@ export default function AdvancedEditor() {
                             updateNode(selectedNode.id, { style: { ...selectedNode.style, fills: first?.fills ?? [{ type: "solid", color: "#EDEDED" }] } }, true);
                           }}
                         >
-                          ���� path�� ��ȯ
+                          선택 path로 변환
                         </button>
                       </>
                     );
@@ -12470,28 +12675,28 @@ export default function AdvancedEditor() {
         {selectedNode.type === "text" && (
           <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
             <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, text: !s.text }))}>
-              <span>�ؽ�Ʈ</span>
+              <span>텍스트</span>
               <span className={`shrink-0 transition-transform ${rightPanelSections.text ? "rotate-180" : ""}`} aria-hidden>?</span>
             </button>
             {rightPanelSections.text && (
               <div className="px-2 pb-2">
                 <div className="mt-2 space-y-2">
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">����</span>
+                    <span className="text-neutral-500">비율</span>
                     <input type="text" value={selectedNode.text?.value ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), value: e.target.value } as NodeText }, true)} className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">��Ʈ ũ��</span>
+                      <span className="text-neutral-500">폰트 크기</span>
                       <input type="number" min={1} value={resolvedTextStyle?.fontSize ?? 16} onChange={(e) => applyTextStyle({ fontSize: Number(e.target.value) || 16 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">����</span>
+                      <span className="text-neutral-500">비율</span>
                       <input type="number" min={100} max={900} step={100} value={resolvedTextStyle?.fontWeight ?? 400} onChange={(e) => applyTextStyle({ fontWeight: Number(e.target.value) || 400 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                   </div>
                   <label className="flex flex-col gap-1">
-                    <span className="text-neutral-500">��Ʈ �йи�</span>
+                    <span className="text-neutral-500">텍스트 채움</span>
                     <div className="relative">
                       <input
                         type="text"
@@ -12499,10 +12704,10 @@ export default function AdvancedEditor() {
                         value={resolvedTextStyle?.fontFamily ?? DEFAULT_FONT_FAMILY}
                         onChange={(e) => applyTextStyle({ fontFamily: e.target.value })}
                         className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
-                        placeholder="��Ʈ ���� �Ǵ� �Է�"
+                        placeholder="텍스트 입력 또는 붙여넣기"
                       />
                       <datalist id="font-picker-list">
-                        <option value="Space Grotesk, 'Noto Sans KR', sans-serif">Space Grotesk (�⺻)</option>
+                        <option value="Space Grotesk, 'Noto Sans KR', sans-serif">Space Grotesk (기본)</option>
                         <option value="'Noto Sans KR', sans-serif">Noto Sans KR</option>
                         <option value="'Pretendard Variable', Pretendard, sans-serif">Pretendard</option>
                         <option value="Inter, sans-serif">Inter</option>
@@ -12512,10 +12717,10 @@ export default function AdvancedEditor() {
                         <option value="Poppins, sans-serif">Poppins</option>
                         <option value="Montserrat, sans-serif">Montserrat</option>
                         <option value="Lato, sans-serif">Lato</option>
-                        <option value="'Nanum Gothic', sans-serif">�������</option>
-                        <option value="'Nanum Myeongjo', serif">��������</option>
+                        <option value="'Nanum Gothic', sans-serif">나눔고딕</option>
+                        <option value="'Nanum Myeongjo', serif">나눔명조</option>
                         <option value="'Gothic A1', sans-serif">Gothic A1</option>
-                        <option value="'Do Hyeon', sans-serif">����</option>
+                        <option value="'Do Hyeon', sans-serif">도현</option>
                         <option value="'Spoqa Han Sans Neo', sans-serif">Spoqa Han Sans</option>
                         <option value="'Wanted Sans Variable', 'Wanted Sans', sans-serif">Wanted Sans</option>
                         <option value="Arial, Helvetica, sans-serif">Arial</option>
@@ -12529,11 +12734,11 @@ export default function AdvancedEditor() {
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">�� ����</span>
+                      <span className="text-neutral-500">줄 간격</span>
                       <input type="number" step={0.1} value={resolvedTextStyle?.lineHeight ?? 1.4} onChange={(e) => applyTextStyle({ lineHeight: Number(e.target.value) || 1.4 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                     <label className="flex items-center justify-between gap-2">
-                      <span className="text-neutral-500">�ڰ�</span>
+                      <span className="text-neutral-500">자간</span>
                       <input type="number" step={0.1} value={resolvedTextStyle?.letterSpacing ?? 0} onChange={(e) => applyTextStyle({ letterSpacing: Number(e.target.value) || 0 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                   </div>
@@ -12555,34 +12760,34 @@ export default function AdvancedEditor() {
                     내용에 맞춤
                   </button>
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">����</span>
+                    <span className="text-neutral-500">비율</span>
                     <select value={resolvedTextStyle?.align ?? "left"} onChange={(e) => applyTextStyle({ align: e.target.value as "left" | "center" | "right" })} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                      <option value="left">����</option>
-                      <option value="center">���</option>
-                      <option value="right">������</option>
+                      <option value="left">왼쪽</option>
+                      <option value="center">가운데</option>
+                      <option value="right">오른쪽</option>
                     </select>
                   </label>
                   <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">��/�ҹ���</span>
+                    <span className="text-neutral-500">대/소문자</span>
                     <select value={resolvedTextStyle?.textCase ?? "none"} onChange={(e) => applyTextStyle({ textCase: e.target.value as "none" | "upper" | "lower" | "capitalize" })} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                      <option value="none">�⺻</option>
-                      <option value="upper">�빮��</option>
-                      <option value="lower">�ҹ���</option>
-                      <option value="capitalize">ù ���ڸ�</option>
+                      <option value="none">기본</option>
+                      <option value="upper">대문자</option>
+                      <option value="lower">소문자</option>
+                      <option value="capitalize">첫 글자만</option>
                     </select>
                   </label>
                   <div className="flex flex-wrap items-center gap-3">
                     <label className="flex items-center gap-1.5 text-xs text-neutral-600">
                       <input type="checkbox" checked={Boolean(resolvedTextStyle?.italic)} onChange={(e) => applyTextStyle({ italic: e.target.checked })} />
-                      �����
+                      이탤릭
                     </label>
                     <label className="flex items-center gap-1.5 text-xs text-neutral-600">
                       <input type="checkbox" checked={Boolean(resolvedTextStyle?.underline)} onChange={(e) => applyTextStyle({ underline: e.target.checked })} />
-                      ����
+                      밑줄
                     </label>
                     <label className="flex items-center gap-1.5 text-xs text-neutral-600">
                       <input type="checkbox" checked={Boolean(resolvedTextStyle?.lineThrough)} onChange={(e) => applyTextStyle({ lineThrough: e.target.checked })} />
-                      ��Ҽ�
+                      취소선
                     </label>
                   </div>
                   <label className="flex flex-col gap-1">
@@ -12590,7 +12795,7 @@ export default function AdvancedEditor() {
                     <input type="text" value={resolvedTextStyle?.fontFeatureSettings ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), style: { ...(resolvedTextStyle ?? DEFAULT_TEXT_STYLE), fontFeatureSettings: e.target.value || undefined } } as NodeText }, true)} placeholder='e.g. "liga" 1, "ss01" 1' className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
                   </label>
                   <div className="border-t border-neutral-100 pt-2 mt-1">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">���� ��Ʈ (B2)</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">가변 폰트 (B2)</div>
                     <label className="flex flex-col gap-1">
                       <span className="text-neutral-500">font-variation-settings</span>
                       <input type="text" value={resolvedTextStyle?.fontVariationSettings ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), style: { ...(resolvedTextStyle ?? DEFAULT_TEXT_STYLE), fontVariationSettings: e.target.value || undefined } } as NodeText }, true)} placeholder='e.g. "wght" 400, "wdth" 100' className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
@@ -12626,38 +12831,38 @@ export default function AdvancedEditor() {
         )}
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, prototype: !s.prototype }))}>
-            <span>������Ÿ��</span>
+            <span>프로토타입</span>
             <span className={`shrink-0 transition-transform ${rightPanelSections.prototype ? "rotate-180" : ""}`} aria-hidden>?</span>
           </button>
           {rightPanelSections.prototype && (
             <div className="px-2 pb-2">
               <div className="mt-2 space-y-2">
-                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">���ͷ���</div>
+                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">인터랙션</div>
                 {selectedInteractions.map((ia) => (
                   <div key={ia.id} className="rounded border border-neutral-200 bg-white px-2 py-2 space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] text-neutral-500">Ʈ����</span>
+                      <span className="text-[10px] text-neutral-500">트리거</span>
                       <select value={ia.trigger} onChange={(e) => updatePrototypeInteraction(selectedNode.id, ia.id, { trigger: e.target.value as import("../doc/scene").PrototypeTrigger })} className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]">
-                        <option value="click">Ŭ�� (click)</option>
-                        <option value="hover">ȣ�� (hover)</option>
-                        <option value="whileHover">ȣ�� ���� (whileHover)</option>
-                        <option value="onPress">���� (onPress)</option>
-                        <option value="onDragStart">�巡�� ���� (onDragStart)</option>
-                        <option value="onDragEnd">�巡�� �� (onDragEnd)</option>
-                        <option value="load">�ε� (load)</option>
-                        <option value="scroll">��ũ�� (scroll)</option>
+                        <option value="click">클릭 (click)</option>
+                        <option value="hover">호버 (hover)</option>
+                        <option value="whileHover">호버 유지 (whileHover)</option>
+                        <option value="onPress">누름 (onPress)</option>
+                        <option value="onDragStart">드래그 시작 (onDragStart)</option>
+                        <option value="onDragEnd">드래그 끝 (onDragEnd)</option>
+                        <option value="load">로드 (load)</option>
+                        <option value="scroll">스크롤 (scroll)</option>
                       </select>
-                      <button type="button" className="rounded border border-neutral-200 px-1 py-0.5 text-[10px]" onClick={() => removePrototypeInteraction(selectedNode.id, ia.id)}>����</button>
+                      <button type="button" className="rounded border border-neutral-200 px-1 py-0.5 text-[10px]" onClick={() => removePrototypeInteraction(selectedNode.id, ia.id)}>삭제</button>
                     </div>
                     {ia.trigger === "whileHover" && (
                       <label className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="text-neutral-500">����(ms)</span>
+                        <span className="text-neutral-500">지연(ms)</span>
                         <input type="number" min={0} value={ia.hoverDelayMs ?? 0} onChange={(e) => updatePrototypeInteraction(selectedNode.id, ia.id, { hoverDelayMs: Number(e.target.value) })} className="w-20 rounded border border-neutral-200 px-2 py-0.5 text-[11px]" />
                       </label>
                     )}
                     {ia.action.type === "navigate" ? (
                       <label className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="text-neutral-500">������</span>
+                        <span className="text-neutral-500">정렬</span>
                         <select value={ia.action.targetPageId ?? ""} onChange={(e) => updatePrototypeInteraction(selectedNode.id, ia.id, { action: { ...ia.action, type: "navigate", targetPageId: e.target.value } as import("../doc/scene").PrototypeAction })} className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]">
                           {doc.pages.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
                         </select>
@@ -12665,7 +12870,7 @@ export default function AdvancedEditor() {
                     ) : null}
                   </div>
                 ))}
-                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => addPrototypeInteraction(selectedNode.id)}>���ͷ��� �߰�</button>
+                <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => addPrototypeInteraction(selectedNode.id)}>인터랙션 추가</button>
               </div>
             </div>
           )}
@@ -12673,22 +12878,22 @@ export default function AdvancedEditor() {
       </div>
     ) : (
       <div className="space-y-4" key="no-node">
-        <div className="text-xs text-neutral-500">���̾ ������ �Ӽ��� �����ϼ���.</div>
+        <div className="text-xs text-neutral-500">노드를 선택하면 속성을 편집합니다.</div>
         {pageNode && (
           <div>
-            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">������</div>
+            <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">페이지</div>
             <div className="mt-2 grid grid-cols-2 gap-2">
               <label className="flex items-center justify-between gap-2">
-                <span className="text-neutral-500">�ʺ�</span>
+                <span className="text-neutral-500">너비</span>
                 <input type="number" value={Math.round(pageNode.frame.w)} onChange={(e) => updateNode(pageNode.id, { frame: { ...pageNode.frame, w: Number(e.target.value) } }, true)} className="w-20 rounded border border-neutral-200 px-2 py-1" />
               </label>
               <label className="flex items-center justify-between gap-2">
-                <span className="text-neutral-500">����</span>
+                <span className="text-neutral-500">높이</span>
                 <input type="number" value={Math.round(pageNode.frame.h)} onChange={(e) => updateNode(pageNode.id, { frame: { ...pageNode.frame, h: Number(e.target.value) } }, true)} className="w-20 rounded border border-neutral-200 px-2 py-1" />
               </label>
             </div>
             <label className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-neutral-500">���</span>
+              <span className="text-neutral-500">모드</span>
               <input type="color" value={resolveFillColor(doc, pageNode)} onChange={(e) => updateNode(pageNode.id, { style: { ...pageNode.style, fills: [{ type: "solid", color: e.target.value }] } }, true)} className="h-7 w-12 rounded border border-neutral-200" />
             </label>
           </div>
@@ -12751,36 +12956,7 @@ export default function AdvancedEditor() {
             </>
           ) : leftPanelTab === "layers" ? (
             <>
-              <div className="flex items-center gap-2 flex-wrap">
-                <button type="button" className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs" onClick={() => setGridSnap((prev) => !prev)}>스냅 {gridSnap ? "켜짐" : "꺼짐"}</button>
-                <label className="flex items-center gap-1.5 text-xs">
-                  <input type="checkbox" checked={pixelSnap} onChange={(e) => setPixelSnap(e.target.checked)} />
-                  픽셀 스냅
-                </label>
-                <div className="flex items-center gap-1">
-                  <button type="button" className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px]" onClick={addGuideVertical} title="세로 가이드 추가">가이드 │</button>
-                  <button type="button" className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px]" onClick={addGuideHorizontal} title="가로 가이드 추가">가이드 ─</button>
-                  <button type="button" className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px]" onClick={clearGuides} disabled={!doc.view.guides?.x?.length && !doc.view.guides?.y?.length} title="가이드 모두 제거 (개별 제거: 가이드선 더블클릭)">가이드 지우기</button>
-                </div>
-                {layerSort === "tree" && (
-                  <>
-                    <button type="button" className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px]" onClick={() => setLayerExpandedIds(new Set())}>모두 접기</button>
-                    <button type="button" className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px]" onClick={() => setLayerExpandedIds(layerTreeExpandedIds)}>모두 펼치기</button>
-                  </>
-                )}
-              </div>
-              <div className="mt-2 rounded-md border border-neutral-200 bg-white px-2 py-2">
-                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">레이어 도구</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={hideOtherLayers} disabled={!hasSelection}>나머지 숨김</button>
-                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={showAllLayers}>숨김 해제</button>
-                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={lockOtherLayers} disabled={!hasSelection}>나머지 잠금</button>
-                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={unlockAllLayers}>잠금 해제</button>
-                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={selectSameType} disabled={!hasSelection}>같은 타입 선택</button>
-                  <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={selectSameComponent} disabled={!selectedIsInstance && !selectedIsComponent}>같은 컴포넌트 선택</button>
-                </div>
-              </div>
-              <input type="text" value={layerQuery} onChange={(e) => setLayerQuery(e.target.value)} placeholder="레이어 검색" className="mt-2 w-full rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs" aria-label="레이어 검색" />
+              <input type="text" value={layerQuery} onChange={(e) => setLayerQuery(e.target.value)} placeholder="레이어 검색…" className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs" aria-label="레이어 검색" />
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <select value={layerTypeFilter} onChange={(e) => setLayerTypeFilter(e.target.value)} className="rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-[11px]">
                   <option value="all">전체</option>
@@ -12799,9 +12975,42 @@ export default function AdvancedEditor() {
                 </select>
                 <select value={layerSort} onChange={(e) => setLayerSort(e.target.value as "tree" | "name")} className="rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-[11px]">
                   <option value="tree">트리</option>
-                  <option value="name">이름</option>
+                  <option value="name">이름순</option>
                 </select>
               </div>
+              {layerSort === "tree" && (
+                <div className="mt-2 flex items-center gap-1">
+                  <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px] hover:bg-neutral-50" onClick={() => setLayerExpandedIds(new Set())}>모두 접기</button>
+                  <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px] hover:bg-neutral-50" onClick={() => setLayerExpandedIds(layerTreeExpandedIds)}>모두 펼치기</button>
+                </div>
+              )}
+              <details className="mt-2 rounded-md border border-neutral-200 bg-white text-[11px]">
+                <summary className="cursor-pointer select-none px-2 py-1.5 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-400 hover:bg-neutral-50">도구 및 가이드</summary>
+                <div className="border-t border-neutral-100 px-2 py-2 space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => setGridSnap((prev) => !prev)}>스냅 {gridSnap ? "켜짐" : "꺼짐"}</button>
+                    <label className="flex items-center gap-1.5">
+                      <input type="checkbox" checked={pixelSnap} onChange={(e) => setPixelSnap(e.target.checked)} />
+                      픽셀 스냅
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={addGuideVertical} title="세로 가이드 추가">가이드 │</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={addGuideHorizontal} title="가로 가이드 추가">가이드 ─</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={clearGuides} disabled={!doc.view.guides?.x?.length && !doc.view.guides?.y?.length} title="가이드 모두 제거">지우기</button>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={hideOtherLayers} disabled={!hasSelection}>나머지 숨김</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={showAllLayers}>숨김 해제</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={lockOtherLayers} disabled={!hasSelection}>나머지 잠금</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={unlockAllLayers}>잠금 해제</button>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={selectSameType} disabled={!hasSelection}>같은 타입 선택</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={selectSameComponent} disabled={!selectedIsInstance && !selectedIsComponent}>같은 컴포넌트</button>
+                  </div>
+                </div>
+              </details>
               <div className="mt-3 flex-1 space-y-1 min-h-0 overflow-y-auto">
                 {layersWithDepth.length === 0 ? (
                   <p className="py-6 px-2 text-center text-[11px] text-neutral-400">레이어가 없습니다.<br />캔버스에 프레임이나 도형을 그려 보세요.</p>
@@ -13135,70 +13344,155 @@ export default function AdvancedEditor() {
             </div>
           </div>
 
-          <div className="flex min-w-max shrink-0 flex-nowrap items-center gap-2 overflow-x-auto py-1">
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => align("l")}>왼쪽 정렬</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => align("hc")}>가운데 정렬</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => align("r")}>오른쪽 정렬</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => matchSelectionSize("w")}>같은 너비</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => matchSelectionSize("h")}>같은 높이</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={snapSelectionToGrid}>스냅</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => flipSelection("h")}>가로 뒤집기</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => flipSelection("v")}>세로 뒤집기</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => distribute("h")}>가로 분배</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={() => distribute("v")}>세로 분배</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={clearSelection} disabled={!hasSelection}>선택 해제</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={invertSelection}>선택 반전</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={tidyUpSelection} disabled={selectedIds.length < 2}>정리</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={openRepeatGrid} disabled={!hasSelection}>반복 그리드</button>
-            <div className="flex shrink-0 items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-1 text-xs">
-              <button type="button" className="px-2" onClick={fitSelectionToContent} disabled={!hasSelection}>내용 맞춤</button>
-              <button type="button" className="px-2" onClick={toggleSelectionHidden} disabled={!hasSelection}>
-                {selectionHidden ? "숨김 해제" : "숨김"}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/* Undo / Redo */}
+            <button type="button" className="shrink-0 rounded-md border border-neutral-200 p-1.5 text-xs hover:bg-neutral-50" onClick={doUndo} disabled={undoStackLen === 0} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소">↶</button>
+            <button type="button" className="shrink-0 rounded-md border border-neutral-200 p-1.5 text-xs hover:bg-neutral-50" onClick={doRedo} disabled={redoStackLen === 0} title="다시 실행 (Ctrl+Shift+Z)" aria-label="다시 실행">↷</button>
+
+            <span className="mx-1 h-4 w-px bg-neutral-200" aria-hidden />
+
+            {/* Arrange menu */}
+            <div className="relative">
+              <button
+                ref={arrangeMenuRef}
+                type="button"
+                className={`rounded-md border px-2.5 py-1 text-xs ${arrangeMenuOpen ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"}`}
+                onClick={() => { setArrangeMenuOpen((o) => !o); setViewMenuOpen(false); setToolbarOverflowOpen(false); setToolbarDropdown(null); }}
+                aria-expanded={arrangeMenuOpen}
+                aria-haspopup="true"
+              >
+                정렬
               </button>
-              <button type="button" className="px-2" onClick={toggleSelectionLocked} disabled={!hasSelection}>
-                {selectionLocked ? "잠금 해제" : "잠금"}
-              </button>
+              {arrangeMenuOpen && typeof document !== "undefined"
+                ? createPortal(
+                    <>
+                      <div className="fixed inset-0 z-[9998]" aria-hidden onClick={() => setArrangeMenuOpen(false)} />
+                      <div
+                        className="fixed z-[9999] min-w-[200px] max-h-[70vh] overflow-y-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-xl text-xs"
+                        style={{ left: arrangeMenuRect.left, top: arrangeMenuRect.top }}
+                      >
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">정렬</div>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { align("l"); setArrangeMenuOpen(false); }}>왼쪽 정렬</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { align("hc"); setArrangeMenuOpen(false); }}>가운데 정렬</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { align("r"); setArrangeMenuOpen(false); }}>오른쪽 정렬</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { align("t"); setArrangeMenuOpen(false); }}>위쪽 정렬</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { align("vc"); setArrangeMenuOpen(false); }}>세로 가운데</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { align("b"); setArrangeMenuOpen(false); }}>아래쪽 정렬</button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">분배</div>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { distribute("h"); setArrangeMenuOpen(false); }}>가로 분배</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { distribute("v"); setArrangeMenuOpen(false); }}>세로 분배</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-40" disabled={selectedIds.length < 2} onClick={() => { tidyUpSelection(); setArrangeMenuOpen(false); }}>정리</button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">크기</div>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { matchSelectionSize("w"); setArrangeMenuOpen(false); }}>같은 너비</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { matchSelectionSize("h"); setArrangeMenuOpen(false); }}>같은 높이</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-40" disabled={!hasSelection} onClick={() => { fitSelectionToContent(); setArrangeMenuOpen(false); }}>내용 맞춤</button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">변환</div>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { flipSelection("h"); setArrangeMenuOpen(false); }}>가로 뒤집기</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { flipSelection("v"); setArrangeMenuOpen(false); }}>세로 뒤집기</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { snapSelectionToGrid(); setArrangeMenuOpen(false); }}>그리드에 스냅</button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">순서</div>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { bringToFront(); setArrangeMenuOpen(false); }}>맨 앞으로</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { bringForward(); setArrangeMenuOpen(false); }}>앞으로</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { sendBackward(); setArrangeMenuOpen(false); }}>뒤로</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { sendToBack(); setArrangeMenuOpen(false); }}>맨 뒤로</button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">그룹</div>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { groupSelected(); setArrangeMenuOpen(false); }}>그룹</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { ungroupSelected(); setArrangeMenuOpen(false); }}>그룹 해제</button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">선택</div>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-40" disabled={!hasSelection} onClick={() => { clearSelection(); setArrangeMenuOpen(false); }}>선택 해제</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { invertSelection(); setArrangeMenuOpen(false); }}>선택 반전</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-40" disabled={!hasSelection} onClick={() => { openRepeatGrid(); setArrangeMenuOpen(false); }}>반복 그리드</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-40" disabled={!hasSelection} onClick={() => { toggleSelectionHidden(); setArrangeMenuOpen(false); }}>{selectionHidden ? "숨김 해제" : "숨김"}</button>
+                        <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-40" disabled={!hasSelection} onClick={() => { toggleSelectionLocked(); setArrangeMenuOpen(false); }}>{selectionLocked ? "잠금 해제" : "잠금"}</button>
+                      </div>
+                    </>,
+                    document.body,
+                  )
+                : null}
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-1 text-xs">
-              <button type="button" className="px-1" onClick={() => zoomBy(-0.1)}>-</button>
-              <button type="button" className="px-2" onClick={zoomReset}>{zoomPercent}%</button>
-              <button type="button" className="px-1" onClick={() => zoomBy(0.1)}>+</button>
-              <button type="button" className="px-2" onClick={zoomToSelection}>선택 맞춤</button>
-              <button type="button" className="px-2" onClick={zoomToContent}>콘텐츠 맞춤</button>
-              <button type="button" className="px-2" onClick={zoomToPage}>페이지 맞춤</button>
+
+            {/* View menu */}
+            <div className="relative">
+              <button
+                ref={viewMenuRef}
+                type="button"
+                className={`rounded-md border px-2.5 py-1 text-xs ${viewMenuOpen ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"}`}
+                onClick={() => { setViewMenuOpen((o) => !o); setArrangeMenuOpen(false); setToolbarOverflowOpen(false); setToolbarDropdown(null); }}
+                aria-expanded={viewMenuOpen}
+                aria-haspopup="true"
+              >
+                보기
+              </button>
+              {viewMenuOpen && typeof document !== "undefined"
+                ? createPortal(
+                    <>
+                      <div className="fixed inset-0 z-[9998]" aria-hidden onClick={() => setViewMenuOpen(false)} />
+                      <div
+                        className="fixed z-[9999] min-w-[180px] rounded-lg border border-neutral-200 bg-white py-1 shadow-xl text-xs"
+                        style={{ left: viewMenuRect.left, top: viewMenuRect.top }}
+                      >
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => setShowGrid((prev) => !prev)}>
+                          그리드 <span className={`text-[10px] ${showGrid ? "text-blue-600" : "text-neutral-400"}`}>{showGrid ? "켜짐" : "꺼짐"}</span>
+                        </button>
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => setShowPixelGrid((prev) => !prev)}>
+                          픽셀 그리드 <span className={`text-[10px] ${showPixelGrid ? "text-blue-600" : "text-neutral-400"}`}>{showPixelGrid ? "켜짐" : "꺼짐"}</span>
+                        </button>
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => setOutlineMode((prev) => !prev)}>
+                          아웃라인 <span className={`text-[10px] ${outlineMode ? "text-blue-600" : "text-neutral-400"}`}>{outlineMode ? "켜짐" : "꺼짐"}</span>
+                        </button>
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => setShowRulers((prev) => !prev)}>
+                          룰러 <span className={`text-[10px] ${showRulers ? "text-blue-600" : "text-neutral-400"}`}>{showRulers ? "켜짐" : "꺼짐"}</span>
+                        </button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => setUiHidden((prev) => !prev)}>
+                          패널 {uiHidden ? "표시" : "숨김"} <span className="text-[10px] text-neutral-400">Tab</span>
+                        </button>
+                        <div className="my-1 h-px bg-neutral-100" />
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { zoomToSelection(); setViewMenuOpen(false); }}>
+                          선택 맞춤
+                        </button>
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { zoomToContent(); setViewMenuOpen(false); }}>
+                          콘텐츠 맞춤
+                        </button>
+                        <button type="button" className="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { zoomToPage(); setViewMenuOpen(false); }}>
+                          페이지 맞춤
+                        </button>
+                      </div>
+                    </>,
+                    document.body,
+                  )
+                : null}
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-1 text-xs">
-              <button type="button" className="px-2" onClick={() => setShowGrid((prev) => !prev)}>
-                그리드 {showGrid ? "켜짐" : "꺼짐"}
-              </button>
-              <button type="button" className="px-2" onClick={() => setShowPixelGrid((prev) => !prev)}>
-                픽셀 {showPixelGrid ? "켜짐" : "꺼짐"}
-              </button>
-              <button type="button" className="px-2" onClick={() => setOutlineMode((prev) => !prev)}>
-                아웃라인 {outlineMode ? "켜짐" : "꺼짐"}
-              </button>
-              <button type="button" className="px-2" onClick={() => setShowRulers((prev) => !prev)}>
-                룰러 {showRulers ? "켜짐" : "꺼짐"}
-              </button>
-              <button type="button" className="px-2" onClick={() => setUiHidden((prev) => !prev)}>
-                UI {uiHidden ? "표시" : "숨김"}
-              </button>
+
+            <span className="mx-1 h-4 w-px bg-neutral-200" aria-hidden />
+
+            {/* Zoom */}
+            <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-neutral-200 bg-white px-1 py-0.5 text-xs">
+              <button type="button" className="px-1.5 py-0.5 hover:bg-neutral-50 rounded" onClick={() => zoomBy(-0.1)}>-</button>
+              <button type="button" className="min-w-[3rem] text-center px-1 py-0.5 hover:bg-neutral-50 rounded" onClick={zoomReset}>{zoomPercent}%</button>
+              <button type="button" className="px-1.5 py-0.5 hover:bg-neutral-50 rounded" onClick={() => zoomBy(0.1)}>+</button>
             </div>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-xs" onClick={doUndo} disabled={undoStackLen === 0} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소">↶ 실행 취소</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-xs" onClick={doRedo} disabled={redoStackLen === 0} title="다시 실행 (Ctrl+Shift+Z)" aria-label="다시 실행">↷ 다시 실행</button>
-            <span className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600" title="§7.1 제약 카운터 (플랜 반영)">
-              버튼 {constraintCounts.buttons}/{planFeatures?.maxButtons ?? 3} · 텍스트 {constraintCounts.texts}/{planFeatures?.maxTexts ?? 6} · 이미지 {constraintCounts.images}/{planFeatures?.maxImages ?? 1}
+
+            <span className="mx-1 h-4 w-px bg-neutral-200" aria-hidden />
+
+            {/* Constraint counter */}
+            <span className="shrink-0 text-[10px] text-neutral-400" title="제약 카운터">
+              {constraintCounts.buttons}/{planFeatures?.maxButtons ?? 3}B · {constraintCounts.texts}/{planFeatures?.maxTexts ?? 6}T · {constraintCounts.images}/{planFeatures?.maxImages ?? 1}I
             </span>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={groupSelected}>그룹</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={ungroupSelected}>그룹 해제</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={sendToBack}>맨 뒤로</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={bringToFront}>맨 앞으로</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={sendBackward}>뒤로</button>
-            <button type="button" className="shrink-0 rounded-full border border-neutral-200 px-3 py-1 text-xs" onClick={bringForward}>앞으로</button>
+
+            <span className="mx-1 h-4 w-px bg-neutral-200" aria-hidden />
+
+            {/* Preview / Live */}
             <button
               type="button"
-              className={`rounded-full border px-3 py-1 text-xs ${
-                livePreview ? "border-emerald-600 bg-emerald-600 text-white" : "border-neutral-200 bg-white text-neutral-600"
+              className={`rounded-md border px-2.5 py-1 text-xs ${
+                livePreview ? "border-emerald-600 bg-emerald-600 text-white" : "border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
               }`}
               onClick={toggleLivePreview}
             >
@@ -13206,16 +13500,20 @@ export default function AdvancedEditor() {
             </button>
             <button
               type="button"
-              className={`rounded-full border px-3 py-1 text-xs ${
-                prototypePreview ? "border-blue-600 bg-blue-600 text-white" : "border-neutral-200 bg-white text-neutral-600"
+              className={`rounded-md border px-2.5 py-1 text-xs ${
+                prototypePreview ? "border-blue-600 bg-blue-600 text-white" : "border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
               }`}
               onClick={togglePrototypePreview}
             >
               {prototypePreview ? "미리보기 종료" : "미리보기"}
             </button>
+
+            <span className="mx-1 h-4 w-px bg-neutral-200" aria-hidden />
+
+            {/* Save / Version / Publish / Help */}
             <button
               type="button"
-              className="rounded-full border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white"
+              className="rounded-md border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-800"
               onClick={saveDraft}
               disabled={status !== "idle" || (Boolean(pageId) && !isOwner)}
               title={pageId && !isOwner ? "읽기 전용" : undefined}
@@ -13224,7 +13522,7 @@ export default function AdvancedEditor() {
             </button>
             <button
               type="button"
-              className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+              className="rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
               onClick={() => pageId && setVersionListOpen(true)}
               disabled={!pageId}
               title="버전 히스토리"
@@ -13232,10 +13530,10 @@ export default function AdvancedEditor() {
             >
               버전
             </button>
-            <button type="button" className="rounded-full border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-50" onClick={() => setShortcutHelpOpen(true)} title="단축키 도움말 (Ctrl+/)">?</button>
+            <button type="button" className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-50" onClick={() => setShortcutHelpOpen(true)} title="단축키 도움말 (Ctrl+/)">?</button>
             <button
               type="button"
-              className="rounded-full border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white"
+              className="rounded-md border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-800"
               onClick={openPublishModal}
               disabled={status !== "idle"}
             >
@@ -13592,6 +13890,8 @@ export default function AdvancedEditor() {
                             setFigmaImportFileKey("");
                             setFigmaImportNodeId("");
                             setFigmaImportToken("");
+                          } else {
+                            setFigmaImportError(data?.message ?? "서버가 문서를 반환하지 않았습니다.");
                           }
                         } catch (e) {
                           setFigmaImportError(e instanceof Error ? e.message : "네트워크 오류");
@@ -13651,7 +13951,7 @@ export default function AdvancedEditor() {
 
         <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
           <section className="relative min-w-0 flex-1 bg-neutral-100">
-            <div ref={canvasRef} className="absolute inset-0" onWheel={prototypePreview ? undefined : handleWheel}>
+            <div ref={canvasRef} className="absolute inset-0" style={{ userSelect: "none", WebkitUserSelect: "none", touchAction: "none" }} onWheel={prototypePreview ? undefined : handleCanvasWheel}>
               {!prototypePreview && showRulers ? (
                 <>
                   <div className="pointer-events-none absolute left-0 top-0 right-0 z-10 h-6 border-b border-neutral-200 bg-white/90 text-[10px] text-neutral-500">
@@ -13863,6 +14163,7 @@ export default function AdvancedEditor() {
                         renderNode={renderNodeShape}
                         onContextMenu={openContextMenu}
                         onDoubleClick={(e) => handleNodeDoubleClick(e, id, node.type)}
+                        onBridgeAction={node.widget ? handleWidgetBridgeAction : undefined}
                       />
                     );
                   })}
@@ -14254,8 +14555,8 @@ export default function AdvancedEditor() {
           </section>
 
           {!uiHidden ? (
-          <aside className="flex h-full w-80 shrink-0 min-h-0 flex-col overflow-hidden border-l border-neutral-200 bg-neutral-50/80 p-4">
-            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-400">
+          <aside className="flex h-full w-80 shrink-0 min-h-0 flex-col overflow-hidden border-l border-neutral-200 bg-neutral-50/80">
+            <div className="flex shrink-0 items-center border-b border-neutral-200 px-1">
               {([
                 { id: "design", label: "디자인" },
                 { id: "prototype", label: "프로토타입" },
@@ -14266,8 +14567,10 @@ export default function AdvancedEditor() {
                 <button
                   key={tab.id}
                   type="button"
-                  className={`rounded-full border px-3 py-1 text-[10px] ${
-                    panelMode === tab.id ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-700"
+                  className={`flex-1 whitespace-nowrap border-b-2 px-1 py-2.5 text-[11px] font-medium transition-colors ${
+                    panelMode === tab.id
+                      ? "border-neutral-900 text-neutral-900"
+                      : "border-transparent text-neutral-400 hover:text-neutral-600"
                   }`}
                   onClick={() => setPanelMode(tab.id)}
                 >
@@ -14275,7 +14578,7 @@ export default function AdvancedEditor() {
                 </button>
               ))}
             </div>
-            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4 pr-3">
             {selectedCommentId ? (() => {
               const root = comments.find((c) => c.id === selectedCommentId) ?? comments.find((c) => c.replies.some((r) => r.id === selectedCommentId));
               if (!root || !pageId) return null;
@@ -14385,14 +14688,21 @@ export default function AdvancedEditor() {
                 </div>
               ) : null}
               {<DesignPanelInner />}
+              {!selectedNode && (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <div className="text-sm text-neutral-400">선택된 요소가 없습니다</div>
+                  <div className="mt-1 text-[11px] text-neutral-300">캔버스에서 요소를 클릭하세요</div>
+                </div>
+              )}
               <div>
+                {hasSelection && (
+                <>
                 <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">컴포넌트</div>
                 <div className="mt-2 space-y-2">
                   <button
                     type="button"
                     className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
                     onClick={createComponentFromSelection}
-                    disabled={!hasSelection}
                   >
                     선택 항목을 컴포넌트로 만들기
                   </button>
@@ -14980,26 +15290,28 @@ export default function AdvancedEditor() {
                       </button>
                     </div>
                   ) : null}
-                  {componentName.length ? (
-                    <div>
-                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">라이브러리</div>
-                      <div className="mt-2 space-y-1">
-                        {componentName.map((component) => (
-                          <div key={component.id} className="flex items-center justify-between gap-2 rounded-md border border-neutral-200 bg-white px-2 py-1">
-                            <span className="text-xs text-neutral-600">{component.name}</span>
-                            <button
-                              type="button"
-                              className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]"
-                              onClick={() => createInstanceFromComponent(component.id)}
-                            >
-                              삽입
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
+                </>
+                )}
+                {componentName.length ? (
+                  <div className="mt-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">컴포넌트 라이브러리</div>
+                    <div className="mt-2 space-y-1">
+                      {componentName.map((component) => (
+                        <div key={component.id} className="flex items-center justify-between gap-2 rounded-md border border-neutral-200 bg-white px-2 py-1">
+                          <span className="text-xs text-neutral-600">{component.name}</span>
+                          <button
+                            type="button"
+                            className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]"
+                            onClick={() => createInstanceFromComponent(component.id)}
+                          >
+                            삽입
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div>
@@ -15939,6 +16251,23 @@ export default function AdvancedEditor() {
                     {pluginError ? <div className="text-[11px] text-red-500">{pluginError}</div> : null}
                     <button type="button" className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs" onClick={installPluginFromJson}>
                       플러그인 설치
+                    </button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">위젯 삽입</div>
+                    <div className="flex gap-1">
+                      <button type="button" className={`rounded-full border px-2 py-0.5 text-[10px] ${widgetMode === "html" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-600"}`} onClick={() => setWidgetMode("html")}>HTML</button>
+                      <button type="button" className={`rounded-full border px-2 py-0.5 text-[10px] ${widgetMode === "url" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-600"}`} onClick={() => setWidgetMode("url")}>URL</button>
+                    </div>
+                    <textarea
+                      value={widgetInput}
+                      onChange={(e) => setWidgetInput(e.target.value)}
+                      placeholder={widgetMode === "html" ? "HTML 코드 붙여넣기 (<html>...</html>)" : "https://example.com"}
+                      className="h-28 w-full rounded border border-neutral-200 bg-white p-2 text-[11px] font-mono"
+                    />
+                    {widgetError ? <div className="text-[11px] text-red-500">{widgetError}</div> : null}
+                    <button type="button" className="w-full rounded-md border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs text-indigo-700 hover:bg-indigo-100" onClick={insertWidgetNode}>
+                      캔버스에 위젯 추가
                     </button>
                   </div>
                 </div>
@@ -17310,6 +17639,23 @@ export default function AdvancedEditor() {
                       플러그인 설치
                     </button>
                   </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">위젯 삽입</div>
+                    <div className="flex gap-1">
+                      <button type="button" className={`rounded-full border px-2 py-0.5 text-[10px] ${widgetMode === "html" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-600"}`} onClick={() => setWidgetMode("html")}>HTML</button>
+                      <button type="button" className={`rounded-full border px-2 py-0.5 text-[10px] ${widgetMode === "url" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-600"}`} onClick={() => setWidgetMode("url")}>URL</button>
+                    </div>
+                    <textarea
+                      value={widgetInput}
+                      onChange={(e) => setWidgetInput(e.target.value)}
+                      placeholder={widgetMode === "html" ? "HTML 코드 붙여넣기 (<html>...</html>)" : "https://example.com"}
+                      className="h-28 w-full rounded border border-neutral-200 bg-white p-2 text-[11px] font-mono"
+                    />
+                    {widgetError ? <div className="text-[11px] text-red-500">{widgetError}</div> : null}
+                    <button type="button" className="w-full rounded-md border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs text-indigo-700 hover:bg-indigo-100" onClick={insertWidgetNode}>
+                      캔버스에 위젯 추가
+                    </button>
+                  </div>
                 </div>
                 <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 space-y-2">
                   <label className="flex items-center justify-between gap-2 text-xs text-neutral-600">
@@ -17713,6 +18059,23 @@ export default function AdvancedEditor() {
                     {pluginError ? <div className="text-[11px] text-red-500">{pluginError}</div> : null}
                     <button type="button" className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs" onClick={installPluginFromJson}>
                       플러그인 설치
+                    </button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">위젯 삽입</div>
+                    <div className="flex gap-1">
+                      <button type="button" className={`rounded-full border px-2 py-0.5 text-[10px] ${widgetMode === "html" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-600"}`} onClick={() => setWidgetMode("html")}>HTML</button>
+                      <button type="button" className={`rounded-full border px-2 py-0.5 text-[10px] ${widgetMode === "url" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 bg-white text-neutral-600"}`} onClick={() => setWidgetMode("url")}>URL</button>
+                    </div>
+                    <textarea
+                      value={widgetInput}
+                      onChange={(e) => setWidgetInput(e.target.value)}
+                      placeholder={widgetMode === "html" ? "HTML 코드 붙여넣기 (<html>...</html>)" : "https://example.com"}
+                      className="h-28 w-full rounded border border-neutral-200 bg-white p-2 text-[11px] font-mono"
+                    />
+                    {widgetError ? <div className="text-[11px] text-red-500">{widgetError}</div> : null}
+                    <button type="button" className="w-full rounded-md border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs text-indigo-700 hover:bg-indigo-100" onClick={insertWidgetNode}>
+                      캔버스에 위젯 추가
                     </button>
                   </div>
                 </div>

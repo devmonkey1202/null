@@ -12,7 +12,7 @@ declare global {
   }
 }
 
-const ASSET_TAB_LABEL = "\uC790\uC0B0";
+const ASSET_TAB_LABEL = "자산";
 const SAMPLE_PRESET_IDS = [
   "asset-onboarding-swipe",
   "asset-permission-request",

@@ -38,3 +38,4 @@
 {"ts":"2026-03-06T12:38:53.740Z","action":"waf_block","ip":"unknown","user_agent":"BadBot/1.0","path":"/api/test","meta":{"error":"waf_ua_blocked","status":403,"detail":{"user_agent":"BadBot/1.0"}}}
 {"ts":"2026-03-06T12:38:53.746Z","action":"waf_block","ip":"203.0.113.10","path":"/api/test","meta":{"error":"waf_ip_blocked","status":403,"detail":{"reason":"l2-test","expires_at":null}}}
 {"ts":"2026-03-08T01:00:41.371Z","action":"test_sec_1772931641371_ypkyjlov28","meta":{"marker":"sec_1772931641371_ypkyjlov28"}}
+{"ts":"2026-03-10T09:06:59.789Z","action":"test_sec_1773133619789_pcg1ncbsvvl","meta":{"marker":"sec_1773133619789_pcg1ncbsvvl"}}

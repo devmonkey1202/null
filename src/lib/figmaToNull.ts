@@ -19,6 +19,41 @@ function hasImageFill(fNode: FigmaNode): boolean {
   return fNode.fills?.some((f: { type?: string }) => f.type === "IMAGE") ?? false;
 }
 
+/** 서브트리에 벡터/불리언/마스크가 있는지 재귀 확인 */
+function hasComplexDescendant(fNode: FigmaNode): boolean {
+  for (const ch of fNode.children ?? []) {
+    const t = ch.type;
+    if (t === "VECTOR" || t === "BOOLEAN_OPERATION") return true;
+    if ((ch as FigmaNode & { isMask?: boolean }).isMask) return true;
+    if (hasComplexDescendant(ch)) return true;
+  }
+  return false;
+}
+
+/** 비선형 그라데이션 fill이 있는지 */
+function hasComplexGradient(fNode: FigmaNode): boolean {
+  return fNode.fills?.some((f: { type?: string }) =>
+    f.type === "GRADIENT_RADIAL" ||
+    f.type === "GRADIENT_ANGULAR" ||
+    f.type === "GRADIENT_DIAMOND"
+  ) ?? false;
+}
+
+/** 이 노드를 Figma 서버에서 이미지로 렌더링해야 하는지 판별 */
+function shouldRenderAsImage(fNode: FigmaNode): boolean {
+  if (hasImageFill(fNode)) return true;
+  const t = fNode.type;
+  if (t === "VECTOR" || t === "BOOLEAN_OPERATION") return true;
+  if ((fNode as FigmaNode & { isMask?: boolean }).isMask) return true;
+  if (hasComplexGradient(fNode)) return true;
+  if (fNode.children?.some((ch: FigmaNode & { isMask?: boolean }) => ch.isMask)) return true;
+  if ((t === "INSTANCE" || t === "COMPONENT") && hasComplexDescendant(fNode)) return true;
+  if (t === "GROUP" && hasComplexDescendant(fNode) && !fNode.children?.some(
+    (ch) => ch.type === "FRAME" || ch.type === "TEXT" || ch.type === "RECTANGLE"
+  )) return true;
+  return false;
+}
+
 /** Figma node type → NULL NodeType (이미지 fill 있으면 image로) */
 function mapNodeType(fNode: FigmaNode): NodeType {
   if (hasImageFill(fNode)) return "image";
@@ -331,9 +366,29 @@ function convertNode(fNode: FigmaNode, parentId: string | null, imageUrlMap?: Re
   return node;
 }
 
-/** 트리에서 이미지가 필요한 노드 ID 수집 (fills에 type IMAGE 있는 노드) */
+/** 렌더링 실패한 노드의 부모 ID 수집 (부모를 통째로 렌더링하기 위해) */
+function collectParentIdsForFailed(fNode: FigmaNode, failedIds: Set<string>): string[] {
+  const parentIds: string[] = [];
+  function walk(node: FigmaNode) {
+    const hasFailedChild = node.children?.some((ch) => failedIds.has(ch.id)) ?? false;
+    if (hasFailedChild) {
+      parentIds.push(node.id);
+      return;
+    }
+    for (const ch of node.children ?? []) {
+      walk(ch);
+    }
+  }
+  walk(fNode);
+  return parentIds;
+}
+
+/** 트리에서 이미지 렌더링이 필요한 노드 ID 수집 */
 function collectImageNodeIds(fNode: FigmaNode, out: string[]): void {
-  if (hasImageFill(fNode)) out.push(fNode.id);
+  if (shouldRenderAsImage(fNode)) {
+    out.push(fNode.id);
+    return;
+  }
   for (const ch of fNode.children ?? []) {
     collectImageNodeIds(ch, out);
   }
@@ -345,23 +400,57 @@ function collectNodes(
   parentId: string | null,
   nodes: Map<string, Node>,
   rootIds: string[],
-  imageUrlMap?: Record<string, string>
+  imageUrlMap?: Record<string, string>,
+  parentBBox?: { x: number; y: number },
 ): void {
+  const renderedUrl = imageUrlMap?.[fNode.id];
+  if (renderedUrl) {
+    const id = toNullId(fNode.id);
+    const bbox = fNode.absoluteBoundingBox;
+    const frame = convertFrame(bbox, fNode.rotation);
+    if (parentBBox && bbox) {
+      frame.x = bbox.x - parentBBox.x;
+      frame.y = bbox.y - parentBBox.y;
+    }
+    const node = createNode("image", {
+      id,
+      name: fNode.name || "이미지",
+      parentId,
+      children: [],
+      frame,
+      constraints: convertConstraints(fNode.constraints),
+      locked: fNode.locked ?? false,
+      hidden: fNode.visible === false,
+    });
+    node.image = { src: renderedUrl, fit: "fill" };
+    nodes.set(id, node);
+    rootIds.push(id);
+    return;
+  }
+
   const node = convertNode(fNode, parentId, imageUrlMap);
+  if (parentBBox && fNode.absoluteBoundingBox) {
+    node.frame = {
+      ...node.frame,
+      x: fNode.absoluteBoundingBox.x - parentBBox.x,
+      y: fNode.absoluteBoundingBox.y - parentBBox.y,
+    };
+  }
   const id = node.id;
   nodes.set(id, node);
 
+  const myBBox = fNode.absoluteBoundingBox ?? parentBBox;
   const children = fNode.children ?? [];
   if (children.length > 0) {
     const childIds: string[] = [];
     for (const ch of children) {
       if (ch.visible === false && (ch as FigmaNode & { exportSettings?: unknown }).exportSettings == null) continue;
-      collectNodes(ch, id, nodes, childIds, imageUrlMap);
+      collectNodes(ch, id, nodes, childIds, imageUrlMap, myBBox);
     }
     node.children = childIds;
   }
 
-  if (parentId === null) rootIds.push(id);
+  rootIds.push(id);
 }
 
 /** DOCUMENT 또는 CANVAS 무시하고 바로 자식들만 처리 */
@@ -427,6 +516,11 @@ export function figmaNodesToNullDoc(
   }
   if (!allNodes[pageId] && pageNode) allNodes[pageId] = { ...pageNode, id: pageId, parentId: root, name: options?.fileName ?? "Figma 임포트" };
 
+  const importedRoot = allNodes[pageId];
+  const rootFrame = importedRoot?.frame ?? { x: 0, y: 0, w: 800, h: 600 };
+  const viewPanX = rootFrame.x - 50;
+  const viewPanY = rootFrame.y - 50;
+
   const doc: Doc = {
     schema: "null_advanced_v1",
     version: 1,
@@ -434,7 +528,7 @@ export function figmaNodesToNullDoc(
     pages: [{ id: pageId, name: options?.fileName ?? "Figma 임포트", rootId: pageId }],
     nodes: allNodes,
     selection: new Set(),
-    view: { zoom: 1, panX: -200, panY: -200 },
+    view: { zoom: 1, panX: viewPanX, panY: viewPanY },
     styles: [],
     variables: [],
     variableModes: ["기본"],
@@ -463,7 +557,8 @@ export type FigmaImportParams = {
  */
 export async function figmaFileToNullDoc(params: FigmaImportParams): Promise<SerializableDoc> {
   const { getFile, getFileNodes, getImages } = await import("./figma");
-  const { fileKey, accessToken, nodeId, fileName } = params;
+  const { fileKey, accessToken, fileName } = params;
+  const nodeId = params.nodeId?.replace(/-/g, ":") ?? undefined;
 
   let figmaRoot: FigmaNode;
 
@@ -484,11 +579,37 @@ export async function figmaFileToNullDoc(params: FigmaImportParams): Promise<Ser
 
   let imageUrlMap: Record<string, string> = {};
   if (imageNodeIds.length > 0) {
-    try {
-      const imgRes = await getImages(fileKey, imageNodeIds, accessToken, "png");
-      if (imgRes.images) imageUrlMap = imgRes.images;
-    } catch {
-      // 이미지 URL 실패 시 빈 URL로 진행 (placeholder는 런타임에서 처리)
+    const BATCH = 100;
+    for (let i = 0; i < imageNodeIds.length; i += BATCH) {
+      const batch = imageNodeIds.slice(i, i + BATCH);
+      try {
+        const imgRes = await getImages(fileKey, batch, accessToken, "png", 2);
+        if (imgRes.images) {
+          for (const [k, v] of Object.entries(imgRes.images)) {
+            if (v) imageUrlMap[k] = v;
+          }
+        }
+      } catch {
+        // 배치 실패 시 다음 배치로 진행
+      }
+    }
+
+    const failed = imageNodeIds.filter((id) => !imageUrlMap[id]);
+    if (failed.length > 0) {
+      const parentIds = collectParentIdsForFailed(firstFrame, new Set(failed));
+      if (parentIds.length > 0) {
+        for (let i = 0; i < parentIds.length; i += BATCH) {
+          const batch = parentIds.slice(i, i + BATCH);
+          try {
+            const imgRes = await getImages(fileKey, batch, accessToken, "png", 2);
+            if (imgRes.images) {
+              for (const [k, v] of Object.entries(imgRes.images)) {
+                if (v) imageUrlMap[k] = v;
+              }
+            }
+          } catch { /* skip */ }
+        }
+      }
     }
   }
 

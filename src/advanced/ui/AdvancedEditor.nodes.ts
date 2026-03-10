@@ -1,4 +1,4 @@
-import { createNode, type Frame, type Node } from "../doc/scene";
+import { createNode, type Frame, type Node, type NodeWidget } from "../doc/scene";
 import { DEFAULT_FONT_FAMILY } from "./AdvancedEditor.constants";
 
 export function makeFrameNode(
@@ -118,6 +118,20 @@ export function makeTextNode(
     fills: [{ type: "solid", color: options.color ?? "#111111" }],
   };
   if (options.layoutSizing) node.layoutSizing = { ...options.layoutSizing };
+  return node;
+}
+
+export function makeWidgetNode(
+  name: string,
+  frame: Frame,
+  widget: NodeWidget,
+) {
+  const node = createNode("frame");
+  node.name = name;
+  node.frame = { ...node.frame, ...frame };
+  node.style = { ...node.style, fills: [], strokes: [{ color: "#6366F1", width: 1, align: "inside" }] };
+  node.clipContent = true;
+  node.widget = widget;
   return node;
 }
 

@@ -1,8 +1,8 @@
-﻿"use client";
+"use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { NodeWidget } from "../doc/scene";
-import { makeBridgeResponse, parseBridgeRequest, type BridgeResponse } from "./widget-bridge";
+import { makeBridgeResponse, parseBridgeRequest, type BridgeResponse, type BridgeActionHandler } from "./widget-bridge";
 
 const SANDBOX_TOKENS = new Set([
   "allow-forms",
@@ -64,6 +64,7 @@ function isVersionPinned(url: string, version: string) {
 }
 
 function clampTimeout(raw?: number) {
+  if (raw === 0) return 0;
   if (!Number.isFinite(raw)) return DEFAULT_TIMEOUT_MS;
   const value = Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS, Number(raw)));
   return value;
@@ -96,12 +97,14 @@ export function WidgetSandbox({
   height,
   pageId,
   interactive,
+  onBridgeAction,
 }: {
   widget: NodeWidget;
   width: number;
   height: number;
   pageId?: string | null;
   interactive?: boolean;
+  onBridgeAction?: BridgeActionHandler;
 }) {
   const execution = widget.execution ?? "iframe";
   const [expired, setExpired] = useState(false);
@@ -252,6 +255,22 @@ export function WidgetSandbox({
         return;
       }
       respond(makeBridgeResponse(request.id, "ok", { pageId }));
+      return;
+    }
+    if (onBridgeAction) {
+      try {
+        const result = onBridgeAction(request.action, request.payload);
+        if (result && typeof (result as Promise<unknown>).then === "function") {
+          (result as Promise<{ status: "ok" | "error"; payload?: unknown; error?: { code: string; message?: string } }>)
+            .then((r) => respond(makeBridgeResponse(request.id, r.status, r.payload, r.error)))
+            .catch(() => respond(makeBridgeResponse(request.id, "error", null, { code: "handler_error" })));
+        } else {
+          const r = result as { status: "ok" | "error"; payload?: unknown; error?: { code: string; message?: string } };
+          respond(makeBridgeResponse(request.id, r.status, r.payload, r.error));
+        }
+      } catch {
+        respond(makeBridgeResponse(request.id, "error", null, { code: "handler_error" }));
+      }
       return;
     }
     respond(makeBridgeResponse(request.id, "error", null, { code: "action_not_allowed" }));

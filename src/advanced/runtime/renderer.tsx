@@ -1095,12 +1095,12 @@ function isInputName(value: string) {
     name.includes("text field") ||
     name.includes("upload") ||
     name.includes("file") ||
-    name.includes("\uC5C5\uB85C\uB4DC") ||
-    name.includes("\uD30C\uC77C") ||
-    name.includes("\uB4DC\uB86D") ||
-    name.includes("\uC544\uBC14\uD0C0") ||
+    name.includes("업로드") ||
+    name.includes("파일") ||
+    name.includes("드롭") ||
+    name.includes("아바타") ||
     name.includes("avatar") ||
-    name.includes("\uD504\uB85C\uD544\uC0AC\uC9C4") ||
+    name.includes("프로필사진") ||
     name.includes("profile image")
   );
 }
@@ -1131,18 +1131,18 @@ function isChoiceName(value: string) {
     name.includes("cta") ||
     name.includes("버튼") ||
     name.includes("call to action") ||
-    name.includes("\uCE69") ||
-    name.includes("\uD0ED") ||
-    name.includes("\uD398\uC774\uC9C0") ||
-    name.includes("\uD398\uC774\uC9C0\uB124\uC774\uC158") ||
-    name.includes("\uD398\uC774\uC9C0\uB2E4\uC74C") ||
-    name.includes("\uB0A0\uC9DC") ||
-    name.includes("\uB9AC\uC2A4\uD2B8 \uC544\uC774\uD15C") ||
-    name.includes("\uB9AC\uC2A4\uD2B8") ||
-    name.includes("\uBA54\uB274") ||
-    name.includes("\uC635\uC158") ||
-    name.includes("\uC120\uD0DD") ||
-    name.includes("\uC810")
+    name.includes("칩") ||
+    name.includes("탭") ||
+    name.includes("페이지") ||
+    name.includes("페이지네이션") ||
+    name.includes("페이지다음") ||
+    name.includes("날짜") ||
+    name.includes("리스트 아이템") ||
+    name.includes("리스트") ||
+    name.includes("메뉴") ||
+    name.includes("옵션") ||
+    name.includes("선택") ||
+    name.includes("점")
   );
 }
 
@@ -1188,12 +1188,12 @@ function resolveInputType(value: string) {
   if (
     name.includes("upload") ||
     name.includes("file") ||
-    name.includes("\uC5C5\uB85C\uB4DC") ||
-    name.includes("\uD30C\uC77C") ||
-    name.includes("\uB4DC\uB86D") ||
-    name.includes("\uC544\uBC14\uD0C0") ||
+    name.includes("업로드") ||
+    name.includes("파일") ||
+    name.includes("드롭") ||
+    name.includes("아바타") ||
     name.includes("avatar") ||
-    name.includes("\uD504\uB85C\uD544\uC0AC\uC9C4") ||
+    name.includes("프로필사진") ||
     name.includes("profile image")
   )
     return "file";
@@ -2136,8 +2136,8 @@ function renderNodeTree(
     isFileInput &&
       (normalizedNodeName.includes("multiple") ||
         normalizedPlaceholder.includes("multiple") ||
-        normalizedNodeName.includes("\uC5EC\uB7EC") ||
-        normalizedPlaceholder.includes("\uC5EC\uB7EC")),
+        normalizedNodeName.includes("여러") ||
+        normalizedPlaceholder.includes("여러")),
   );
   const focusOtpSibling = (offset: number) => {
     if (!otpGroupId || typeof document === "undefined") return;

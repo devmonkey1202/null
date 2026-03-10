@@ -415,457 +415,457 @@ const RESEND_COOLDOWN_MS = 1000 * 60;
 
 const DELETE_COOLDOWN_MS = 1000 * 6;
 
-const RESEND_LABEL_PATTERN = /\uC7AC\uC804\uC1A1|\uB2E4\uC2DC\s*\uBCF4\uB0B4\uAE30|resend|send\s*again/i;
+const RESEND_LABEL_PATTERN = /재전송|다시\s*보내기|resend|send\s*again/i;
 
-const SEARCH_INPUT_PATTERN = /\uAC80\uC0C9|search/i;
+const SEARCH_INPUT_PATTERN = /검색|search/i;
 
-const SEARCH_SECTION_PATTERN = /\uCD5C\uADFC|\uCD94\uCC9C|recent|recommend/i;
+const SEARCH_SECTION_PATTERN = /최근|추천|recent|recommend/i;
 
-const SEARCH_CONTEXT_PATTERN = /\uAC80\uC0C9|search/i;
+const SEARCH_CONTEXT_PATTERN = /검색|search/i;
 
-const SEARCH_RESULT_PATTERN = /\uAC80\uC0C9\s*\uACB0\uACFC|search\s*result|\uACB0\uACFC/i;
+const SEARCH_RESULT_PATTERN = /검색\s*결과|search\s*result|결과/i;
 
-const PERMISSION_SECTION_PATTERN = /\uAD8C\uD55C|permission/i;
+const PERMISSION_SECTION_PATTERN = /권한|permission/i;
 
-const PERMISSION_ALLOW_PATTERN = /\uD5C8\uC6A9|allow|accept|\uB3D9\uC758|\uC2B9\uC778/i;
+const PERMISSION_ALLOW_PATTERN = /허용|allow|accept|동의|승인/i;
 
-const PERMISSION_DENY_PATTERN = /\uAC70\uBD80|deny|reject|\uB098\uC911\uC5D0|later|skip/i;
+const PERMISSION_DENY_PATTERN = /거부|deny|reject|나중에|later|skip/i;
 
-const NOTIFICATION_SECTION_PATTERN = /\uC54C\uB9BC|notification/i;
+const NOTIFICATION_SECTION_PATTERN = /알림|notification/i;
 
-const ONBOARDING_SECTION_PATTERN = /\uC628\uBCF4\uB529|onboarding|\uC2A4\uC640\uC774\uD504|swipe|slide/i;
+const ONBOARDING_SECTION_PATTERN = /온보딩|onboarding|스와이프|swipe|slide/i;
 
-const SETTINGS_SECTION_PATTERN = /\uC124\uC815|settings/i;
+const SETTINGS_SECTION_PATTERN = /설정|settings/i;
 
-const FAQ_SECTION_PATTERN = /\uB3C4\uC6C0\uB9D0|faq|help|support|\uBB38\uC758/i;
+const FAQ_SECTION_PATTERN = /도움말|faq|help|support|문의/i;
 
-const FAQ_SEARCH_PATTERN = /\uAC80\uC0C9|search|find/i;
+const FAQ_SEARCH_PATTERN = /검색|search|find/i;
 
-const BREADCRUMB_SECTION_PATTERN = /\uACBD\uB85C|breadcrumb/i;
+const BREADCRUMB_SECTION_PATTERN = /경로|breadcrumb/i;
 
-const STICKY_CTA_PATTERN = /\uC2A4\uD2F0\uD0A4|sticky.*cta|sticky/i;
+const STICKY_CTA_PATTERN = /스티키|sticky.*cta|sticky/i;
 
-const MODAL_SECTION_PATTERN = /\uBAA8\uB2EC|modal|\uC2DC\uD2B8|sheet/i;
+const MODAL_SECTION_PATTERN = /모달|modal|시트|sheet/i;
 
-const MODAL_OVERLAY_PATTERN = /\uC624\uBC84\uB808\uC774|overlay/i;
+const MODAL_OVERLAY_PATTERN = /오버레이|overlay/i;
 
-const MODAL_OPEN_PATTERN = /\uC5F4\uAE30|open|sheet|modal|\uBAA8\uB2EC/i;
+const MODAL_OPEN_PATTERN = /열기|open|sheet|modal|모달/i;
 
-const MODAL_CLOSE_PATTERN = /\uB2EB\uAE30|close|\uCDE8\uC18C|cancel/i;
+const MODAL_CLOSE_PATTERN = /닫기|close|취소|cancel/i;
 
-const MORE_ACTION_PATTERN = /\uB354\uBCF4\uAE30|more|see\s*all|see\s*more/i;
+const MORE_ACTION_PATTERN = /더보기|more|see\s*all|see\s*more/i;
 
-const SORT_PATTERN = /\uC815\uB82C|sort/i;
+const SORT_PATTERN = /정렬|sort/i;
 
-const FILTER_PATTERN = /\uD544\uD130|filter/i;
+const FILTER_PATTERN = /필터|filter/i;
 
-const SKIP_PATTERN = /\uBC14\uB85C\uAC00\uAE30|skip|\uC2A4\uD0B5/i;
+const SKIP_PATTERN = /바로가기|skip|스킵/i;
 
-const CONTENT_SECTION_PATTERN = /\uCF58\uD150\uCE20|content|main/i;
+const CONTENT_SECTION_PATTERN = /콘텐츠|content|main/i;
 
-const SELECT_TABS_PATTERN = /\uC120\uD0DD\s*\uD0ED|select\s*tabs|tab\s*filter/i;
+const SELECT_TABS_PATTERN = /선택\s*탭|select\s*tabs|tab\s*filter/i;
 
-const DATE_SLIDER_PATTERN = /\uB0A0\uC9DC|date/i;
+const DATE_SLIDER_PATTERN = /날짜|date/i;
 
-const PAGINATION_PATTERN = /\uD398\uC774\uC9C0|pagination|pager/i;
+const PAGINATION_PATTERN = /페이지|pagination|pager/i;
 
-const LOCALE_SECTION_PATTERN = /\uC5B8\uC5B4|\uB85C\uCF00\uC77C|language|locale/i;
+const LOCALE_SECTION_PATTERN = /언어|로케일|language|locale/i;
 
-const THEME_SECTION_PATTERN = /\uD14C\uB9C8|theme|appearance/i;
+const THEME_SECTION_PATTERN = /테마|theme|appearance/i;
 
-const ACCESSIBILITY_SECTION_PATTERN = /\uC811\uADFC\uC131|accessibility|a11y/i;
+const ACCESSIBILITY_SECTION_PATTERN = /접근성|accessibility|a11y/i;
 
-const NOTIFICATION_MATRIX_PATTERN = /\uC54C\uB9BC.*\uB9E4\uD2B8\uB9AD\uC2A4|notification.*matrix|\uC54C\uB9BC\s*\uC124\uC815|notification\s*setting/i;
+const NOTIFICATION_MATRIX_PATTERN = /알림.*매트릭스|notification.*matrix|알림\s*설정|notification\s*setting/i;
 
-const NOTIFICATION_SAVE_PATTERN = /\uC800\uC7A5|save|apply|\uD655\uC778/i;
+const NOTIFICATION_SAVE_PATTERN = /저장|save|apply|확인/i;
 
-const THEME_DARK_PATTERN = /dark|\uB2E4\uD06C|\uC57C\uAC04/i;
+const THEME_DARK_PATTERN = /dark|다크|야간/i;
 
-const THEME_LIGHT_PATTERN = /light|\uB77C\uC774\uD2B8|\uBC1D\uC740/i;
+const THEME_LIGHT_PATTERN = /light|라이트|밝은/i;
 
-const THEME_SYSTEM_PATTERN = /system|auto|default|\uAE30\uBCF8|\uC790\uB3D9/i;
+const THEME_SYSTEM_PATTERN = /system|auto|default|기본|자동/i;
 
-const HIGH_CONTRAST_PATTERN = /\uACE0\uB300\uBE44|high\s*contrast/i;
+const HIGH_CONTRAST_PATTERN = /고대비|high\s*contrast/i;
 
-const LARGE_TEXT_PATTERN = /\uD070\s*\uAE00\uC790|\uAE00\uC790\s*\uD06C\uAC8C|large\s*text|text\s*size|big\s*text/i;
+const LARGE_TEXT_PATTERN = /큰\s*글자|글자\s*크게|large\s*text|text\s*size|big\s*text/i;
 
-const COOKIE_SETTINGS_PATTERN = /\uC124\uC815|manage|settings|preferences?/i;
+const COOKIE_SETTINGS_PATTERN = /설정|manage|settings|preferences?/i;
 
-const LIST_CONTAINER_PATTERN = /\uBAA9\uB85D|\uB9AC\uC2A4\uD2B8|list/i;
+const LIST_CONTAINER_PATTERN = /목록|리스트|list/i;
 
-const LIST_ITEM_PATTERN = /\uB9AC\uC2A4\uD2B8\s*\uC544\uC774\uD15C|list\s*item/i;
+const LIST_ITEM_PATTERN = /리스트\s*아이템|list\s*item/i;
 
-const RECOVERY_SECTION_PATTERN = /\uBCF5\uAD6C|recovery|reset|password/i;
+const RECOVERY_SECTION_PATTERN = /복구|recovery|reset|password/i;
 
-const OTP_SECTION_PATTERN = /otp|2fa|\uC778\uC99D|\uCF54\uB4DC/i;
+const OTP_SECTION_PATTERN = /otp|2fa|인증|코드/i;
 
-const OTP_LABEL_PATTERN = /otp|2fa|\uCF54\uB4DC/i;
+const OTP_LABEL_PATTERN = /otp|2fa|코드/i;
 
-const DELETE_SECTION_PATTERN = /\uC0AD\uC81C|\uD0C8\uD1F4|delete/i;
+const DELETE_SECTION_PATTERN = /삭제|탈퇴|delete/i;
 
-const SECURITY_SECTION_PATTERN = /\uBCF4\uC548|security/i;
+const SECURITY_SECTION_PATTERN = /보안|security/i;
 
-const SECURITY_DETAIL_PATTERN = /\uBCF4\uC548.*(\uC0C1\uC138|\uB0B4\uC6A9|\uBCF4\uAE30)|security.*(detail|view)/i;
+const SECURITY_DETAIL_PATTERN = /보안.*(상세|내용|보기)|security.*(detail|view)/i;
 
-const FAQ_DETAIL_PATTERN = /\bfaq\b.*(detail|view)|\uB3C4\uC6C0\uB9D0.*(\uC0C1\uC138|\uBCF4\uAE30)|help.*(detail|view)/i;
+const FAQ_DETAIL_PATTERN = /\bfaq\b.*(detail|view)|도움말.*(상세|보기)|help.*(detail|view)/i;
 
-const HEADER_SECTION_PATTERN = /\uD5E4\uB354|header/i;
+const HEADER_SECTION_PATTERN = /헤더|header/i;
 
-const NAV_SECTION_PATTERN = /\uB124\uBE44|nav|menu|\uBA54\uB274/i;
+const NAV_SECTION_PATTERN = /네비|nav|menu|메뉴/i;
 
-const TABBAR_SECTION_PATTERN = /\uD0ED\uBC14|tabbar|tab\s*bar|\uD0ED/i;
+const TABBAR_SECTION_PATTERN = /탭바|tabbar|tab\s*bar|탭/i;
 
-const SIDEBAR_SECTION_PATTERN = /\uC0AC\uC774\uB4DC\uBC14|sidebar/i;
+const SIDEBAR_SECTION_PATTERN = /사이드바|sidebar/i;
 
-const SIDEBAR_TOGGLE_PATTERN = /\uC811\uAE30|collapse|expand|\uD3BC\uCE58|toggle/i;
+const SIDEBAR_TOGGLE_PATTERN = /접기|collapse|expand|펼치|toggle/i;
 
-const SIDEBAR_BRAND_PATTERN = /\uBE0C\uB79C\uB4DC|brand|logo/i;
+const SIDEBAR_BRAND_PATTERN = /브랜드|brand|logo/i;
 
-const PLAN_CARD_PATTERN = /\uD50C\uB79C\s*\uCE74\uB4DC|plan\s*card/i;
+const PLAN_CARD_PATTERN = /플랜\s*카드|plan\s*card/i;
 
-const PLAN_LABEL_PATTERN = /\bpro\b|\uD504\uB85C|\bstandard\b|\uC2A4\uD0E0\uB2E4\uB4DC|\bbasic\b|\uBCA0\uC774\uC9C1|\benterprise\b|\uC5D4\uD130\uD504\uB77C\uC774\uC988/i;
+const PLAN_LABEL_PATTERN = /\bpro\b|프로|\bstandard\b|스탠다드|\bbasic\b|베이직|\benterprise\b|엔터프라이즈/i;
 
-const PLAN_SECTION_PATTERN = /\uD50C\uB79C|\uAD6C\uB3C5|upgrade|subscription/i;
+const PLAN_SECTION_PATTERN = /플랜|구독|upgrade|subscription/i;
 
-const NOTIFICATION_FILTER_ALL_PATTERN = /\uC804\uCCB4|\uBAA8\uB450|all/i;
+const NOTIFICATION_FILTER_ALL_PATTERN = /전체|모두|all/i;
 
-const NOTIFICATION_FILTER_UNREAD_PATTERN = /\uBBF8\uC77D\uC74C|\uC548\uC77D|\uC77D\uC9C0|\uC544\uC9C1|unread/i;
+const NOTIFICATION_FILTER_UNREAD_PATTERN = /미읽음|안읽|읽지|아직|unread/i;
 
-const NOTIFICATION_FILTER_READ_PATTERN = /\uC77D\uC74C|read|done|complete/i;
+const NOTIFICATION_FILTER_READ_PATTERN = /읽음|read|done|complete/i;
 
-const NOTIFICATION_SORT_NEWEST_PATTERN = /\uCD5C\uC2E0|\uCD5C\uADFC|recent|newest|latest|desc/i;
+const NOTIFICATION_SORT_NEWEST_PATTERN = /최신|최근|recent|newest|latest|desc/i;
 
-const NOTIFICATION_SORT_OLDEST_PATTERN = /\uC624\uB798\uB41C|\uB354\uC624\uB798|\uC624\uB798|oldest|asc/i;
+const NOTIFICATION_SORT_OLDEST_PATTERN = /오래된|더오래|오래|oldest|asc/i;
 
-const NOTIFICATION_DETAIL_PATTERN = /\uC54C\uB9BC.*(\uC0C1\uC138|\uB0B4\uC6A9|\uBCF4\uAE30)|notification.*(detail|item|view)/i;
+const NOTIFICATION_DETAIL_PATTERN = /알림.*(상세|내용|보기)|notification.*(detail|item|view)/i;
 
-const NOTIFICATION_LIST_PATTERN = /\uC54C\uB9BC.*(\uC13C\uD130|\uBAA9\uB85D|list)/i;
+const NOTIFICATION_LIST_PATTERN = /알림.*(센터|목록|list)/i;
 
-const CONTENT_FEED_PATTERN = /\uCF58\uD150\uCE20\s*\uD53C\uB4DC|content\s*feed|feed/i;
+const CONTENT_FEED_PATTERN = /콘텐츠\s*피드|content\s*feed|feed/i;
 
-const CONTENT_DETAIL_PATTERN = /\uCF58\uD150\uCE20\s*\uC0C1\uC138|content\s*detail|detail/i;
+const CONTENT_DETAIL_PATTERN = /콘텐츠\s*상세|content\s*detail|detail/i;
 
-const CONTENT_SORT_NEWEST_PATTERN = /\uCD5C\uC2E0|\uCD5C\uADFC|recent|newest|latest|desc/i;
+const CONTENT_SORT_NEWEST_PATTERN = /최신|최근|recent|newest|latest|desc/i;
 
-const CONTENT_SORT_OLDEST_PATTERN = /\uC624\uB798\uB41C|\uB354\uC624\uB798|\uC624\uB798|oldest|asc/i;
+const CONTENT_SORT_OLDEST_PATTERN = /오래된|더오래|오래|oldest|asc/i;
 
-const CONTENT_SORT_POPULAR_PATTERN = /\uC778\uAE30|popular|top|trending/i;
+const CONTENT_SORT_POPULAR_PATTERN = /인기|popular|top|trending/i;
 
-const CONTENT_CARD_PATTERN = /\uCF58\uD150\uCE20\s*\uCE74\uB4DC|content\s*card/i;
+const CONTENT_CARD_PATTERN = /콘텐츠\s*카드|content\s*card/i;
 
-const COMMENT_SECTION_PATTERN = /\uB313\uAE00|comment|thread|reply/i;
+const COMMENT_SECTION_PATTERN = /댓글|comment|thread|reply/i;
 
-const USER_CARD_SECTION_PATTERN = /\uC0AC\uC6A9\uC790\s*\uCE74\uB4DC|user\s*card/i;
+const USER_CARD_SECTION_PATTERN = /사용자\s*카드|user\s*card/i;
 
-const PROFILE_PAGE_PATTERN = /\uD504\uB85C\uD544|profile/i;
+const PROFILE_PAGE_PATTERN = /프로필|profile/i;
 
-const TAG_SECTION_PATTERN = /\uD0DC\uADF8|tag/i;
+const TAG_SECTION_PATTERN = /태그|tag/i;
 
-const BOOKMARK_SECTION_PATTERN = /\uBD81\uB9C8\uD06C|bookmark|saved/i;
+const BOOKMARK_SECTION_PATTERN = /북마크|bookmark|saved/i;
 
-const RANKING_SECTION_PATTERN = /\uB7AD\uD0B9|ranking|leader/i;
+const RANKING_SECTION_PATTERN = /랭킹|ranking|leader/i;
 
-const CHAT_LIST_SECTION_PATTERN = /\uCC44\uD305\s*\uBAA9\uB85D|chat\s*list|inbox|dm\s*list|\uB300\uD654\s*\uBAA9\uB85D/i;
+const CHAT_LIST_SECTION_PATTERN = /채팅\s*목록|chat\s*list|inbox|dm\s*list|대화\s*목록/i;
 
-const CHAT_ROOM_SECTION_PATTERN = /\uCC44\uD305\s*\uB8F8|chat\s*room|conversation|\uCC44\uD305\s*\uBC29/i;
+const CHAT_ROOM_SECTION_PATTERN = /채팅\s*룸|chat\s*room|conversation|채팅\s*방/i;
 
-const SHARE_ACTION_PATTERN = /\uACF5\uC720|share/i;
+const SHARE_ACTION_PATTERN = /공유|share/i;
 
-const SAVE_ACTION_PATTERN = /\uC800\uC7A5|save|\uBD81\uB9C8\uD06C|bookmark|\uC88B\uC544\uC694|favorite|like/i;
+const SAVE_ACTION_PATTERN = /저장|save|북마크|bookmark|좋아요|favorite|like/i;
 
-const FOLLOW_ACTION_PATTERN = /\uD314\uB85C\uC6B0|follow/i;
+const FOLLOW_ACTION_PATTERN = /팔로우|follow/i;
 
-const LOAD_MORE_PATTERN = /\uB354\uBCF4\uAE30|load\s*more|more/i;
+const LOAD_MORE_PATTERN = /더보기|load\s*more|more/i;
 
-const PERIOD_FILTER_PATTERN = /\uC774\uBC88\s*\uC8FC|\uC8FC\uAC04|\uC774\uBC88\s*\uB2EC|\uC6D4\uAC04|\uC774\uBC88\s*\uB144|\uC5F0\uAC04|week|month|year/i;
+const PERIOD_FILTER_PATTERN = /이번\s*주|주간|이번\s*달|월간|이번\s*년|연간|week|month|year/i;
 
-const UNREAD_PATTERN = /\uC548\uC77D|\uBBF8\uC77D|unread|\uC77D\uC9C0\s*\uC54A/i;
+const UNREAD_PATTERN = /안읽|미읽|unread|읽지\s*않/i;
 
-const ATTACHMENT_SECTION_PATTERN = /\uCCA8\uBD80|attachment|file|upload/i;
+const ATTACHMENT_SECTION_PATTERN = /첨부|attachment|file|upload/i;
 
-const EMOJI_PATTERN = /\uC774\uBAA8\uC9C0|emoji/i;
+const EMOJI_PATTERN = /이모지|emoji/i;
 
-const MENTION_SECTION_PATTERN = /\uBA58\uC158|mention/i;
+const MENTION_SECTION_PATTERN = /멘션|mention/i;
 
-const MENTION_FILTER_UNREAD_PATTERN = /\uC548\uC77D|\uBBF8\uC77D|unread|\uC77D\uC9C0\s*\uC54A/i;
+const MENTION_FILTER_UNREAD_PATTERN = /안읽|미읽|unread|읽지\s*않/i;
 
-const GROUP_CHANNEL_SECTION_PATTERN = /\uADF8\uB8F9\s*\uCC44\uB110|group\s*channel/i;
+const GROUP_CHANNEL_SECTION_PATTERN = /그룹\s*채널|group\s*channel/i;
 
-const CHANNEL_LIST_PATTERN = /\uCC44\uB110|channel/i;
+const CHANNEL_LIST_PATTERN = /채널|channel/i;
 
-const MEMBER_LIST_PATTERN = /\uBA64\uBC84|member/i;
+const MEMBER_LIST_PATTERN = /멤버|member/i;
 
-const CALL_SECTION_PATTERN = /\uCF5C|\uD1B5\uD654|call/i;
+const CALL_SECTION_PATTERN = /콜|통화|call/i;
 
-const CALL_STATUS_PATTERN = /\uC5F0\uACB0|\uC5F0\uACB0\s*\uC911|\uD1B5\uD654\s*\uC911|\uC885\uB8CC|ended|connected/i;
+const CALL_STATUS_PATTERN = /연결|연결\s*중|통화\s*중|종료|ended|connected/i;
 
-const CALL_MUTE_PATTERN = /\uC74C\uC18C\uAC70|mute/i;
+const CALL_MUTE_PATTERN = /음소거|mute/i;
 
-const CALL_VIDEO_PATTERN = /\uBE44\uB514\uC624|video|camera/i;
+const CALL_VIDEO_PATTERN = /비디오|video|camera/i;
 
-const CALL_END_PATTERN = /\uC885\uB8CC|end|hang\s*up|leave/i;
+const CALL_END_PATTERN = /종료|end|hang\s*up|leave/i;
 
-const TODO_SECTION_PATTERN = /\uD560\s*\uC77C|todo|task/i;
+const TODO_SECTION_PATTERN = /할\s*일|todo|task/i;
 
-const TODO_ADD_PATTERN = /\uCD94\uAC00|add|\uC0C8\s*\uD560\s*\uC77C|\uC0C8\s*\uC791\uC5C5/i;
+const TODO_ADD_PATTERN = /추가|add|새\s*할\s*일|새\s*작업/i;
 
-const TODO_DELETE_PATTERN = /\uC0AD\uC81C|remove|delete/i;
+const TODO_DELETE_PATTERN = /삭제|remove|delete/i;
 
-const TODO_FILTER_DONE_PATTERN = /\uC644\uB8CC|done|completed/i;
+const TODO_FILTER_DONE_PATTERN = /완료|done|completed/i;
 
-const TODO_FILTER_PENDING_PATTERN = /\uBBF8\uC644\uB8CC|\uC9C4\uD589|todo|pending|open/i;
+const TODO_FILTER_PENDING_PATTERN = /미완료|진행|todo|pending|open/i;
 
-const CALENDAR_SECTION_PATTERN = /\uCE98\uB9B0\uB354|calendar/i;
+const CALENDAR_SECTION_PATTERN = /캘린더|calendar/i;
 
-const CALENDAR_VIEW_PATTERN = /\uC6D4\uAC04|\uC8FC\uAC04|\uC77C\uAC04|month|week|day/i;
+const CALENDAR_VIEW_PATTERN = /월간|주간|일간|month|week|day/i;
 
-const CALENDAR_PREV_PATTERN = /\uC774\uC804|prev|back/i;
+const CALENDAR_PREV_PATTERN = /이전|prev|back/i;
 
-const CALENDAR_NEXT_PATTERN = /\uB2E4\uC74C|next|forward/i;
+const CALENDAR_NEXT_PATTERN = /다음|next|forward/i;
 
-const CALENDAR_DATE_PATTERN = /\uB0A0\uC9DC|date|\d{1,2}[\\./-]\d{1,2}/i;
+const CALENDAR_DATE_PATTERN = /날짜|date|\d{1,2}[\\./-]\d{1,2}/i;
 
-const NOTE_SECTION_PATTERN = /\uB178\uD2B8|\uBA54\uBAA8|note|editor/i;
+const NOTE_SECTION_PATTERN = /노트|메모|note|editor/i;
 
-const NOTE_TOOLBAR_PATTERN = /\uD234\uBC14|toolbar/i;
+const NOTE_TOOLBAR_PATTERN = /툴바|toolbar/i;
 
-const NOTE_BOLD_PATTERN = /\uAD75\uAC8C|\uAC15\uC870|bold/i;
+const NOTE_BOLD_PATTERN = /굵게|강조|bold/i;
 
-const NOTE_ITALIC_PATTERN = /\uAE30\uC6B8\uC784|italic/i;
+const NOTE_ITALIC_PATTERN = /기울임|italic/i;
 
-const NOTE_UNDERLINE_PATTERN = /\uBC11\uC904|underline/i;
+const NOTE_UNDERLINE_PATTERN = /밑줄|underline/i;
 
-const NOTE_VERSION_PATTERN = /\uBC84\uC804|version|history/i;
+const NOTE_VERSION_PATTERN = /버전|version|history/i;
 
-const NOTE_SYNC_PATTERN = /\uB3D9\uAE30\uD654|sync/i;
+const NOTE_SYNC_PATTERN = /동기화|sync/i;
 
-const MEMBER_ROLE_SECTION_PATTERN = /\uBA64\uBC84.*(\uC5ED\uD560|\uAD8C\uD55C)|member.*(role|permission)|role\s*table/i;
+const MEMBER_ROLE_SECTION_PATTERN = /멤버.*(역할|권한)|member.*(role|permission)|role\s*table/i;
 
-const MEMBER_ROLE_SAVE_PATTERN = /\uC800\uC7A5|save|apply/i;
+const MEMBER_ROLE_SAVE_PATTERN = /저장|save|apply/i;
 
-const MEMBER_ROLE_AUDIT_PATTERN = /\uAC10\uC0AC|audit|log|history/i;
+const MEMBER_ROLE_AUDIT_PATTERN = /감사|audit|log|history/i;
 
-const APPROVAL_SECTION_PATTERN = /\uC2B9\uC778|approval|review/i;
+const APPROVAL_SECTION_PATTERN = /승인|approval|review/i;
 
-const APPROVAL_STEP_PATTERN = /\uB2E8\uACC4|step|stage|progress/i;
+const APPROVAL_STEP_PATTERN = /단계|step|stage|progress/i;
 
-const APPROVE_ACTION_PATTERN = /\uC2B9\uC778|approve|confirm/i;
+const APPROVE_ACTION_PATTERN = /승인|approve|confirm/i;
 
-const REJECT_ACTION_PATTERN = /\uBC18\uB824|reject|decline|deny/i;
+const REJECT_ACTION_PATTERN = /반려|reject|decline|deny/i;
 
-const APPROVAL_NOTIFY_PATTERN = /\uC54C\uB9BC|notify|notification/i;
+const APPROVAL_NOTIFY_PATTERN = /알림|notify|notification/i;
 
-const KANBAN_SECTION_PATTERN = /\uCE78\uBC18|kanban|board/i;
+const KANBAN_SECTION_PATTERN = /칸반|kanban|board/i;
 
-const KANBAN_COLUMN_PATTERN = /\uCEEC\uB7FC|column|list/i;
+const KANBAN_COLUMN_PATTERN = /컬럼|column|list/i;
 
-const KANBAN_MOVE_PATTERN = /\uC774\uB3D9|move|drag/i;
+const KANBAN_MOVE_PATTERN = /이동|move|drag/i;
 
-const GANTT_SECTION_PATTERN = /\uAC04\uD2B8|gantt|timeline/i;
+const GANTT_SECTION_PATTERN = /간트|gantt|timeline/i;
 
-const GANTT_ZOOM_IN_PATTERN = /\uD655\uB300|zoom\s*in|\uC90C\s*in/i;
+const GANTT_ZOOM_IN_PATTERN = /확대|zoom\s*in|줌\s*in/i;
 
-const GANTT_ZOOM_OUT_PATTERN = /\uCD95\uC18C|zoom\s*out|\uC90C\s*out/i;
+const GANTT_ZOOM_OUT_PATTERN = /축소|zoom\s*out|줌\s*out/i;
 
-const GANTT_SCROLL_PATTERN = /\uC2A4\uD06C\uB864|scroll|pan/i;
+const GANTT_SCROLL_PATTERN = /스크롤|scroll|pan/i;
 
-const MEDIA_GALLERY_SECTION_PATTERN = /\uAC24\uB7EC\uB9AC|gallery|media\s*grid|media\s*gallery/i;
+const MEDIA_GALLERY_SECTION_PATTERN = /갤러리|gallery|media\s*grid|media\s*gallery/i;
 
-const MEDIA_DETAIL_PATTERN = /\uC0C1\uC138|detail|view/i;
+const MEDIA_DETAIL_PATTERN = /상세|detail|view/i;
 
-const LIGHTBOX_SECTION_PATTERN = /\uB77C\uC774\uD2B8\uBC15\uC2A4|lightbox|viewer/i;
+const LIGHTBOX_SECTION_PATTERN = /라이트박스|lightbox|viewer/i;
 
-const LIGHTBOX_CLOSE_PATTERN = /\uB2EB\uAE30|close|dismiss|x/i;
+const LIGHTBOX_CLOSE_PATTERN = /닫기|close|dismiss|x/i;
 
-const LIGHTBOX_NEXT_PATTERN = /\uB2E4\uC74C|next|forward|>/i;
+const LIGHTBOX_NEXT_PATTERN = /다음|next|forward|>/i;
 
-const LIGHTBOX_PREV_PATTERN = /\uC774\uC804|prev|back|</i;
+const LIGHTBOX_PREV_PATTERN = /이전|prev|back|</i;
 
-const MEDIA_PLAYER_SECTION_PATTERN = /\uBBF8\uB514\uC5B4\s*\uD50C\uB808\uC774\uC5B4|media\s*player|video\s*player|player/i;
+const MEDIA_PLAYER_SECTION_PATTERN = /미디어\s*플레이어|media\s*player|video\s*player|player/i;
 
-const MEDIA_PLAY_PATTERN = /\uC7AC\uC0DD|play/i;
+const MEDIA_PLAY_PATTERN = /재생|play/i;
 
-const MEDIA_PAUSE_PATTERN = /\uC77C\uC2DC\uC815\uC9C0|pause|stop/i;
+const MEDIA_PAUSE_PATTERN = /일시정지|pause|stop/i;
 
-const MEDIA_SEEK_FORWARD_PATTERN = /\uC55E\uC73C\uB85C|forward|skip|>>/i;
+const MEDIA_SEEK_FORWARD_PATTERN = /앞으로|forward|skip|>>/i;
 
-const MEDIA_SEEK_BACK_PATTERN = /\uB4A4\uB85C|back|rewind|<</i;
+const MEDIA_SEEK_BACK_PATTERN = /뒤로|back|rewind|<</i;
 
-const MEDIA_VOLUME_UP_PATTERN = /\uBCFC\uB968.*\uC62C|\uD074\uAC8C|volume.*up|louder/i;
+const MEDIA_VOLUME_UP_PATTERN = /볼륨.*올|크게|volume.*up|louder/i;
 
-const MEDIA_VOLUME_DOWN_PATTERN = /\uBCFC\uB968.*\uB0B4|\uC791\uAC8C|volume.*down|quieter/i;
+const MEDIA_VOLUME_DOWN_PATTERN = /볼륨.*내|작게|volume.*down|quieter/i;
 
-const MEDIA_MUTE_PATTERN = /\uC74C\uC18C\uAC70|mute/i;
+const MEDIA_MUTE_PATTERN = /음소거|mute/i;
 
-const MEDIA_STATUS_PATTERN = /\uC0C1\uD0DC|status|\uC7AC\uC0DD|pause|play|time|progress/i;
+const MEDIA_STATUS_PATTERN = /상태|status|재생|pause|play|time|progress/i;
 
-const STORY_SECTION_PATTERN = /\uC2A4\uD1A0\uB9AC|story/i;
+const STORY_SECTION_PATTERN = /스토리|story/i;
 
-const STORY_NEXT_PATTERN = /\uB2E4\uC74C|next|forward|>/i;
+const STORY_NEXT_PATTERN = /다음|next|forward|>/i;
 
-const STORY_PREV_PATTERN = /\uC774\uC804|prev|back|</i;
+const STORY_PREV_PATTERN = /이전|prev|back|</i;
 
-const STORY_PLAY_PATTERN = /\uC7AC\uC0DD|play/i;
+const STORY_PLAY_PATTERN = /재생|play/i;
 
-const STORY_PAUSE_PATTERN = /\uC77C\uC2DC\uC815\uC9C0|pause|stop/i;
+const STORY_PAUSE_PATTERN = /일시정지|pause|stop/i;
 
-const STORY_PROGRESS_PATTERN = /\uC9C4\uD589|progress|story/i;
+const STORY_PROGRESS_PATTERN = /진행|progress|story/i;
 
-const LIVE_SECTION_PATTERN = /\uB77C\uC774\uBE0C|live|stream/i;
+const LIVE_SECTION_PATTERN = /라이브|live|stream/i;
 
-const LIVE_STATUS_PATTERN = /\uC0C1\uD0DC|status|\uBC29\uC1A1|stream/i;
+const LIVE_STATUS_PATTERN = /상태|status|방송|stream/i;
 
-const LIVE_VIEWER_PATTERN = /\uC2DC\uCCAD\uC790|viewer|viewers|watching/i;
+const LIVE_VIEWER_PATTERN = /시청자|viewer|viewers|watching/i;
 
-const KPI_SECTION_PATTERN = /kpi|\uC9C0\uD45C|metric/i;
+const KPI_SECTION_PATTERN = /kpi|지표|metric/i;
 
-const CHART_SECTION_PATTERN = /\uCC28\uD2B8|chart|graph/i;
+const CHART_SECTION_PATTERN = /차트|chart|graph/i;
 
-const DATA_TABLE_SECTION_PATTERN = /\uD14C\uC774\uBE14|table|data\s*table/i;
+const DATA_TABLE_SECTION_PATTERN = /테이블|table|data\s*table/i;
 
-const TABLE_HEADER_PATTERN = /\uD5E4\uB354|header|column/i;
+const TABLE_HEADER_PATTERN = /헤더|header|column/i;
 
-const LOADING_PATTERN = /\uB85C\uB529|loading|skeleton|spinner/i;
+const LOADING_PATTERN = /로딩|loading|skeleton|spinner/i;
 
-const EMPTY_STATE_PATTERN = /\uBE48\s*\uC0C1\uD0DC|\uC5C6\uC74C|empty|no\s*data/i;
+const EMPTY_STATE_PATTERN = /빈\s*상태|없음|empty|no\s*data/i;
 
-const USER_ADMIN_SECTION_PATTERN = /\uC0AC\uC6A9\uC790\s*\uAD00\uB9AC|user\s*manager|user\s*admin|users?/i;
+const USER_ADMIN_SECTION_PATTERN = /사용자\s*관리|user\s*manager|user\s*admin|users?/i;
 
-const USER_STATUS_ACTIVE_PATTERN = /\uD65C\uC131|active|enabled/i;
+const USER_STATUS_ACTIVE_PATTERN = /활성|active|enabled/i;
 
-const USER_STATUS_INACTIVE_PATTERN = /\uBE44\uD65C\uC131|inactive|disabled/i;
+const USER_STATUS_INACTIVE_PATTERN = /비활성|inactive|disabled/i;
 
-const USER_STATUS_SUSPENDED_PATTERN = /\uC815\uC9C0|suspended|blocked|banned/i;
+const USER_STATUS_SUSPENDED_PATTERN = /정지|suspended|blocked|banned/i;
 
-const AUDIT_LOG_SECTION_PATTERN = /\uAC10\uC0AC\s*\uB85C\uADF8|audit\s*log|activity\s*log/i;
+const AUDIT_LOG_SECTION_PATTERN = /감사\s*로그|audit\s*log|activity\s*log/i;
 
-const AUDIT_EXPORT_PATTERN = /\uB0B4\uBCF4\uB0B4\uAE30|export|download/i;
+const AUDIT_EXPORT_PATTERN = /내보내기|export|download/i;
 
-const BILLING_SECTION_PATTERN = /\uBE4C\uB9C1|billing|invoice|payment/i;
+const BILLING_SECTION_PATTERN = /빌링|billing|invoice|payment/i;
 
-const INVOICE_ACTION_PATTERN = /\uC778\uBCF4\uC774\uC2A4|invoice|receipt/i;
+const INVOICE_ACTION_PATTERN = /인보이스|invoice|receipt/i;
 
-const PAYMENT_STATUS_PATTERN = /\uACB0\uC81C|payment|paid|unpaid|overdue|failed/i;
+const PAYMENT_STATUS_PATTERN = /결제|payment|paid|unpaid|overdue|failed/i;
 
-const SYSTEM_CONSOLE_SECTION_PATTERN = /\uC2DC\uC2A4\uD15C\s*\uCF58\uC194|system\s*console|console/i;
+const SYSTEM_CONSOLE_SECTION_PATTERN = /시스템\s*콘솔|system\s*console|console/i;
 
 const CONSOLE_LEVEL_PATTERN = /debug|info|warn|error|fatal|trace/i;
 
-const AUTO_SCROLL_PATTERN = /\uC790\uB3D9\s*\uC2A4\uD06C\uB864|auto\s*scroll/i;
+const AUTO_SCROLL_PATTERN = /자동\s*스크롤|auto\s*scroll/i;
 
-const DATA_TRANSFER_SECTION_PATTERN = /\uB370\uC774\uD130\s*\uAC00\uC838\uC624\uAE30|\uB370\uC774\uD130\s*\uB0B4\uBCF4\uB0B4\uAE30|import|export|data\s*transfer/i;
+const DATA_TRANSFER_SECTION_PATTERN = /데이터\s*가져오기|데이터\s*내보내기|import|export|data\s*transfer/i;
 
-const DATA_MAPPING_PATTERN = /\uB9E4\uD551|map|mapping/i;
+const DATA_MAPPING_PATTERN = /매핑|map|mapping/i;
 
-const DATA_VALIDATE_PATTERN = /\uAC80\uC99D|validate|validation|check/i;
+const DATA_VALIDATE_PATTERN = /검증|validate|validation|check/i;
 
-const DATA_PROGRESS_PATTERN = /\uC9C4\uD589|progress|uploading|processing/i;
+const DATA_PROGRESS_PATTERN = /진행|progress|uploading|processing/i;
 
-const MONITORING_SECTION_PATTERN = /\uBAA8\uB2C8\uD130\uB9C1|monitor|status|uptime|health/i;
+const MONITORING_SECTION_PATTERN = /모니터링|monitor|status|uptime|health/i;
 
-const MONITORING_ALARM_PATTERN = /\uC54C\uB78C|alarm|alert/i;
+const MONITORING_ALARM_PATTERN = /알람|alarm|alert/i;
 
 const SKELETON_SECTION_PATTERN = /skeleton|loading/i;
 
-const CONFIRM_MODAL_PATTERN = /\uD655\uC778|confirm|are\s*you\s*sure/i;
+const CONFIRM_MODAL_PATTERN = /확인|confirm|are\s*you\s*sure/i;
 
-const ERROR_PAGE_PATTERN = /\uC5D0\uB7EC|error|404|500|not\s*found/i;
+const ERROR_PAGE_PATTERN = /에러|error|404|500|not\s*found/i;
 
-const ERROR_CODE_PATTERN = /\uCF54\uB4DC|code|error\s*code/i;
+const ERROR_CODE_PATTERN = /코드|code|error\s*code/i;
 
-const ERROR_LOG_PATTERN = /\uB85C\uADF8|log|report|detail/i;
+const ERROR_LOG_PATTERN = /로그|log|report|detail/i;
 
-const FORM_WIZARD_SECTION_PATTERN = /\uD3FC\s*\uC704\uC800\uB4DC|wizard|step\s*form/i;
+const FORM_WIZARD_SECTION_PATTERN = /폼\s*위저드|wizard|step\s*form/i;
 
-const FORM_NEXT_PATTERN = /\uB2E4\uC74C|next|continue/i;
+const FORM_NEXT_PATTERN = /다음|next|continue/i;
 
-const FORM_PREV_PATTERN = /\uC774\uC804|prev|back/i;
+const FORM_PREV_PATTERN = /이전|prev|back/i;
 
-const INPUT_PHONE_PATTERN = /\uC804\uD654|phone|mobile/i;
+const INPUT_PHONE_PATTERN = /전화|phone|mobile/i;
 
-const INPUT_CARD_PATTERN = /\uCE74\uB4DC|card/i;
+const INPUT_CARD_PATTERN = /카드|card/i;
 
-const INPUT_DATE_PATTERN = /\uB0A0\uC9DC|date|birthday|dob/i;
+const INPUT_DATE_PATTERN = /날짜|date|birthday|dob/i;
 
-const INPUT_ZIP_PATTERN = /\uC6B0\uD3B8|zip|postal/i;
+const INPUT_ZIP_PATTERN = /우편|zip|postal/i;
 
-const ADDRESS_SECTION_PATTERN = /\uC8FC\uC18C|address|zip\s*search/i;
+const ADDRESS_SECTION_PATTERN = /주소|address|zip\s*search/i;
 
-const ADDRESS_SEARCH_PATTERN = /\uAC80\uC0C9|search|find/i;
+const ADDRESS_SEARCH_PATTERN = /검색|search|find/i;
 
-const ADDRESS_RESULT_PATTERN = /\uACB0\uACFC|result|list/i;
+const ADDRESS_RESULT_PATTERN = /결과|result|list/i;
 
-const ADDRESS_DETAIL_PATTERN = /\uC0C1\uC138|detail|apartment|suite/i;
+const ADDRESS_DETAIL_PATTERN = /상세|detail|apartment|suite/i;
 
-const CART_SECTION_PATTERN = /\uC7A5\uBC14\uAD6C\uB2C8|cart|basket/i;
+const CART_SECTION_PATTERN = /장바구니|cart|basket/i;
 
-const CART_QTY_PLUS_PATTERN = /\uCD94\uAC00|\uD50C\uB7EC\uC2A4|plus|\+/i;
+const CART_QTY_PLUS_PATTERN = /추가|플러스|plus|\+/i;
 
-const CART_QTY_MINUS_PATTERN = /\uAC10\uC18C|\uB9C8\uC774\uB108\uC2A4|minus|\-/i;
+const CART_QTY_MINUS_PATTERN = /감소|마이너스|minus|\-/i;
 
-const CART_TOTAL_PATTERN = /\uD569\uACC4|total|amount|sum/i;
+const CART_TOTAL_PATTERN = /합계|total|amount|sum/i;
 
-const PAYMENT_METHOD_SECTION_PATTERN = /\uACB0\uC81C\s*\uC218\uB2E8|payment\s*method|card\s*list|billing/i;
+const PAYMENT_METHOD_SECTION_PATTERN = /결제\s*수단|payment\s*method|card\s*list|billing/i;
 
-const PAYMENT_ADD_PATTERN = /\uCD94\uAC00|add|new/i;
+const PAYMENT_ADD_PATTERN = /추가|add|new/i;
 
-const PAYMENT_DELETE_PATTERN = /\uC0AD\uC81C|remove|delete/i;
+const PAYMENT_DELETE_PATTERN = /삭제|remove|delete/i;
 
-const PAYMENT_DEFAULT_PATTERN = /\uAE30\uBCF8|default|primary/i;
+const PAYMENT_DEFAULT_PATTERN = /기본|default|primary/i;
 
-const PAYMENT_SELECT_PATTERN = /\uC120\uD0DD|select|use/i;
+const PAYMENT_SELECT_PATTERN = /선택|select|use/i;
 
-const PRICE_COMPARE_PATTERN = /\uBE44\uAD50|compare|highlight/i;
+const PRICE_COMPARE_PATTERN = /비교|compare|highlight/i;
 
-const PAYMENT_RESULT_PATTERN = /\uACB0\uC81C\s*\uACB0\uACFC|payment\s*result|result/i;
+const PAYMENT_RESULT_PATTERN = /결제\s*결과|payment\s*result|result/i;
 
-const PAYMENT_SUCCESS_PATTERN = /\uC131\uACF5|success|paid/i;
+const PAYMENT_SUCCESS_PATTERN = /성공|success|paid/i;
 
-const PAYMENT_FAIL_PATTERN = /\uC2E4\uD328|fail|failed|error|declined/i;
+const PAYMENT_FAIL_PATTERN = /실패|fail|failed|error|declined/i;
 
-const PAYMENT_RETRY_PATTERN = /\uC7AC\uC2DC\uB3C4|retry|try\s*again/i;
+const PAYMENT_RETRY_PATTERN = /재시도|retry|try\s*again/i;
 
-const PAYMENT_RECEIPT_PATTERN = /\uC601\uC218\uC99D|receipt|invoice/i;
+const PAYMENT_RECEIPT_PATTERN = /영수증|receipt|invoice/i;
 
-const PAYMENT_HISTORY_PATTERN = /\uB0B4\uC5ED|history|transactions?/i;
+const PAYMENT_HISTORY_PATTERN = /내역|history|transactions?/i;
 
-const COUPON_SECTION_PATTERN = /\uCFE0\uD3F0|coupon|promo/i;
+const COUPON_SECTION_PATTERN = /쿠폰|coupon|promo/i;
 
-const COUPON_APPLY_PATTERN = /\uC801\uC6A9|apply|redeem/i;
+const COUPON_APPLY_PATTERN = /적용|apply|redeem/i;
 
-const COUPON_ERROR_PATTERN = /\uC624\uB958|error|invalid|failed/i;
+const COUPON_ERROR_PATTERN = /오류|error|invalid|failed/i;
 
-const BLANK_TEMPLATE_PATTERN = /\uBE48\s*\uD15C\uD50C\uB9BF|blank\s*template/i;
+const BLANK_TEMPLATE_PATTERN = /빈\s*템플릿|blank\s*template/i;
 
-const GRID_GUIDE_PATTERN = /\uADF8\uB9AC\uB4DC|grid|guide|guideline/i;
+const GRID_GUIDE_PATTERN = /그리드|grid|guide|guideline/i;
 
-const BLANK_INIT_PATTERN = /\uC0DD\uC131|create|start|add/i;
+const BLANK_INIT_PATTERN = /생성|create|start|add/i;
 
-const LANDING_SECTION_PATTERN = /\uB79C\uB529|landing|hero/i;
+const LANDING_SECTION_PATTERN = /랜딩|landing|hero/i;
 
-const ANCHOR_PATTERN = /\uC139\uC158|anchor|jump|scroll/i;
+const ANCHOR_PATTERN = /섹션|anchor|jump|scroll/i;
 
-const DASHBOARD_SECTION_PATTERN = /\uB300\uC2DC\uBCF4\uB4DC|dashboard|overview/i;
+const DASHBOARD_SECTION_PATTERN = /대시보드|dashboard|overview/i;
 
-const WIDGET_PATTERN = /\uC704\uC82F|widget|card/i;
+const WIDGET_PATTERN = /위젯|widget|card/i;
 
-const LAYOUT_SAVE_PATTERN = /\uB808\uC774\uC544\uC6C3|layout|save/i;
+const LAYOUT_SAVE_PATTERN = /레이아웃|layout|save/i;
 
-const COMMUNITY_SECTION_PATTERN = /\uCEE4\uBBA4\uB2C8\uD2F0|community|forum/i;
+const COMMUNITY_SECTION_PATTERN = /커뮤니티|community|forum/i;
 
-const RECOMMEND_PATTERN = /\uCD94\uCC9C|recommend|suggest/i;
+const RECOMMEND_PATTERN = /추천|recommend|suggest/i;
 
-const WRITE_ACTION_PATTERN = /\uC791\uC131|write|compose|post/i;
+const WRITE_ACTION_PATTERN = /작성|write|compose|post/i;
 
-const SERVICE_SECTION_PATTERN = /\uC11C\uBE44\uC2A4|service|support|help/i;
+const SERVICE_SECTION_PATTERN = /서비스|service|support|help/i;
 
-const CONTACT_FORM_PATTERN = /\uBB38\uC758|contact|inquiry|support/i;
+const CONTACT_FORM_PATTERN = /문의|contact|inquiry|support/i;
 
-const STEP_PROGRESS_PATTERN = /\uB2E8\uACC4|step|progress/i;
+const STEP_PROGRESS_PATTERN = /단계|step|progress/i;
 
-const SECTION_HEADER_PATTERN = /\uC139\uC158|section\s*header|section/i;
+const SECTION_HEADER_PATTERN = /섹션|section\s*header|section/i;
 
-const ALL_FILTER_PATTERN = /\uC804\uCCB4|\uBAA8\uB450|all/i;
+const ALL_FILTER_PATTERN = /전체|모두|all/i;
 
 const BREADCRUMB_SEPARATOR_PATTERN = /^[\s>\/\u203A\u00BB\u2192\u2794|\u00B7\u2022\u2026]+$/;
 
@@ -877,9 +877,9 @@ const STICKY_CTA_SCROLL_THRESHOLD = 120;
 
 const STICKY_CTA_STORAGE_PREFIX = "null.runtime.stickyCtaDismissed";
 
-const APP_UPDATE_PATTERN = /\uC5C5\uB370\uC774\uD2B8|update|\uBC84\uC804|version/i;
+const APP_UPDATE_PATTERN = /업데이트|update|버전|version/i;
 
-const APP_UPDATE_LATER_PATTERN = /\uB098\uC911\uC5D0|later|dismiss|hide|\uB2E4\uC2DC\s*\uC548\s*\uBCF4\uAE30|\uC228\uAE30\uAE30/i;
+const APP_UPDATE_LATER_PATTERN = /나중에|later|dismiss|hide|다시\s*안\s*보기|숨기기/i;
 
 const APP_UPDATE_STORAGE_KEY = "null.runtime.appUpdateDismissed";
 
@@ -948,69 +948,41 @@ function isResendLabel(label: string) {
 
 
 function isPaginationGroupName(raw: string) {
-
   const name = raw.trim().toLowerCase();
-
   return (
-
     name.includes("pagination") ||
-
     name.includes("pager") ||
-
     name.includes("page") ||
-
-    name.includes("???") ||
-
-    name.includes("???") ||
-
+    name.includes("페이지") ||
+    name.includes("페이징")
   );
-
 }
 
 
 
 function isPrevLabel(raw: string) {
-
   const label = normalizeChoiceLabel(raw);
-
   return (
-
     label === "<" ||
-
     label.includes("prev") ||
-
     label.includes("previous") ||
-
     label.includes("back") ||
-
-    label.includes("??") ||
-
-    label.includes("??")
-
+    label.includes("이전") ||
+    label.includes("뒤로")
   );
-
 }
 
 
 
 function isNextLabel(raw: string) {
-
   const label = normalizeChoiceLabel(raw);
-
   return (
-
     label === ">" ||
-
     label.includes("next") ||
-
     label.includes("forward") ||
-
-    label.includes("??") ||
-
-    label.includes("????")
-
+    label.includes("다음") ||
+    label.includes("다음으로")
   );
-
 }
 
 
@@ -1031,23 +1003,23 @@ function parseNumericLabel(raw: string) {
 
 function resolveTargetPlan(normalized: string) {
 
-  if (normalized.includes("pro") || normalized.includes("\uD504\uB85C")) return "pro";
+  if (normalized.includes("pro") || normalized.includes("프로")) return "pro";
 
   if (
 
     normalized.includes("standard") ||
 
-    normalized.includes("\uC2A4\uD0E0\uB2E4\uB4DC") ||
+    normalized.includes("스탠다드") ||
 
     normalized.includes("basic") ||
 
-    normalized.includes("\uBCA0\uC774\uC9C1")
+    normalized.includes("베이직")
 
   )
 
     return "standard";
 
-  if (normalized.includes("enterprise") || normalized.includes("\uC5D4\uD130\uD504\uB77C\uC774\uC988")) return "enterprise";
+  if (normalized.includes("enterprise") || normalized.includes("엔터프라이즈")) return "enterprise";
 
   return null;
 
@@ -1055,13 +1027,13 @@ function resolveTargetPlan(normalized: string) {
 
 
 
-const OPTIONAL_LABEL_PATTERN = /\[(?:\uC120\uD0DD|optional)\]|\((?:\uC120\uD0DD|optional)\)/i;
+const OPTIONAL_LABEL_PATTERN = /\[(?:선택|optional)\]|\((?:선택|optional)\)/i;
 
-const REQUIRED_LABEL_PATTERN = /\[(?:\uD544\uC218|required)\]|\((?:\uD544\uC218|required)\)|\uD544\uC218|required/i;
+const REQUIRED_LABEL_PATTERN = /\[(?:필수|required)\]|\((?:필수|required)\)|필수|required/i;
 
-const CONSENT_LABEL_PATTERN = /\uB3D9\uC758|\uC57D\uAD00|\uBC29\uCE68|consent|privacy/i;
+const CONSENT_LABEL_PATTERN = /동의|약관|방침|consent|privacy/i;
 
-const ALL_CONSENT_LABEL_PATTERN = /\uC804\uCCB4\s*\uB3D9\uC758|all\s*consent/i;
+const ALL_CONSENT_LABEL_PATTERN = /전체\s*동의|all\s*consent/i;
 
 
 
@@ -1379,13 +1351,13 @@ function resolveLocaleMode(label: string, modes: string[]) {
 
   const map: Array<{ pattern: RegExp; code: string }> = [
 
-    { pattern: /ko|kr|\uD55C\uAD6D|\uD55C\uAE00|korean/i, code: "ko" },
+    { pattern: /ko|kr|한국|한글|korean/i, code: "ko" },
 
-    { pattern: /en|\uC601\uC5B4|english/i, code: "en" },
+    { pattern: /en|영어|english/i, code: "en" },
 
-    { pattern: /ja|jp|\uC77C\uBCF8|\u65E5\u672C|japanese/i, code: "ja" },
+    { pattern: /ja|jp|일본|日本|japanese/i, code: "ja" },
 
-    { pattern: /zh|cn|\uC911\uAD6D|\u4E2D\u6587|chinese/i, code: "zh" },
+    { pattern: /zh|cn|중국|中文|chinese/i, code: "zh" },
 
   ];
 
@@ -1411,13 +1383,13 @@ function resolveLocaleCode(label: string) {
 
   if (!value) return null;
 
-  if (/ko|kr|\uD55C\uAD6D|\uD55C\uAE00|korean/i.test(value)) return "ko";
+  if (/ko|kr|한국|한글|korean/i.test(value)) return "ko";
 
-  if (/en|\uC601\uC5B4|english/i.test(value)) return "en";
+  if (/en|영어|english/i.test(value)) return "en";
 
-  if (/ja|jp|\uC77C\uBCF8|\u65E5\u672C|japanese/i.test(value)) return "ja";
+  if (/ja|jp|일본|日本|japanese/i.test(value)) return "ja";
 
-  if (/zh|cn|\uC911\uAD6D|\u4E2D\u6587|chinese/i.test(value)) return "zh";
+  if (/zh|cn|중국|中文|chinese/i.test(value)) return "zh";
 
   const normalized = normalizeLooseLabel(value);
 
@@ -1699,13 +1671,13 @@ function resolvePlanKey(label: string) {
 
   if (!normalized) return null;
 
-  if (normalized.includes("pro") || normalized.includes("\uD504\uB85C")) return "pro";
+  if (normalized.includes("pro") || normalized.includes("프로")) return "pro";
 
-  if (normalized.includes("enterprise") || normalized.includes("\uC5D4\uD130\uD504\uB77C\uC774\uC988")) return "enterprise";
+  if (normalized.includes("enterprise") || normalized.includes("엔터프라이즈")) return "enterprise";
 
-  if (normalized.includes("standard") || normalized.includes("\uC2A4\uD0E0\uB2E4\uB4DC")) return "standard";
+  if (normalized.includes("standard") || normalized.includes("스탠다드")) return "standard";
 
-  if (normalized.includes("basic") || normalized.includes("\uBCA0\uC774\uC9C1")) return "basic";
+  if (normalized.includes("basic") || normalized.includes("베이직")) return "basic";
 
   return null;
 
@@ -2789,13 +2761,13 @@ function mapFieldLabel(label: string): FieldMeta | null {
 
 
 
-  if (normalized.includes("email") || normalized.includes("\uC774\uBA54\uC77C")) {
+  if (normalized.includes("email") || normalized.includes("이메일")) {
 
     return { label, key: "email" };
 
   }
 
-  if (normalized.includes("username") || normalized.includes("\uC544\uC774\uB514") || normalized === "id" || normalized.endsWith("id")) {
+  if (normalized.includes("username") || normalized.includes("아이디") || normalized === "id" || normalized.endsWith("id")) {
 
     return { label, key: "email" };
 
@@ -2807,7 +2779,7 @@ function mapFieldLabel(label: string): FieldMeta | null {
 
     (normalized.includes("password") && normalized.includes("confirm")) ||
 
-    (normalized.includes("\uBE44\uBC00\uBC88\uD638") && normalized.includes("\uD655\uC778"))
+    (normalized.includes("비밀번호") && normalized.includes("확인"))
 
   ) {
 
@@ -2815,25 +2787,25 @@ function mapFieldLabel(label: string): FieldMeta | null {
 
   }
 
-  if (normalized.includes("password") || normalized.includes("\uBE44\uBC00\uBC88\uD638")) {
+  if (normalized.includes("password") || normalized.includes("비밀번호")) {
 
     return { label, key: "password" };
 
   }
 
-  if (normalized.includes("name") || normalized.includes("\uC774\uB984")) {
+  if (normalized.includes("name") || normalized.includes("이름")) {
 
     return { label, key: "name" };
 
   }
 
-  if (normalized.includes("phone") || normalized.includes("\uC804\uD654") || normalized.includes("\uC5F0\uB77D")) {
+  if (normalized.includes("phone") || normalized.includes("전화") || normalized.includes("연락")) {
 
     return { label, key: "phone" };
 
   }
 
-  if (normalized.includes("delete") || normalized.includes("\uC0AD\uC81C") || normalized.includes("\uD0C8\uD1F4")) {
+  if (normalized.includes("delete") || normalized.includes("삭제") || normalized.includes("탈퇴")) {
 
     return { label, key: "deleteConfirm" };
 
@@ -2845,11 +2817,11 @@ function mapFieldLabel(label: string): FieldMeta | null {
 
     normalized.includes("upload") ||
 
-    normalized.includes("\uD30C\uC77C") ||
+    normalized.includes("파일") ||
 
-    normalized.includes("\uC5C5\uB85C\uB4DC") ||
+    normalized.includes("업로드") ||
 
-    normalized.includes("\uB4DC\uB86D")
+    normalized.includes("드롭")
 
   ) {
 
@@ -2857,31 +2829,31 @@ function mapFieldLabel(label: string): FieldMeta | null {
 
   }
 
-  if (normalized.includes("message") || normalized.includes("\uBA54\uC2DC\uC9C0") || normalized.includes("\uBB38\uC758")) {
+  if (normalized.includes("message") || normalized.includes("메시지") || normalized.includes("문의")) {
 
     return { label, key: "message" };
 
   }
 
-  if (normalized.includes("reason") || normalized.includes("\uC0AC\uC720")) {
+  if (normalized.includes("reason") || normalized.includes("사유")) {
 
     return { label, key: "reason" };
 
   }
 
-  if (normalized.includes("cardnumber") || normalized.includes("\uCE74\uB4DC") || normalized.includes("\uBC88\uD638")) {
+  if (normalized.includes("cardnumber") || normalized.includes("카드") || normalized.includes("번호")) {
 
     return { label, key: "cardNumber" };
 
   }
 
-  if (normalized.includes("cardname") || normalized.includes("\uBA85\uC758")) {
+  if (normalized.includes("cardname") || normalized.includes("명의")) {
 
     return { label, key: "cardName" };
 
   }
 
-  if (normalized.includes("expiry") || normalized.includes("exp") || normalized.includes("\uB9CC\uB8CC")) {
+  if (normalized.includes("expiry") || normalized.includes("exp") || normalized.includes("만료")) {
 
     return { label, key: "cardExpiry" };
 
@@ -2897,11 +2869,11 @@ function mapFieldLabel(label: string): FieldMeta | null {
 
     normalized.includes("terms") ||
 
-    normalized.includes("\uC57D\uAD00") ||
+    normalized.includes("약관") ||
 
-    normalized.includes("\uB3D9\uC758") ||
+    normalized.includes("동의") ||
 
-    normalized.includes("\uBC29\uCE68") ||
+    normalized.includes("방침") ||
 
     normalized.includes("privacy")
 
@@ -2925,9 +2897,9 @@ function mapFieldLabel(label: string): FieldMeta | null {
 
     normalized.includes("plan") ||
 
-    normalized.includes("\uD50C\uB79C") ||
+    normalized.includes("플랜") ||
 
-    normalized.includes("\uC694\uAE08\uC81C")
+    normalized.includes("요금제")
 
   ) {
 
@@ -2955,21 +2927,21 @@ function isGenericControlLabel(label: string) {
 
     normalized === "textfield" ||
 
-    normalized.includes("\uBC30\uC9C0") ||
+    normalized.includes("배지") ||
 
-    normalized.includes("\uC785\uB825") ||
+    normalized.includes("입력") ||
 
     normalized.includes("checkbox") ||
 
-    normalized.includes("\uCCB4\uD06C") ||
+    normalized.includes("체크") ||
 
     normalized.includes("toggle") ||
 
-    normalized.includes("\uC120\uD0DD") ||
+    normalized.includes("선택") ||
 
     normalized.includes("switch") ||
 
-    normalized.includes("\uBC84\uD2BC") ||
+    normalized.includes("버튼") ||
 
     normalized.includes("button")
 
@@ -3165,7 +3137,7 @@ function resolveSubmitScopeIds(doc: Doc | SerializableDoc, pageId: string | null
 
         current.type === "slice") &&
 
-      (name.includes("\uD3FC") || name.includes("form") || name.includes("\uD328\uB110") || name.includes("panel"));
+      (name.includes("폼") || name.includes("form") || name.includes("패널") || name.includes("panel"));
 
     if (isFormish) return collectDescendants(doc, current.id);
 
@@ -3211,7 +3183,7 @@ function resolveFormScopeIds(doc: Doc | SerializableDoc, pageId: string | null, 
 
         current.type === "slice") &&
 
-      (name.includes("\uD3FC") || name.includes("form") || name.includes("\uD328\uB110") || name.includes("panel"));
+      (name.includes("폼") || name.includes("form") || name.includes("패널") || name.includes("panel"));
 
     if (isFormish) return collectDescendants(doc, current.id);
 
@@ -3247,57 +3219,57 @@ function isSameOriginUrl(href: string) {
 
 const SUBMIT_ERROR_MESSAGES: Record<string, string> = {
 
-  email_password_required: "\uC774\uBA54\uC77C\uACFC \uBE44\uBC00\uBC88\uD638\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.",
+  email_password_required: "이메일과 비밀번호를 입력해 주세요.",
 
-  password_too_short: "\uBE44\uBC00\uBC88\uD638\uB294\u0020\u0038\uC790\u0020\uC774\uC0C1\uC774\uBA70\u0020\uB300\u002F\uC18C\uBB38\uC790\u002C\u0020\uC22B\uC790\u002C\u0020\uD2B9\uC218\uBB38\uC790\uB97C\u0020\uD3EC\uD568\uD574\uC57C\u0020\uD569\uB2C8\uB2E4\u002E",
+  password_too_short: "비밀번호는 8자 이상이며 대/소문자, 숫자, 특수문자를 포함해야 합니다.",
 
-  password_mismatch: "\uBE44\uBC00\uBC88\uD638 \uD655\uC778\uACFC \uC77C\uCE58\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  password_mismatch: "비밀번호 확인과 일치하지 않습니다.",
 
-  anon_required: "\uC138\uC158\uC774 \uD544\uC694\uD569\uB2C8\uB2E4. \uD398\uC774\uC9C0\uB97C \uB2E4\uC2DC \uC5F4\uC5B4 \uC794\uC694\uD574 \uC8FC\uC138\uC694.",
+  anon_required: "세션이 필요합니다. 페이지를 다시 열어 잔요해 주세요.",
 
-  anon_user_id_required: "\uC138\uC158\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.",
+  anon_user_id_required: "세션이 필요합니다.",
 
-  not_found: "\uC874\uC7AC\uD558\uC9C0 \uC54A\uB294 \uD398\uC774\uC9C0\uC785\uB2C8\uB2E4.",
+  not_found: "존재하지 않는 페이지입니다.",
 
-  invalid_body: "\uC624\uB958 \uC785\uB825\uC774\uB098 \uB0B4\uC6A9\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.",
+  invalid_body: "오류 입력이나 내용을 확인해 주세요.",
 
-  bad_page_id: "\uD398\uC774\uC9C0 \uC624\uB958\uC785\uB2C8\uB2E4.",
+  bad_page_id: "페이지 오류입니다.",
 
-  user_not_found: "\uC0AC\uC6A9\uC790\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  user_not_found: "사용자를 찾을 수 없습니다.",
 
-  email_in_use: "\uC774\uBBF8 \uAC00\uC785\uB41C \uC774\uBA54\uC77C\uC785\uB2C8\uB2E4. \uB85C\uADF8\uC778\uC744 \uC9C4\uD589\uD574 \uC8FC\uC138\uC694.",
+  email_in_use: "이미 가입된 이메일입니다. 로그인을 진행해 주세요.",
 
-  already_registered: "\uC774\uBBF8 \uAC00\uC785\uB41C \uC774\uBA54\uC77C\uC785\uB2C8\uB2E4. \uB85C\uADF8\uC778\uC744 \uC9C4\uD589\uD574 \uC8FC\uC138\uC694.",
+  already_registered: "이미 가입된 이메일입니다. 로그인을 진행해 주세요.",
 
-  invalid_credentials: "\uC774\uBA54\uC77C \uB610\uB294 \uBE44\uBC00\uBC88\uD638\uAC00 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  invalid_credentials: "이메일 또는 비밀번호가 올바르지 않습니다.",
 
-  invalid_plan: "\uC62C\uBC14\uB978 \uD50C\uB79C\uC744 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694.",
+  invalid_plan: "올바른 플랜을 선택해 주세요.",
 
-  upgrade_failed: "\uACB0\uC81C \uC2B9\uC778\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",
+  upgrade_failed: "결제 승인에 실패했습니다.",
 
-  invalid_entry: "\uC785\uB825\uAC12\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.",
+  invalid_entry: "입력값을 확인해 주세요.",
 
-  forbidden: "\uAD8C\uD55C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  forbidden: "권한이 없습니다.",
 
-  stripe_not_configured: "\uACB0\uC81C \uC2DC\uC2A4\uD15C\uC774 \uC124\uC815\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",
+  stripe_not_configured: "결제 시스템이 설정되지 않았습니다.",
 
-  stripe_price_missing: "\uC694\uAE08\uC81C \uC815\uBCF4\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  stripe_price_missing: "요금제 정보를 찾을 수 없습니다.",
 
-  billing_unavailable: "\uACB0\uC81C \uC11C\uBE44\uC2A4\uB97C \uD604\uC7AC \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  billing_unavailable: "결제 서비스를 현재 사용할 수 없습니다.",
 
-  file_required: "\uC5C5\uB85C\uB4DC\uD560 \uD30C\uC77C\uC744 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694.",
+  file_required: "업로드할 파일을 선택해 주세요.",
 
-  upload_failed: "\uD30C\uC77C \uC5C5\uB85C\uB4DC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",
+  upload_failed: "파일 업로드에 실패했습니다.",
 
 };
 
 
 
-const SUBMIT_SUCCESS_MESSAGE = "\uC694\uCCAD\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.";
+const SUBMIT_SUCCESS_MESSAGE = "요청이 완료되었습니다.";
 
-const SUBMIT_SENT_MESSAGE = "\uC694\uCCAD\uC744 \uC804\uC1A1\uD588\uC2B5\uB2C8\uB2E4.";
+const SUBMIT_SENT_MESSAGE = "요청을 전송했습니다.";
 
-const SUBMIT_FAILED_MESSAGE = "\uC694\uCCAD\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.";
+const SUBMIT_FAILED_MESSAGE = "요청에 실패했습니다.";
 
 
 
@@ -4279,49 +4251,28 @@ function deriveInitialChoiceState(doc: Doc | SerializableDoc, controlRoles: Reco
 
 
 function isExclusiveChoiceGroupName(raw: string) {
-
   const name = raw.toLowerCase();
-
   return (
-
     name.includes("tab") ||
-
     name.includes("pagination") ||
-
     name.includes("pager") ||
-
     name.includes("page") ||
-
     name.includes("date") ||
-
     name.includes("step") ||
-
     name.includes("wizard") ||
-
     name.includes("menu") ||
-
     name.includes("nav") ||
-
-    name.includes("?") ||
-
-    name.includes("???") ||
-
-    name.includes("???") ||
-
-    name.includes("??") ||
-
-    name.includes("??") ||
-
-    name.includes("???") ||
-
+    name.includes("탭") ||
+    name.includes("탭바") ||
+    name.includes("페이지") ||
+    name.includes("페이징") ||
+    name.includes("날짜") ||
+    name.includes("단계") ||
+    name.includes("마법사") ||
     name.includes("메뉴") ||
-
-    name.includes("??") ||
-
-    name.includes("?????")
-
+    name.includes("네비") ||
+    name.includes("네비게이션")
   );
-
 }
 
 
@@ -5086,7 +5037,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           name.includes("쿠키") ||
 
-          name.includes("????")
+          name.includes("개인정보")
 
         )
 
@@ -5486,7 +5437,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           updates.todo_list = updates.todo_items;
 
-          updates.todo_meta = todoData.todos.map((t: { done?: boolean }) => (t.done ? "\uC644\uB8CC" : "\uBBF8\uC644\uB8CC")).join(sep);
+          updates.todo_meta = todoData.todos.map((t: { done?: boolean }) => (t.done ? "완료" : "미완료")).join(sep);
 
         }
 
@@ -5536,7 +5487,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
             updates.notification_titles = notifData.notifications.map((n: { title?: string; type?: string }) => n.title ?? n.type ?? "").join(sep);
 
-            updates.notification_metas = notifData.notifications.map((n: { readAt?: string | null }) => (n.readAt ? "\uC77D\uC74C" : "\uC544\uC9C1 \uC54C\uB9BC")).join(sep);
+            updates.notification_metas = notifData.notifications.map((n: { readAt?: string | null }) => (n.readAt ? "읽음" : "아직 알림")).join(sep);
 
           }
 
@@ -5548,7 +5499,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           updates.ranking_titles = rankData.ranking.map((r: { title?: string }) => r.title ?? "").join(sep);
 
-          updates.ranking_metas = rankData.ranking.map((r: { rank?: number }) => `${r.rank ?? 0}\uC704`).join(sep);
+          updates.ranking_metas = rankData.ranking.map((r: { rank?: number }) => `${r.rank ?? 0}위`).join(sep);
 
         }
 
@@ -9064,7 +9015,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         const label = node.text?.value ?? "";
 
-        if (!/(\uC5C5\uADF8\uB808\uC774\uB4DC|upgrade)/i.test(label)) return;
+        if (!/(업그레이드|upgrade)/i.test(label)) return;
 
         const planLabel = selectedPlan === "pro"
 
@@ -9764,19 +9715,19 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         const diffSec = Math.max(0, Math.floor(((chatLiveTick || cooldownTick) - parsed) / 1000));
 
-        if (diffSec < 60) return "\uBC29\uAE08";
+        if (diffSec < 60) return "방금";
 
         const diffMin = Math.floor(diffSec / 60);
 
-        if (diffMin < 60) return `${diffMin}\uBD84 \uC804`;
+        if (diffMin < 60) return `${diffMin}분 전`;
 
         const diffHour = Math.floor(diffMin / 60);
 
-        if (diffHour < 24) return `${diffHour}\uC2DC\uAC04 \uC804`;
+        if (diffHour < 24) return `${diffHour}시간 전`;
 
         const diffDay = Math.floor(diffHour / 24);
 
-        return `${diffDay}\uC77C \uC804`;
+        return `${diffDay}일 전`;
 
       };
 
@@ -10146,7 +10097,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           if (isListItemName(name)) return false;
 
-          return /체크|row|\uD589|todo|task/i.test(name) || (hasAncestorMatching(laidOut, id, LIST_CONTAINER_PATTERN) && textIds.length >= 1);
+          return /체크|row|행|todo|task/i.test(name) || (hasAncestorMatching(laidOut, id, LIST_CONTAINER_PATTERN) && textIds.length >= 1);
 
         });
 
@@ -10258,7 +10209,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           const name = node?.name ?? "";
 
-          if (noteVersion && (/\uBC84\uC804|version/i.test(value) || /\uBC84\uC804|version/i.test(name))) {
+          if (noteVersion && (/버전|version/i.test(value) || /버전|version/i.test(name))) {
 
             overrides[id] = noteVersion;
 
@@ -10266,7 +10217,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           }
 
-          if (noteTitle && (/\uC81C\uBAA9|title/i.test(value) || /\uC81C\uBAA9|title/i.test(name))) {
+          if (noteTitle && (/제목|title/i.test(value) || /제목|title/i.test(name))) {
 
             overrides[id] = noteTitle;
 
@@ -10274,7 +10225,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           }
 
-          if (noteBody && (/\uB0B4\uC6A9|\uBCF8\uBB38|content|body|note/i.test(value + name))) {
+          if (noteBody && (/내용|본문|content|body|note/i.test(value + name))) {
 
             overrides[id] = noteBody;
 
@@ -15302,7 +15253,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     if (!filtered.length) {
 
-      pushNotice({ type: "error", message: "\uD30C\uC77C \uD06C\uAE30 \uC81C\uD55C(10MB)\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4." });
+      pushNotice({ type: "error", message: "파일 크기 제한(10MB)을 초과했습니다." });
 
       return;
 
@@ -15310,7 +15261,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     if (filtered.length < files.length) {
 
-      pushNotice({ type: "error", message: "\uCC98\uC74C \uD30C\uC77C\uC774 \uD06C\uAE30 \uC81C\uD55C(10MB)\uC744 \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4." });
+      pushNotice({ type: "error", message: "처음 파일이 크기 제한(10MB)을 초과했습니다." });
 
     }
 
@@ -15479,35 +15430,20 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     let status: CookieConsentState["status"] | null = null;
 
     if (
-
       normalized.includes("accept") ||
-
       normalized.includes("agree") ||
-
       normalized.includes("consent") ||
-
-      normalized.includes("??") ||
-
-      normalized.includes("??")
-
+      normalized.includes("동의") ||
+      normalized.includes("허용")
     )
-
       status = "accepted";
-
     if (
-
       normalized.includes("reject") ||
-
       normalized.includes("deny") ||
-
-      normalized.includes("??") ||
-
-      normalized.includes("???") ||
-
+      normalized.includes("거부") ||
+      normalized.includes("비동의") ||
       normalized.includes("차단")
-
     )
-
       status = "rejected";
 
     if (!status) return;
@@ -15794,7 +15730,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
                 type: "success",
 
-                message: decision === "allow" ? "\uAD8C\uD55C \uC694\uCCAD\uC774 \uCC98\uB9AC\uB418\uC5C8\uC2B5\uB2C8\uB2E4." : "\uAD8C\uD55C \uC694\uCCAD\uC774 \uAC70\uBD80\uB418\uC5C8\uC2B5\uB2C8\uB2E4.",
+                message: decision === "allow" ? "권한 요청이 처리되었습니다." : "권한 요청이 거부되었습니다.",
 
               });
 
@@ -15810,7 +15746,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
             if (existing && existing > Date.now()) {
 
-              pushNotice({ type: "info", message: "\uC7A0\uC2DC\uB9CC \uAE30\uB2E4\uB824 \uC8FC\uC138\uC694." });
+              pushNotice({ type: "info", message: "잠시만 기다려 주세요." });
 
               return;
 
@@ -15903,7 +15839,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         if (!proxyUrl) {
 
-          pushNotice({ type: "error", message: "API ???? ? ??? ID? ?????." });
+          pushNotice({ type: "error", message: "API 호출에는 앱 페이지 ID가 필요합니다." });
 
           return;
 
@@ -15951,7 +15887,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               if (action.errorVariable) {
 
-                applyVariableOverrides({ [action.errorVariable]: String(data.error ?? "?? ??") });
+                applyVariableOverrides({ [action.errorVariable]: String(data.error ?? "요청 실패") });
 
               }
 
@@ -15965,7 +15901,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           } catch (err) {
 
-            const msg = err instanceof Error ? err.message : "???? ??";
+            const msg = err instanceof Error ? err.message : "요청 실패";
 
             if (action.errorVariable) applyVariableOverrides({ [action.errorVariable]: msg });
 
@@ -15985,7 +15921,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         if (!name) {
 
-          pushNotice({ type: "error", message: "???? ?? ??? ?????." });
+          pushNotice({ type: "error", message: "네이티브 호출 이름이 필요합니다." });
 
           return;
 
@@ -16079,7 +16015,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         if (!authPageId) {
 
-          pushNotice({ type: "error", message: "???? ? ??? ID? ?????." });
+          pushNotice({ type: "error", message: "인증에는 앱 페이지 ID가 필요합니다." });
 
           return;
 
@@ -16101,11 +16037,11 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               });
 
-              pushNotice({ type: "success", message: "?????????." });
+              pushNotice({ type: "success", message: "로그아웃되었습니다." });
 
               if (action.nextPageId) startPageTransition(currentPageId ?? "", action.nextPageId, "instant");
 
-            } catch { pushNotice({ type: "error", message: "????? ??????." }); }
+            } catch { pushNotice({ type: "error", message: "로그아웃에 실패했습니다." }); }
 
           })();
 
@@ -16127,7 +16063,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         if (!email || !password) {
 
-          pushNotice({ type: "error", message: "???? ????? ??? ???." });
+          pushNotice({ type: "error", message: "이메일과 비밀번호를 입력해 주세요." });
 
           return;
 
@@ -16173,17 +16109,17 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               });
 
-              pushNotice({ type: "success", message: action.action === "register" ? "???????." : "????????." });
+              pushNotice({ type: "success", message: action.action === "register" ? "가입되었습니다." : "로그인되었습니다." });
 
               if (action.nextPageId) startPageTransition(currentPageId ?? "", action.nextPageId, "instant");
 
             } else {
 
-              pushNotice({ type: "error", message: data.error ?? "??? ??????." });
+              pushNotice({ type: "error", message: data.error ?? "인증에 실패했습니다." });
 
             }
 
-          } catch { pushNotice({ type: "error", message: "???? ??? ??????." }); }
+          } catch { pushNotice({ type: "error", message: "네트워크 오류가 발생했습니다." }); }
 
         })();
 
@@ -16275,7 +16211,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           if (!message && endpoint && endpoint.includes("/chat")) {
 
-            pushNotice({ type: "error", message: "\uBA54\uC2DC\uC9C0\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694." });
+            pushNotice({ type: "error", message: "메시지를 입력해 주세요." });
 
             return;
 
@@ -16549,13 +16485,13 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
             const message = isDelete
 
-              ? "\uC0AD\uC81C \uD655\uC778 \uBB38\uAD6C\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694."
+              ? "삭제 확인 문구를 입력해 주세요."
 
               : isRecovery
 
-                ? "\uC774\uBA54\uC77C\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694."
+                ? "이메일을 입력해 주세요."
 
-                : "\uD544\uC218 \uD56D\uBAA9\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.";
+                : "필수 항목을 입력해 주세요.";
 
             pushNotice({ type: "error", message });
 
@@ -16577,7 +16513,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
             if ((val === undefined || val === null || val === "") && !fileVal) {
 
-              pushNotice({ type: "error", message: "\uD544\uC218 \uD56D\uBAA9\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694." });
+              pushNotice({ type: "error", message: "필수 항목을 입력해 주세요." });
 
               return;
 
@@ -16605,7 +16541,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           if (!otpValue || (expectedLength > 0 && otpValue.length < expectedLength)) {
 
-            pushNotice({ type: "error", message: "\uC778\uC99D \uCF54\uB4DC\uB97C \uBAA8\uB450 \uC785\uB825\uD574 \uC8FC\uC138\uC694." });
+            pushNotice({ type: "error", message: "인증 코드를 모두 입력해 주세요." });
 
             return;
 
@@ -16627,11 +16563,11 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
             ? isDelete
 
-              ? "\uC0AD\uC81C \uC694\uCCAD\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4."
+              ? "삭제 요청이 실패했습니다."
 
               : isRecovery
 
-                ? "\uBCF5\uAD6C \uBA54\uC77C \uC804\uC1A1\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4."
+                ? "복구 메일 전송이 실패했습니다."
 
                 : SUBMIT_FAILED_MESSAGE
 
@@ -16639,13 +16575,13 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               ? isRecovery
 
-                ? "\uBCF5\uAD6C \uBA54\uC77C\uC774 \uC804\uC1A1\uB418\uC5C8\uC2B5\uB2C8\uB2E4."
+                ? "복구 메일이 전송되었습니다."
 
                 : SUBMIT_SENT_MESSAGE
 
               : isDelete
 
-                ? "\uC0AD\uC81C \uC694\uCCAD\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4."
+                ? "삭제 요청이 완료되었습니다."
 
                 : SUBMIT_SUCCESS_MESSAGE;
 
@@ -16743,7 +16679,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
             if (hasFiles && method === "GET") {
 
-              pushNotice({ type: "error", message: "\uD30C\uC77C \uC804\uC1A1\uC5D0\uB294 GET\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+              pushNotice({ type: "error", message: "파일 전송에는 GET을 사용할 수 없습니다." });
 
               return;
 
@@ -16789,7 +16725,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               }
 
-              pushNotice({ type: "info", message: "\uD30C\uC77C \uC804\uC1A1 \uC911..." });
+              pushNotice({ type: "info", message: "파일 전송 중..." });
 
               const formData = new FormData();
 
@@ -16929,7 +16865,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               } else {
 
-                const fallbackMessage = `${resolveSubmitError(data?.error, SUBMIT_FAILED_MESSAGE)} (\uC81C\uCD9C \uC2E4\uD328 \uC2DC \uB300\uC548)`;
+                const fallbackMessage = `${resolveSubmitError(data?.error, SUBMIT_FAILED_MESSAGE)} (제출 실패 시 대안)`;
 
                 if (!tryFallbackNavigate(fallbackMessage)) {
 
@@ -17125,7 +17061,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
                       todo_list: d.todos.map((t: { title?: string }) => t.title ?? "").join(sep),
 
-                      todo_meta: d.todos.map((t: { done?: boolean }) => (t.done ? "\uC644\uB8CC" : "\uBBF8\uC644\uB8CC")).join(sep),
+                      todo_meta: d.todos.map((t: { done?: boolean }) => (t.done ? "완료" : "미완료")).join(sep),
 
                     });
 
@@ -17201,7 +17137,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
             } else {
 
-              const fallbackMessage = `${resolveSubmitError(data?.error, SUBMIT_FAILED_MESSAGE)} (\uC81C\uCD9C \uC2E4\uD328 \uC2DC \uB300\uC548)`;
+              const fallbackMessage = `${resolveSubmitError(data?.error, SUBMIT_FAILED_MESSAGE)} (제출 실패 시 대안)`;
 
               if (!tryFallbackNavigate(fallbackMessage)) {
 
@@ -17219,7 +17155,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           } catch {
 
-            const fallbackMessage = `${SUBMIT_FAILED_MESSAGE} (\uC81C\uCD9C \uC2E4\uD328 \uC2DC \uB300\uC548)`;
+            const fallbackMessage = `${SUBMIT_FAILED_MESSAGE} (제출 실패 시 대안)`;
 
             if (!tryFallbackNavigate(fallbackMessage)) {
 
@@ -17253,7 +17189,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           if (!requiredStatus.ok) {
 
-            pushNotice({ type: "error", message: "\uD544\uC218 \uD56D\uBAA9\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694." });
+            pushNotice({ type: "error", message: "필수 항목을 입력해 주세요." });
 
             return;
 
@@ -18909,7 +18845,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         <div className="absolute left-4 top-4 z-20 flex items-center gap-3 rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 shadow-sm">
 
-          <span>\uB124\uD2B8\uC6CC\uD06C \uC5F0\uACB0\uC774 \uB04C\uC5B4\uC838 \uC788\uC2B5\uB2C8\uB2E4.</span>
+          <span>네트워크 연결이 끊어져 있습니다.</span>
 
           <button
 
@@ -18921,7 +18857,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           >
 
-            ????
+            새로고침
 
           </button>
 

@@ -111,7 +111,7 @@
 @theme inline {
   --color-background: var(--color-bg);
   --color-foreground: var(--color-text);
-  --font-sans: var(--font-sans-custom);
+  --font-sans: var(--font-sans-custom), "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "Noto Sans KR", ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-mono-custom);
 }
 

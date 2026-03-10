@@ -159,18 +159,31 @@ export class FigmaApiError extends Error {
 async function request<T>(
   path: string,
   accessToken: string,
-  options?: { method?: string; body?: string }
+  options?: { method?: string; body?: string; timeoutMs?: number }
 ): Promise<T> {
   const url = `${FIGMA_API_BASE}${path}`;
-  const res = await fetch(url, {
-    method: options?.method ?? "GET",
-    headers: {
-      Accept: "application/json",
-      "X-Figma-Token": accessToken,
-      ...(options?.body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: options?.body,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 60_000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: options?.method ?? "GET",
+      headers: {
+        Accept: "application/json",
+        "X-Figma-Token": accessToken,
+        ...(options?.body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: options?.body,
+      signal: controller.signal,
+    });
+  } catch (e: unknown) {
+    clearTimeout(timeout);
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new FigmaApiError("Figma API 요청 시간이 초과되었습니다 (60초). 특정 노드 ID를 지정해 보세요.", 408);
+    }
+    throw e;
+  }
+  clearTimeout(timeout);
 
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
