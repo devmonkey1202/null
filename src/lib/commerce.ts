@@ -636,8 +636,9 @@ export async function createOrderFromCart(pageId: string, cartId: string, actor?
 
   await updateRecord(pageId, COMMERCE_COLLECTIONS.carts, cartId, { status: "checked_out" });
 
-  if (cartData.coupon_code) {
-    const coupon = await resolveCoupon(pageId, cartData.coupon_code);
+  const couponCode = asString(cartData.coupon_code);
+  if (couponCode) {
+    const coupon = await resolveCoupon(pageId, couponCode);
     if (coupon) {
       const couponData = coupon.data as Record<string, unknown>;
       await updateRecord(pageId, COMMERCE_COLLECTIONS.coupons, coupon.id, {
@@ -771,7 +772,7 @@ export async function adjustInventory(pageId: string, productId: string, options
 export async function updateShipment(pageId: string, orderId: string, status: string, payload?: { carrier?: string; tracking_number?: string }) {
   const order = await getRecord(pageId, COMMERCE_COLLECTIONS.orders, orderId);
   if (!order) return { ok: false, error: "order_not_found" } as const;
-  const normalized = STATUS_ENUM.shipping.includes(status as any) ? status : "pending";
+  const normalized = (STATUS_ENUM.shipping as readonly string[]).includes(status) ? status : "pending";
   const existing = await findRecordByField(pageId, COMMERCE_COLLECTIONS.shipments, "order_id", orderId);
 
   if (existing) {

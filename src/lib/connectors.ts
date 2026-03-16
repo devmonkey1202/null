@@ -210,7 +210,7 @@ export async function setConnectors(pageId: string, connectors: ConnectorConfig[
   return normalized;
 }
 
-export async function addConnector(pageId: string, connector: ConnectorConfig) {
+export async function addConnector(pageId: string, connector: unknown) {
   const normalized = normalizeConnector(connector);
   if (!normalized) return null;
   const current = await getConnectors(pageId);
@@ -220,8 +220,8 @@ export async function addConnector(pageId: string, connector: ConnectorConfig) {
   return normalized;
 }
 
-export async function updateConnector(pageId: string, connector: ConnectorConfig) {
-  if (!connector.id) return null;
+export async function updateConnector(pageId: string, connector: unknown) {
+  if (!connector || typeof connector !== "object" || !("id" in connector) || typeof connector.id !== "string") return null;
   const current = await getConnectors(pageId);
   const map = new Map(current.map((c) => [c.id, c]));
   if (!map.has(connector.id)) return null;

@@ -39,7 +39,14 @@ export async function GET(_req: Request, context: { params: Promise<Params> }) {
   const nodeCount = nodesObject ? Object.keys(nodesObject).length : 0;
 
   const { searchParams } = new URL(_req.url);
-  const includeNodes = searchParams.get("include") === "nodes";
+  const includeValues = new Set(
+    (searchParams.get("include") ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  const includeNodes = includeValues.has("nodes");
+  const includeContent = includeValues.has("content");
   let nodeIds: string[] | undefined;
   let nodeIdsTruncated = false;
   if (includeNodes && nodesObject) {
@@ -59,6 +66,7 @@ export async function GET(_req: Request, context: { params: Promise<Params> }) {
       nodeCount,
       nodeIds,
       nodeIdsTruncated: includeNodes ? nodeIdsTruncated : undefined,
+      content: includeContent ? content : undefined,
     },
   });
 }

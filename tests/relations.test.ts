@@ -46,6 +46,7 @@ describe("relation helpers", () => {
       ],
       ["author"]
     );
-    expect(items[0]?.relations?.author?.[0]?.id).toBe("a1");
+    const authorRelations = (items[0]?.relations as Record<string, Array<{ id: string }>> | undefined)?.author;
+    expect(authorRelations?.[0]?.id).toBe("a1");
   });
 });

@@ -17,6 +17,7 @@ describe("data binding decision", () => {
       orderDir: "asc",
     });
     expect(decision.mode).toBe("list");
+    if (decision.mode !== "list") throw new Error("expected list mode");
     expect(decision.params.get("limit")).toBe("20");
     expect(decision.params.get("offset")).toBe("0");
     expect(decision.params.get("orderBy")).toBe("created_at");
@@ -29,6 +30,7 @@ describe("data binding decision", () => {
       orderBy: "price",
     });
     expect(decision.mode).toBe("query");
+    if (decision.mode !== "query") throw new Error("expected query mode");
     expect(decision.payload.orderBy).toBe("price");
   });
 
@@ -38,6 +40,7 @@ describe("data binding decision", () => {
       filters: [{ field: "tag", op: "in", value: "red, blue" }],
     });
     expect(decision.mode).toBe("query");
+    if (decision.mode !== "query") throw new Error("expected query mode");
     expect(decision.payload.filters?.[0].value).toEqual(["red", "blue"]);
   });
 
@@ -48,6 +51,7 @@ describe("data binding decision", () => {
       offset: 0,
     }, { limit: 5, page: 3 });
     expect(decision.mode).toBe("list");
+    if (decision.mode !== "list") throw new Error("expected list mode");
     expect(decision.params.get("limit")).toBe("5");
     expect(decision.params.get("offset")).toBe("10");
   });

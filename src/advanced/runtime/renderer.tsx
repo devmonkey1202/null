@@ -178,11 +178,26 @@ type ImageFill = Extract<Fill, { type: "image" }>;
 function isImageFill(fill: Fill | null | undefined): fill is ImageFill {
   return !!fill && fill.type === "image";
 }
-import { hydrateDoc } from "../doc/scene";
-import { layoutDoc } from "../layout/engine";
 import type { Doc, Node, SerializableDoc, Fill, Stroke, StyleToken, TextStyle, PrototypeAction, PrototypeTrigger, PrototypeInteraction, Variable, NodeDataBinding } from "../doc/scene";
-import { getPageContentBounds, getNodeChildrenBounds } from "./bounds";
+import { hasRichTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "../geom/richTextModel";
+import { getParagraphSpacing, getRenderedTextLines, getTextLineMetrics } from "../geom/textLayout";
+import { getTextPathId, normalizeTextPathStartOffset, normalizeTextPathText } from "../geom/textPathLayout";
+import {
+  resolveGradientStopColor,
+  resolveNodeTextStyle as resolveBoundNodeTextStyle,
+  resolveNodeTextValue as resolveBoundNodeTextValue,
+  resolveTextRangeBindings,
+  resolveVariableColor as resolveBoundVariableColor,
+  resolveVariableValue as resolveBoundVariableValue,
+} from "../geom/variableBindings";
+import { primaryPathDataFromShape } from "../geom/vectorNetwork";
+import { buildMaskSemanticEntries } from "../geom/maskSemanticModel";
+import { getNodeChildrenBounds } from "./bounds";
+import RuntimeCanvasPrototypeStage from "./RuntimeCanvasPrototypeStage";
+import RuntimeSvgStage from "./RuntimeSvgStage";
 import { getCustomNodeRenderer } from "./plugins";
+import { buildRuntimeInteractionBundle } from "./runtimeInteractions";
+import { buildRuntimeSceneGraph, pickRuntimeRendererMode, type RuntimeRendererMode } from "./sceneGraph";
 import { WidgetSandbox } from "./widget-sandbox";
 import { buildBindingDecision } from "./data-binding";
 
@@ -207,70 +222,6 @@ export type NavigateEvent = {
 };
 
 const DEFAULT_FONT_FAMILY = "Space Grotesk, 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
-
-let textMeasureCanvas: HTMLCanvasElement | null = null;
-function getTextMeasureContext() {
-  if (typeof document === "undefined") return null;
-  if (!textMeasureCanvas) textMeasureCanvas = document.createElement("canvas");
-  return textMeasureCanvas.getContext("2d");
-}
-
-function measureTextWidth(text: string, style: TextStyle) {
-  const fontSize = style.fontSize ?? 16;
-  const fontWeight = style.fontWeight ?? 400;
-  const fontFamily = style.fontFamily ?? DEFAULT_FONT_FAMILY;
-  const ctx = getTextMeasureContext();
-  if (!ctx) return text.length * fontSize * 0.6;
-  ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-  const base = ctx.measureText(text).width;
-  const spacing = style.letterSpacing ?? 0;
-  const extra = text.length > 1 ? (text.length - 1) * spacing : 0;
-  return base + extra;
-}
-
-function wrapTextLines(text: string, style: TextStyle, maxWidth: number) {
-  if (!Number.isFinite(maxWidth) || maxWidth <= 0) return text.split("\n");
-  const lines: string[] = [];
-  const paragraphs = text.split("\n");
-  paragraphs.forEach((paragraph) => {
-    if (!paragraph) {
-      lines.push("");
-      return;
-    }
-    const words = paragraph.split(/\s+/);
-    let current = "";
-    words.forEach((word) => {
-      const candidate = current ? `${current} ${word}` : word;
-      if (!current) {
-        current = candidate;
-        return;
-      }
-      if (measureTextWidth(candidate, style) <= maxWidth) {
-        current = candidate;
-        return;
-      }
-      lines.push(current);
-      if (measureTextWidth(word, style) > maxWidth) {
-        let chunk = "";
-        for (const char of word) {
-          const nextChunk = chunk + char;
-          if (measureTextWidth(nextChunk, style) > maxWidth && chunk) {
-            lines.push(chunk);
-            chunk = char;
-          } else {
-            chunk = nextChunk;
-          }
-        }
-        if (chunk) lines.push(chunk);
-        current = "";
-        return;
-      }
-      current = word;
-    });
-    if (current) lines.push(current);
-  });
-  return lines;
-}
 
 type Props = {
   doc: Doc | SerializableDoc;
@@ -301,6 +252,8 @@ type Props = {
   appPageId?: string;
   /** C1: 팀 라이브러리·파일 간 컴포넌트. libraryId → 해당 라이브러리 Doc. */
   getLibraryDoc?: (libraryId: string) => Doc | undefined;
+  renderMode?: "auto" | RuntimeRendererMode;
+  preferCanvasStage?: boolean;
 };
 
 export type ControlRole =
@@ -333,24 +286,17 @@ export type VariableRuntime = {
 };
 
 function resolveVariableValue(doc: Doc, variable: Variable, variableRuntime?: VariableRuntime) {
-  if (variableRuntime?.variableOverrides && variable.id in variableRuntime.variableOverrides) {
-    const v = variableRuntime.variableOverrides[variable.id];
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
-    return undefined;
-  }
-  const mode = variableRuntime?.mode ?? doc.variableMode;
-  if (mode && variable.modes && mode in variable.modes) {
-    return variable.modes[mode];
-  }
-  return variable.value;
+  return resolveBoundVariableValue(doc, variable, {
+    mode: variableRuntime?.mode,
+    variableOverrides: variableRuntime?.variableOverrides,
+  });
 }
 
 function resolveVariableColor(doc: Doc, id: string | undefined, variableRuntime?: VariableRuntime) {
-  if (!id) return null;
-  const variable = doc.variables.find((item) => item.id === id && item.type === "color");
-  if (!variable) return null;
-  const value = resolveVariableValue(doc, variable, variableRuntime);
-  return typeof value === "string" ? value : null;
+  return resolveBoundVariableColor(doc, id, {
+    mode: variableRuntime?.mode,
+    variableOverrides: variableRuntime?.variableOverrides,
+  });
 }
 
 
@@ -427,7 +373,7 @@ function pickFillFromFills(
   return "#E5E7EB";
 }
 
-function pickStroke(doc: Doc, node: Node): {
+function pickStroke(doc: Doc, node: Node, variableRuntime?: VariableRuntime): {
   color: string;
   width: number;
   dash: number[];
@@ -440,8 +386,9 @@ function pickStroke(doc: Doc, node: Node): {
   const strokes = token && Array.isArray(token.value) ? (token.value as Stroke[]) : node.style.strokes;
   if (!strokes.length) return { color: "transparent", width: 0, dash: [] };
   const stroke = strokes[0];
+  const variableColor = resolveVariableColor(doc, node.style.strokeRef, variableRuntime);
   return {
-    color: stroke.color,
+    color: variableColor || stroke.color,
     width: stroke.width,
     dash: stroke.dash ?? [],
     align: stroke.align,
@@ -453,8 +400,9 @@ function pickStroke(doc: Doc, node: Node): {
 
 function resolveTextStyle(doc: Doc, node: Node): TextStyle | null {
   const token = findStyleToken(doc, node.text?.styleRef, "text");
-  if (token && token.value && typeof token.value === "object") return token.value as TextStyle;
-  return node.text?.style ?? null;
+  const baseStyle = token && token.value && typeof token.value === "object" ? (token.value as TextStyle) : node.text?.style ?? null;
+  if (!baseStyle) return null;
+  return resolveBoundNodeTextStyle(doc, node.text, baseStyle);
 }
 
 function resolveTextTokens(doc: Doc, value: string, variableRuntime?: VariableRuntime) {
@@ -518,7 +466,7 @@ function renderShape(
   textOverrides?: Record<string, string>,
 ) {
   const fill = options?.fill ?? pickFill(doc, node, variableRuntime);
-  const baseStroke = options?.stroke ? { ...options.stroke, dash: options.stroke.dash ?? [] } : pickStroke(doc, node);
+  const baseStroke = options?.stroke ? { ...options.stroke, dash: options.stroke.dash ?? [] } : pickStroke(doc, node, variableRuntime);
   const stroke = {
     ...baseStroke,
     cap: baseStroke.cap ?? node.style.strokeCap ?? "butt",
@@ -659,7 +607,7 @@ function renderShape(
           </g>
         );
       }
-      const d = (node.shape?.pathData ?? "").trim() || defaultPath;
+      const d = primaryPathDataFromShape(node.shape) || defaultPath;
       return (
         <path
           d={d}
@@ -710,7 +658,13 @@ function renderShape(
       );
     }
     case "text": {
-      const rawText = textOverrides && node.id in textOverrides ? textOverrides[node.id] : node.text?.value ?? "";
+      const rawText =
+        textOverrides && node.id in textOverrides
+          ? textOverrides[node.id]
+          : resolveBoundNodeTextValue(doc, node.text, {
+              mode: variableRuntime?.mode,
+              variableOverrides: variableRuntime?.variableOverrides,
+            });
       const textValue = typeof rawText === "string" ? rawText : rawText != null && typeof rawText === "object" ? "" : String(rawText ?? "");
       const text = resolveTextTokens(doc, textValue);
       const style = resolveTextStyle(doc, node) ?? {
@@ -727,12 +681,156 @@ function renderShape(
       const align = style.align ?? "left";
       const anchor = align === "center" ? "middle" : align === "right" ? "end" : "start";
       const textX = align === "center" ? frame.w / 2 : align === "right" ? frame.w : 0;
-      const lineHeightRatio = style.lineHeight ?? 1.4;
-      const lineHeight = (Number.isFinite(lineHeightRatio) && lineHeightRatio > 0 ? lineHeightRatio : 1.4) * scaledFontSize;
+      const { lineHeightRatio, lineHeight } = getTextLineMetrics({ ...style, fontSize: scaledFontSize });
       const wrapEnabled = node.text?.wrap !== false;
       const scaledStyle = { ...style, fontSize: scaledFontSize };
-      const lines = wrapEnabled ? wrapTextLines(text, scaledStyle, Math.max(4, frame.w)) : text.split("\n");
+      const paragraphSpacing = getParagraphSpacing(scaledStyle);
+      const { lines, lineOffsets } = getRenderedTextLines(text, scaledStyle, Math.max(4, frame.w), wrapEnabled);
       const effectiveFill = resolveHighContrast(variableRuntime) ? "#000000" : fill;
+      const canUseRichText = hasRichTextRanges(node.text?.ranges) && text === textValue;
+      const richRuns = canUseRichText
+        ? resolveRichTextRuns(
+            text,
+            scaledStyle,
+            resolveTextRangeBindings(doc, node.text?.ranges, {
+              mode: variableRuntime?.mode,
+              variableOverrides: variableRuntime?.variableOverrides,
+            }) ?? node.text?.ranges,
+          )
+        : null;
+      const richParagraphs = richRuns?.length ? splitRichTextRunsByParagraph(richRuns) : null;
+      const textPath = node.text?.textPath;
+      if (textPath?.pathData) {
+        const pathId = getTextPathId(node.id, "rt-text-path");
+        const textPathRuns =
+          richRuns?.length
+            ? richRuns.map((run) => ({ ...run, text: run.text.replace(/\s+/g, " ") }))
+            : [{ text: normalizeTextPathText(text), style: scaledStyle, fill: effectiveFill }];
+        return (
+          <g>
+            <defs>
+              <path id={pathId} d={textPath.pathData} />
+            </defs>
+            <text
+              x={0}
+              y={0}
+              fill={effectiveFill}
+              fontFamily={style.fontFamily ?? DEFAULT_FONT_FAMILY}
+              fontSize={scaledFontSize}
+              fontWeight={style.fontWeight ?? 500}
+              fontStyle={style.italic ? "italic" : "normal"}
+              style={{
+                textDecoration: [style.underline && "underline", style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                letterSpacing: style.letterSpacing ?? 0,
+                fontFeatureSettings: style.fontFeatureSettings?.trim() || undefined,
+                fontVariationSettings: style.fontVariationSettings?.trim() || undefined,
+                fontKerning: "normal",
+              }}
+              filter={filterId ? `url(#${filterId})` : undefined}
+            >
+              <textPath href={`#${pathId}`} startOffset={normalizeTextPathStartOffset(textPath.startOffset)}>
+                {textPathRuns.map((run, index) => (
+                  <tspan
+                    key={`${node.id}-text-path-${index}`}
+                    fill={run.fill ?? effectiveFill}
+                    fontFamily={run.style.fontFamily ?? DEFAULT_FONT_FAMILY}
+                    fontSize={run.style.fontSize ?? scaledFontSize}
+                    fontWeight={run.style.fontWeight ?? 500}
+                    fontStyle={run.style.italic ? "italic" : "normal"}
+                    style={{
+                      textDecoration: [run.style.underline && "underline", run.style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                      letterSpacing: run.style.letterSpacing ?? 0,
+                      fontFeatureSettings: run.style.fontFeatureSettings?.trim() || undefined,
+                      fontVariationSettings: run.style.fontVariationSettings?.trim() || undefined,
+                      fontKerning: "normal",
+                    }}
+                  >
+                    {run.text}
+                  </tspan>
+                ))}
+              </textPath>
+            </text>
+          </g>
+        );
+      }
+      const useHtmlText = align === "justify";
+      if (useHtmlText || richRuns?.length) {
+        const paragraphText = text.split("\n");
+        return (
+          <foreignObject x={0} y={0} width={frame.w} height={frame.h}>
+            <div
+              {...({ xmlns: "http://www.w3.org/1999/xhtml" } as React.HTMLAttributes<HTMLDivElement>)}
+              style={{
+                width: frame.w,
+                height: frame.h,
+                overflow: "hidden",
+                color: effectiveFill,
+                fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY,
+                fontSize: scaledFontSize,
+                fontWeight: style.fontWeight ?? 500,
+                fontStyle: style.italic ? "italic" : "normal",
+                lineHeight: String(lineHeightRatio),
+                letterSpacing: style.letterSpacing ?? 0,
+                textAlign: "justify",
+                textDecoration: [style.underline && "underline", style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                textTransform: style.textCase === "upper" ? "uppercase" : style.textCase === "lower" ? "lowercase" : style.textCase === "capitalize" ? "capitalize" : undefined,
+                fontFeatureSettings: style.fontFeatureSettings?.trim() || undefined,
+                fontVariationSettings: style.fontVariationSettings?.trim() || undefined,
+                fontKerning: "normal",
+                display: "flex",
+                flexDirection: "column",
+                gap: paragraphSpacing,
+              }}
+            >
+              {richParagraphs?.length
+                ? richParagraphs.map((paragraph, paragraphIndex) => (
+                    <div
+                      key={`${node.id}-rich-p-${paragraphIndex}`}
+                      style={{
+                        whiteSpace: wrapEnabled ? "break-spaces" : "pre",
+                        wordBreak: wrapEnabled ? "break-word" : "normal",
+                        minHeight: lineHeight,
+                      }}
+                    >
+                      {paragraph.runs.length
+                        ? paragraph.runs.map((run, index) => (
+                            <span
+                              key={`${node.id}-rich-${paragraphIndex}-${index}`}
+                              style={{
+                                color: run.fill ?? effectiveFill,
+                                fontFamily: run.style.fontFamily ?? DEFAULT_FONT_FAMILY,
+                                fontSize: run.style.fontSize ?? scaledFontSize,
+                                fontWeight: run.style.fontWeight ?? 500,
+                                fontStyle: run.style.italic ? "italic" : "normal",
+                                textDecoration: [run.style.underline && "underline", run.style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                                letterSpacing: run.style.letterSpacing ?? 0,
+                                fontFeatureSettings: run.style.fontFeatureSettings?.trim() || undefined,
+                                fontVariationSettings: run.style.fontVariationSettings?.trim() || undefined,
+                                fontKerning: "normal",
+                              }}
+                            >
+                              {run.text}
+                            </span>
+                          ))
+                        : " "}
+                    </div>
+                  ))
+                : paragraphText.map((paragraph, paragraphIndex) => (
+                    <div
+                      key={`${node.id}-plain-p-${paragraphIndex}`}
+                      style={{
+                        whiteSpace: wrapEnabled ? "break-spaces" : "pre",
+                        wordBreak: wrapEnabled ? "break-word" : "normal",
+                        minHeight: lineHeight,
+                      }}
+                    >
+                      {paragraph || " "}
+                    </div>
+                  ))}
+            </div>
+          </foreignObject>
+        );
+      }
       return (
         <text
           x={textX}
@@ -748,12 +846,14 @@ function renderShape(
             letterSpacing: style.letterSpacing ?? 0,
             fontFeatureSettings: style.fontFeatureSettings?.trim() || undefined,
             fontVariationSettings: style.fontVariationSettings?.trim() || undefined,
+            fontKerning: "normal",
           }}
           textAnchor={anchor}
+          xmlSpace="preserve"
           filter={filterId ? `url(#${filterId})` : undefined}
         >
           {lines.map((line, index) => (
-            <tspan key={`${node.id}-line-${index}`} x={textX} dy={index === 0 ? 0 : lineHeight}>
+            <tspan key={`${node.id}-line-${index}`} x={textX} y={scaledFontSize + (lineOffsets[index] ?? index * lineHeight)}>
               {line || " "}
             </tspan>
           ))}
@@ -1028,7 +1128,7 @@ function buildGradientDefs(doc: Doc) {
     defs.push(
       <linearGradient key={id} id={id} gradientUnits="objectBoundingBox" x1={x1} y1={y1} x2={x2} y2={y2}>
         {stops.map((s, i) => (
-          <stop key={i} offset={s.offset} stopColor={s.color} />
+          <stop key={i} offset={s.offset} stopColor={resolveGradientStopColor(doc, s)} />
         ))}
       </linearGradient>,
     );
@@ -1045,7 +1145,7 @@ function buildGradientDefs(doc: Doc) {
         r={clamp01(fill.r, 0.5)}
       >
         {stops.map((s, i) => (
-          <stop key={i} offset={s.offset} stopColor={s.color} />
+          <stop key={i} offset={s.offset} stopColor={resolveGradientStopColor(doc, s)} />
         ))}
       </radialGradient>,
     );
@@ -1696,10 +1796,8 @@ function renderNodeTree(
     const rest = effectiveChildIds.filter((id) => !ordered.includes(id));
     effectiveChildIds = [...ordered, ...rest];
   }
-
   const firstChildId = effectiveChildIds[0];
   const firstChild = firstChildId ? resolveDoc.nodes[firstChildId] : null;
-  const useMask = effectiveChildIds.length >= 2 && firstChild?.isMask === true;
 
   const dataBinding = node.data as NodeDataBinding | undefined;
   if (dataBinding?.type === "collection" && dataBinding.collectionId && appPageId && firstChildId) {
@@ -1795,19 +1893,40 @@ function renderNodeTree(
 
   let childrenArray: React.ReactNode[];
   let childrenContent: React.ReactNode;
-  if (useMask && firstChild) {
-    const maskId = `rt-mask-${firstChildId}`;
-    childrenArray = effectiveChildIds.slice(1).map((id) => renderChild(id));
+  const maskEntries = buildMaskSemanticEntries(resolveDoc, effectiveChildIds);
+  const useMaskEntries = maskEntries.some((entry) => entry.kind === "mask-band");
+  if (useMaskEntries) {
+    childrenArray = effectiveChildIds.map((id) => renderChild(id));
     childrenContent = (
       <>
-        <defs>
-          <mask id={maskId} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
-            <g transform={`translate(${firstChild.frame.x} ${firstChild.frame.y})`}>
-              {renderShape(resolveDoc, firstChild, { frame: firstChild.frame, fill: "white" }, variableRuntime)}
-            </g>
-          </mask>
-        </defs>
-        <g mask={`url(#${maskId})`}>{childrenArray}</g>
+        {maskEntries.map((entry, entryIndex) => {
+          if (entry.kind === "node") {
+            return (
+              <React.Fragment key={`mask-node-${entry.nodeId}`}>
+                {renderChild(entry.nodeId)}
+              </React.Fragment>
+            );
+          }
+          const maskNode = resolveDoc.nodes[entry.maskId];
+          if (!maskNode) return null;
+          const maskId = `rt-mask-${node.id}-${entry.maskId}-${entryIndex}`;
+          return (
+            <React.Fragment key={`mask-band-${entry.maskId}-${entryIndex}`}>
+              <defs>
+                <mask id={maskId} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
+                  <g transform={`translate(${maskNode.frame.x} ${maskNode.frame.y})`}>
+                    {renderShape(resolveDoc, maskNode, { frame: maskNode.frame, fill: "white" }, variableRuntime)}
+                  </g>
+                </mask>
+              </defs>
+              <g mask={`url(#${maskId})`}>
+                {entry.targetIds.map((childId) => (
+                  <React.Fragment key={childId}>{renderChild(childId)}</React.Fragment>
+                ))}
+              </g>
+            </React.Fragment>
+          );
+        })}
       </>
     );
   } else {
@@ -2021,12 +2140,8 @@ function renderNodeTree(
       );
     }
   }
-  const clickInteraction = interactive && canInteract ? node.prototype?.interactions.find((i) => i.trigger === "click") : undefined;
-  const hoverInteraction = interactive && canInteract ? node.prototype?.interactions.find((i) => i.trigger === "hover") : undefined;
-  const whileHoverInteraction = interactive && canInteract ? node.prototype?.interactions.find((i) => i.trigger === "whileHover") : undefined;
-  const onPressInteraction = interactive && canInteract ? node.prototype?.interactions.find((i) => i.trigger === "onPress") : undefined;
-  const onDragStartInteraction = interactive && canInteract ? node.prototype?.interactions.find((i) => i.trigger === "onDragStart") : undefined;
-  const onDragEndInteraction = interactive && canInteract ? node.prototype?.interactions.find((i) => i.trigger === "onDragEnd") : undefined;
+  const interactionBundle = buildRuntimeInteractionBundle(node, interactive, canInteract);
+  const { clickInteraction, hoverInteraction, whileHoverInteraction, onPressInteraction, onDragStartInteraction, onDragEndInteraction } = interactionBundle;
   const handleTrigger = (interaction: { action: PrototypeAction }, trigger: PrototypeTrigger) => {
     if (!onNavigate) return;
     onNavigate({ pageId, nodeId: node.id, trigger, action: interaction.action });
@@ -2104,7 +2219,7 @@ function renderNodeTree(
       ? role.inputType === "file"
         ? "pointer"
         : "text"
-      : clickInteraction || hoverInteraction || whileHoverInteraction || onPressInteraction || onDragStartInteraction || onDragEndInteraction || (interactive && clickRole)
+      : interactionBundle.hasPointerInteraction || (interactive && clickRole)
         ? "pointer"
         : undefined;
   const blendMode = node.style.blendMode && node.style.blendMode !== "normal" ? node.style.blendMode : undefined;
@@ -2423,36 +2538,42 @@ export default function RuntimeRenderer({
   instanceVariantOverrides,
   appPageId,
   getLibraryDoc,
+  renderMode = "auto",
+  preferCanvasStage,
 }: Props) {
-  const hydrated = hydrateDoc(doc);
-  const laidOut = layoutDoc(hydrated);
-
-  const root = laidOut.nodes[laidOut.root];
-  const preferredPageId = activePageId ?? laidOut.prototype?.startPageId;
-  const page = preferredPageId ? laidOut.pages.find((p) => p.id === preferredPageId) ?? laidOut.pages[0] : laidOut.pages[0];
-  const pageNode = page ? laidOut.nodes[page.rootId] : null;
-  const width = pageNode?.frame.w ?? 1200;
-  const height = pageNode?.frame.h ?? 800;
-  const pageRootIds = pageNode ? [pageNode.id] : root.children;
-  const bounds = getPageContentBounds(laidOut, page?.id ?? null);
-  const resolvedBounds = bounds && bounds.w > 0 && bounds.h > 0 ? bounds : null;
-  const hasContent = Boolean(pageNode?.children?.length);
-  const isLargeCanvas = Boolean(pageNode && (pageNode.frame.w >= 2400 || pageNode.frame.h >= 1800));
-  const fitContent = Boolean(resolvedBounds && (fitToContent || (isLargeCanvas && hasContent)));
-  const minX = resolvedBounds ? Math.min(0, resolvedBounds.x) : 0;
-  const minY = resolvedBounds ? Math.min(0, resolvedBounds.y) : 0;
-  const maxX = resolvedBounds ? Math.max(width, resolvedBounds.x + resolvedBounds.w) : width;
-  const maxY = resolvedBounds ? Math.max(height, resolvedBounds.y + resolvedBounds.h) : height;
-  const extendedWidth = maxX - minX;
-  const extendedHeight = maxY - minY;
-  const svgWidth = fitContent && resolvedBounds ? resolvedBounds.w : extendedWidth;
-  const svgHeight = fitContent && resolvedBounds ? resolvedBounds.h : extendedHeight;
-  const viewBox = fitContent && resolvedBounds ? `${resolvedBounds.x} ${resolvedBounds.y} ${resolvedBounds.w} ${resolvedBounds.h}` : `${minX} ${minY} ${extendedWidth} ${extendedHeight}`;
+  const scene = useMemo(
+    () =>
+      buildRuntimeSceneGraph(doc, {
+        activePageId,
+        fitToContent,
+      }),
+    [doc, activePageId, fitToContent],
+  );
+  const laidOut = scene.laidOut;
   const controlRoles = useMemo(() => buildControlRoles(laidOut, variableRuntime), [laidOut, variableRuntime]);
   const controlRootMap = useMemo(() => buildControlRootMap(laidOut, controlRoles), [laidOut, controlRoles]);
-  const effectDefs = useMemo(() => buildEffectDefs(laidOut, "rt-effect"), [laidOut]);
-  const gradientDefs = useMemo(() => buildGradientDefs(laidOut), [laidOut]);
-  const imageFillPatternDefs = useMemo(() => buildImageFillPatternDefs(laidOut), [laidOut]);
+  const modeDecision = useMemo(
+    () =>
+      pickRuntimeRendererMode(scene, {
+        requestedMode: renderMode,
+        interactive,
+        preferCanvasStage,
+      }),
+    [scene, renderMode, interactive, preferCanvasStage],
+  );
+  const svgDefs = useMemo(
+    () => (
+      <>
+        <marker id="adv-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#111111" />
+        </marker>
+        {buildGradientDefs(laidOut)}
+        {buildImageFillPatternDefs(laidOut)}
+        {buildEffectDefs(laidOut, "rt-effect")}
+      </>
+    ),
+    [laidOut],
+  );
   const activeButtonStyle = useMemo(
     () => ({
       fill: activeSubmitButtonFill ?? "#111111",
@@ -2508,29 +2629,14 @@ export default function RuntimeRenderer({
     };
   }, [hoveredTooltipGroupId, interactive, tooltipTimeoutMs]);
 
-  return (
-    <svg
-      ref={svgRef}
-      width={svgWidth}
-      height={svgHeight}
-      viewBox={viewBox}
-      preserveAspectRatio="xMinYMin meet"
-      style={{ display: "block" }}
-    >
-      <defs>
-        <marker id="adv-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#111111" />
-        </marker>
-        {gradientDefs}
-        {imageFillPatternDefs}
-        {effectDefs}
-      </defs>
+  const sceneChildren = (
+    <>
       {/* eslint-disable-next-line react-hooks/refs */}
-      {pageRootIds.map((childId) =>
+      {scene.pageRootIds.map((childId) =>
         renderNodeTree(
           laidOut,
           childId,
-          page?.id ?? "page",
+          scene.pageId ?? "page",
           interactive,
           onNavigate,
           controlRoles,
@@ -2559,6 +2665,16 @@ export default function RuntimeRenderer({
           getLibraryDoc,
         ),
       )}
-    </svg>
+    </>
+  );
+
+  if (modeDecision.mode === "canvas-prototype") {
+    return <RuntimeCanvasPrototypeStage scene={scene} />;
+  }
+
+  return (
+    <RuntimeSvgStage scene={scene} svgRef={svgRef} defs={svgDefs}>
+      {sceneChildren}
+    </RuntimeSvgStage>
   );
 }

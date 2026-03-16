@@ -10,9 +10,9 @@ import { withNoStore } from "./cache-policy";
  * - Structured JSON logging for errors via logger
  */
 export function withErrorHandler<T extends unknown[]>(
-  handler: (...args: T) => Promise<NextResponse>
+  handler: (...args: T) => Promise<Response>
 ) {
-  return async (...args: T): Promise<NextResponse> => {
+  return async (...args: T): Promise<Response> => {
     try {
       const req = args[0];
       if (req instanceof Request) {

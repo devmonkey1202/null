@@ -39,6 +39,10 @@
   ],
   "exclude": [
     "node_modules",
-    "mobile"
+    "mobile",
+    "e2e",
+    "tmp_*",
+    "tmp_*.ts",
+    "tmp_*.tsx"
   ]
 }

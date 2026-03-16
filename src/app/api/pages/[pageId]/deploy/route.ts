@@ -73,6 +73,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
       const updatedPage = await tx.page.update({
         where: { id: pageId },
         data: { deployed_at: now },
+        include: { owner: true, current_version: true },
       });
       return { updatedPage, clone };
     });
@@ -82,6 +83,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     updated = await prisma.page.update({
       where: { id: pageId },
       data: { deployed_at: null },
+      include: { owner: true, current_version: true },
     });
   }
 

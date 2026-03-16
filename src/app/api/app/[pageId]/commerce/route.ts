@@ -173,7 +173,7 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     const cartId = typeof body.cart_id === "string" ? body.cart_id : "";
     if (!cartId) return apiErrorJson("cart_id_required", 400);
     const result = await createOrderFromCart(pageId, cartId, actor);
-    if (!result.ok) return apiErrorJson(result.error, 400, result.detail ?? undefined);
+    if (!result.ok) return apiErrorJson(result.error, 400, (result as any).detail ?? undefined);
     return NextResponse.json({ ok: true, order_id: result.orderId });
   }
 

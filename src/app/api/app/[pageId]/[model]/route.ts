@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import {
@@ -87,7 +87,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     orderDir,
     appUserId: !isOwner && requiresAppUser ? appUser?.id ?? null : null,
   }, env);
-  let items = result.items.map((r) => ({
+  let items: any[] = result.items.map((r: any) => ({
     id: r.id,
     data: (r.data as Record<string, unknown>) ?? {},
     created_at: r.created_at,
@@ -98,7 +98,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     const fieldsToExpand = expandFields.includes("*") ? [] : expandFields;
     items = await expandRelations(pageId, fields, items, fieldsToExpand, { skipFields: [APP_USER_FIELD] });
   } else {
-    items = items.map((item) => ({ ...item, relations: {} }));
+    items = items.map((item: any) => ({ ...item, relations: {} }));
   }
   return NextResponse.json({
     items: items.map((r) => ({

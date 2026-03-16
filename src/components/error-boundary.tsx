@@ -28,7 +28,7 @@ export default class ErrorBoundary extends Component<Props, State> {
     console.error("[ErrorBoundary]", error, errorInfo.componentStack);
     reportClientError({
       error,
-      componentStack: errorInfo.componentStack,
+      componentStack: errorInfo.componentStack ?? undefined,
       source: "error-boundary",
     });
   }

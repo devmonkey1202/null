@@ -77,7 +77,7 @@ export type DragState =
       capture: Element | null;
     };
 
-export type Rect = { x: number; y: number; w: number; h: number };
+export type Rect = { x: number; y: number; w: number; h: number; rotation?: number };
 
 export type Status = "idle" | "saving" | "publishing";
 

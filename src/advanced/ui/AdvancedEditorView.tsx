@@ -45,7 +45,10 @@ import {
   type NodeDataBinding,
   type NodeDataBindingFilterOp,
   type AutoLayout,
+  type BranchReviewItem,
   type ComponentVersion,
+  type DevAnnotationStatus,
+  type DevCodeLinkKind,
 } from "../doc/scene";
 
 import AdvancedRuntimeRenderer from "../runtime/renderer";
@@ -56,18 +59,55 @@ import { applyConstraintsOnResize, layoutDoc } from "../layout/engine";
 import { getPageContentBounds } from "../runtime/bounds";
 import { findLayoutConflicts } from "../runtime/layout-conflicts";
 import {
-  anchorsToPathData,
-  pathDataToAnchors,
   pathDataToBounds,
   rectToPath,
   ellipseToPath,
   pathDataToPolygon,
   polygonToPathD,
   translatePathD,
-  snapDirection45,
-  type PathAnchor,
 } from "../geom/pathData";
 import { runBooleanMultiple, type BooleanOp } from "../geom/boolean";
+import { buildBooleanOperandSnapshotFromNode } from "../geom/booleanTrace";
+import { hasRichTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "../geom/richTextModel";
+import { getParagraphSpacing, getRenderedTextLines, getTextLineMetrics, resolveTextContentFrameSize } from "../geom/textLayout";
+import { getTextPathId, normalizeTextPathStartOffset, normalizeTextPathText } from "../geom/textPathLayout";
+import {
+  resolveGradientStopColor,
+  resolveNodeTextStyle as resolveBoundNodeTextStyle,
+  resolveNodeTextValue as resolveBoundNodeTextValue,
+  resolveTextRangeBindings,
+  resolveVariableColor as resolveBoundVariableColor,
+  resolveVariableValue as resolveBoundVariableValue,
+} from "../geom/variableBindings";
+import {
+  appendPathAnchorFromPointer,
+  applyPathEditDrag,
+  cycleSelectedPathAnchor,
+  createPathDrawState,
+  createPathEditStateFromPathData,
+  hitPathAnchorOrHandle,
+  hitPathSegment,
+  insertPathAnchorAtHit,
+  nudgeSelectedPathAnchor,
+  removeSelectedPathAnchor,
+  selectPathAnchor,
+  serializePathEditState,
+  setSelectedPathAnchorMode,
+  shouldClosePathAtPoint,
+  togglePathClosed,
+  type PathEditState,
+} from "../geom/pathEditSession";
+import { commitEditedPathShape, resolveEditablePathSourceAtPoint } from "../geom/pathEditShape";
+import { primaryPathDataFromShape, withDerivedVectorNetwork } from "../geom/vectorNetwork";
+import {
+  buildDesignLibrarySnapshot,
+  buildDesignLibraryUpdatePreview,
+  computeDesignLibraryUsage,
+  consumeDesignLibrary,
+  markLibraryUpdateAvailable,
+  type LibraryUpdatePreview,
+  type PublishedLibrarySnapshot,
+} from "./designLibrary";
 import type {
   Tool,
   DragState,
@@ -79,10 +119,12 @@ import type {
   ContextMenuState,
 } from "./AdvancedEditor.types";
 import { CanvasNode } from "./AdvancedEditorCanvasNode";
+import AdvancedEditorCanvasOverlay from "./AdvancedEditorCanvasOverlay";
 import {
   GRID,
   DEFAULT_FONT_FAMILY,
   DEFAULT_AUTO_LAYOUT,
+  DEFAULT_GRID_LAYOUT,
   NODE_TYPE_LABELS,
   MESSAGE_LABELS,
   resolveMessageType,
@@ -98,9 +140,113 @@ import {
   makeWidgetNode,
   fieldPlaceholder,
 } from "./AdvancedEditor.nodes";
+import {
+  DEFAULT_TEXT_PATH_DATA,
+  addTextRange,
+  buildParagraphTextRanges,
+  buildWordTextRanges,
+  clearTextPath,
+  clearTextRangeStyling,
+  clearTextRanges,
+  cloneNodeText,
+  duplicateTextRange,
+  ensureNodeText,
+  flipTextPathSide,
+  getTextRangePreview,
+  nudgeTextPathOffset,
+  patchTextRange,
+  patchTextRangeStyle,
+  removeTextRange,
+  resolveTextMeasurementStyle,
+  setNodeTextStyleBinding,
+  setNodeTextValue,
+  setNodeTextValueRef,
+  setTextPath,
+  setTextRangeFill,
+  setTextRangeFillRef,
+  setTextRangeStyleBinding,
+  TEXT_PATH_PRESETS,
+} from "./textInspectorModel";
+import {
+  describeGridTrackSizing,
+  ensureGridChildPlacement,
+  ensureGridLayout,
+  updateGridTrackSizing,
+} from "./layoutInspectorModel";
 import { PRESET_GROUPS } from "./AdvancedEditor.presets";
 import { ASSET_LIBRARY_PRESET_GROUPS } from "./AdvancedEditor.assetLibraryPresets";
 import { makeRuntimeId, snap, snapToPixel, clamp, getRulerStep } from "./AdvancedEditor.utils";
+import { applyAxisLock, buildMovedFrames, collectMoveSnapTargets, computeDistanceGuideLines, computeMovePreview, computeResizePreviewFrame, computeSmartSnapFeedback } from "./AdvancedEditor.drag";
+import { finalizeResizeDoc } from "./AdvancedEditor.resize";
+import {
+  addVariantAxis,
+  analyzeVariantMatrix,
+  buildVariantPropsTemplate,
+  findVariantByProps,
+  formatVariantProps,
+  getVariantAxes,
+  getVariantProps,
+  planMissingVariantFill,
+  removeVariantAxis,
+  setVariantProp,
+} from "./componentVariants";
+import {
+  findDuplicateComponentPropertyNames,
+  isComponentPropertyKindCompatible,
+  upsertComponentPropertyDefinition,
+} from "./componentProperties";
+import {
+  buildConstraintPreset,
+  describeConstraintPreset,
+  getConstraintAxisMode,
+  getConstraintEditingState,
+  HORIZONTAL_CONSTRAINT_OPTIONS,
+  VERTICAL_CONSTRAINT_OPTIONS,
+} from "./constraintPresets";
+import { buildDevCodegenBundle } from "./devCodegen";
+import {
+  applyBranchMerge,
+  buildBranchDiffSummary,
+  createBranchEntry,
+  createBranchReview,
+  removeBranchEntry,
+  setBranchReviewResolution,
+  setBranchReviewStatus,
+  summarizeBranchReview,
+  upsertBranchEntry,
+  upsertBranchReview,
+} from "./branchReview";
+import { buildResourceHubEntries } from "./resourceHub";
+import type { StoreApprovalRequest, StoreAuditEntry, StoreGovernancePolicy } from "./storeGovernanceModel";
+import { applyStoreWidgetUpdate, createStoreWidgetPayload } from "./widgetStore";
+import {
+  buildComponentPlaygroundPreview,
+  buildSpecDiffSections,
+  createDevAnnotation,
+  createDevCodeLink,
+  findComparableVersionNode,
+  removeDevAnnotation,
+  removeDevCodeLink,
+  setNodeReadyForDev,
+  upsertDevAnnotation,
+  upsertDevCodeLink,
+} from "./devHandoff";
+import type { StorePlugin } from "@/lib/plugin-store";
+import type { StoreWidget } from "@/lib/widget-store";
+import { WEB_IMPORT_VIEWPORT_OPTIONS, getWebImportViewport, type WebImportViewportId } from "@/lib/webImportShared";
+import {
+  applyEditorDocOperation,
+  buildEditorDocOperation,
+  isEditorDocOperationFromIdentity,
+  normalizeEditorDocOperation,
+  shouldPreferLocalCollabState,
+  wrapEditorDocOperation,
+  type EditorDocOperation,
+} from "@/lib/collab";
+import { buildNodeBatchExportQueue, buildScopedExportBaseName } from "./exportPipeline";
+import { exportTokenBundle, importTokenBundleIntoDoc, type TokenBundle } from "./tokenRoundtrip";
+import { formatRotationDegrees, normalizeRotationDegrees, parseRotationInput } from "./rotationMath";
+import { buildPrototypeFlow, diagnosePrototypeInteraction, summarizePrototypeAction } from "../prototype/prototypeFlow";
 import { describePermissions } from "../../lib/plugin-permissions";
 
 const BLEND_MODE_OPTIONS: { value: BlendMode; label: string }[] = [
@@ -111,6 +257,12 @@ const BLEND_MODE_OPTIONS: { value: BlendMode; label: string }[] = [
   { value: "darken", label: "Darken" },
   { value: "lighten", label: "Lighten" },
 ];
+
+function formatMeasurementLabel(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1).replace(/\.0$/, "");
+}
 
 function buildPathFromNode(node: Node, abs: Rect): string | null {
   switch (node.type) {
@@ -148,9 +300,7 @@ function buildPathFromNode(node: Node, abs: Rect): string | null {
     case "arrow":
       return `M ${abs.x} ${abs.y} L ${abs.x + abs.w} ${abs.y + abs.h}`;
     case "path": {
-      const raw = (node.shape?.pathData ?? "").trim();
-      const seg = node.shape?.segments?.[0]?.d?.trim();
-      const base = raw || seg;
+      const base = primaryPathDataFromShape(node.shape);
       if (!base) return rectToPath(abs);
       return translatePathD(base, abs.x, abs.y);
     }
@@ -213,8 +363,6 @@ function buildRingFromNode(node: Node, abs: Rect): number[][] | null {
   return normalizeRing(ring);
 }
 
-
-let textMeasureCanvas: HTMLCanvasElement | null = null;
 const ALL_PRESET_GROUPS = [...PRESET_GROUPS, ...ASSET_LIBRARY_PRESET_GROUPS];
 const SUSPICIOUS_PRESET_TEXT_RE = /\uFFFD|\?\?/;
 const PRESET_TOKEN_KO: Record<string, string> = {};
@@ -305,12 +453,6 @@ function sanitizePresetNodes(nodes: Record<string, Node>, prefix: string) {
 function sanitizeDescription(value?: string) {
   if (!value) return "";
   return normalizePresetLabel(value, "Description");
-}
-
-function getTextMeasureContext() {
-  if (typeof document === "undefined") return null;
-  if (!textMeasureCanvas) textMeasureCanvas = document.createElement("canvas");
-  return textMeasureCanvas.getContext("2d");
 }
 
 const IMAGE_FILE_ACCEPT =
@@ -489,7 +631,6 @@ const COLLAB_STORAGE_KEY = "null_adv_collab_profile";
 const COLLAB_TAB_STORAGE_KEY = "null_adv_collab_tab";
 const COLLAB_INVITE_STORAGE_PREFIX = "null_adv_collab_invite:";
 const PLUGIN_STORAGE_KEY = "null_adv_plugins";
-const BRANCH_STORAGE_KEY = "null_adv_branches";
 
 
 function normalizeImageSrc(raw?: string) {
@@ -524,78 +665,6 @@ function readFileAsText(file: File) {
     reader.onerror = () => reject(reader.error ?? new Error("file_read_failed"));
     reader.readAsText(file);
   });
-}
-
-function measureTextWidth(text: string, style: TextStyle) {
-  const fontSize = style.fontSize ?? 16;
-  const fontWeight = style.fontWeight ?? 400;
-  const fontFamily = style.fontFamily ?? DEFAULT_FONT_FAMILY;
-  const ctx = getTextMeasureContext();
-  if (!ctx) {
-    return text.length * fontSize * 0.6;
-  }
-  ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-  const base = ctx.measureText(text).width;
-  const spacing = style.letterSpacing ?? 0;
-  const extra = text.length > 1 ? (text.length - 1) * spacing : 0;
-  return base + extra;
-}
-
-function wrapTextLines(text: string, style: TextStyle, maxWidth: number) {
-  if (!Number.isFinite(maxWidth) || maxWidth <= 0) return text.split("\n");
-  const lines: string[] = [];
-  const paragraphs = text.split("\n");
-  paragraphs.forEach((paragraph) => {
-    if (!paragraph) {
-      lines.push("");
-      return;
-    }
-    const words = paragraph.split(/\s+/);
-    let draft = "";
-    words.forEach((word) => {
-      const candidate = draft ? `${draft} ${word}` : word;
-      if (!draft) {
-        draft = candidate;
-        return;
-      }
-      if (measureTextWidth(candidate, style) <= maxWidth) {
-        draft = candidate;
-        return;
-      }
-      lines.push(draft);
-      if (measureTextWidth(word, style) > maxWidth) {
-        let chunk = "";
-        for (const char of word) {
-          const nextChunk = chunk + char;
-          if (measureTextWidth(nextChunk, style) > maxWidth && chunk) {
-            lines.push(chunk);
-            chunk = char;
-          } else {
-            chunk = nextChunk;
-          }
-        }
-        if (chunk) lines.push(chunk);
-        draft = "";
-        return;
-      }
-      draft = word;
-    });
-    if (draft) lines.push(draft);
-  });
-  return lines;
-}
-
-function measureTextBlock(text: string, style: TextStyle, maxWidth?: number, wrap?: boolean) {
-  const safeText = text ?? "";
-  const wrapped = wrap !== false && Number.isFinite(maxWidth) && (maxWidth ?? 0) > 0;
-  const lines = wrapped ? wrapTextLines(safeText, style, maxWidth as number) : safeText.split("\n");
-  const widths = lines.map((line) => measureTextWidth(line || " ", style));
-  const width = widths.length ? Math.max(...widths) : 0;
-  const fontSize = style.fontSize ?? 16;
-  const lineHeightRatio = style.lineHeight ?? 1.4;
-  const lineHeight = (Number.isFinite(lineHeightRatio) && lineHeightRatio > 0 ? lineHeightRatio : 1.4) * fontSize;
-  const height = Math.max(1, lineHeight * Math.max(lines.length, 1));
-  return { width, height, lines };
 }
 
 function isEditableTarget(target: EventTarget | null) {
@@ -794,11 +863,7 @@ function findStyleToken(doc: Doc, id: string | undefined, type: StyleToken["type
 }
 
 function resolveVariableColor(doc: Doc, id: string | undefined) {
-  if (!id) return null;
-  const variable = doc.variables.find((item) => item.id === id && item.type === "color");
-  if (!variable) return null;
-  const value = resolveVariableValue(doc, variable);
-  return typeof value === "string" ? value : null;
+  return resolveBoundVariableColor(doc, id);
 }
 
 function resolveFill(doc: Doc, node: Node): Fill[] {
@@ -827,8 +892,9 @@ function resolveFillColor(doc: Doc, node: Node) {
 function resolveStroke(doc: Doc, node: Node) {
   const strokes = resolveStrokes(doc, node);
   const stroke = strokes[0];
+  const variableColor = resolveVariableColor(doc, node.style.strokeRef);
   return {
-    color: stroke?.color ?? "#111111",
+    color: variableColor || stroke?.color || "#111111",
     width: stroke?.width ?? 0,
     dash: stroke?.dash ?? [],
     align: stroke?.align ?? "center",
@@ -845,17 +911,14 @@ function resolveEffects(doc: Doc, node: Node): Effect[] {
 }
 
 function resolveVariableValue(doc: Doc, variable: Variable) {
-  const mode = doc.variableMode;
-  if (mode && variable.modes && mode in variable.modes) {
-    return variable.modes[mode];
-  }
-  return variable.value;
+  return resolveBoundVariableValue(doc, variable) ?? variable.value;
 }
 
 function resolveTextStyle(doc: Doc, node: Node) {
   const token = findStyleToken(doc, node.text?.styleRef, "text");
-  if (token && token.value && typeof token.value === "object") return token.value as TextStyle;
-  return node.text?.style ?? null;
+  const baseStyle = token && token.value && typeof token.value === "object" ? (token.value as TextStyle) : node.text?.style ?? null;
+  if (!baseStyle) return null;
+  return resolveBoundNodeTextStyle(doc, node.text, baseStyle);
 }
 
 function resolveTextTokens(doc: Doc, value: string) {
@@ -938,6 +1001,8 @@ function buildDevCss(doc: Doc, node: Node, options?: { roundPx?: boolean }) {
       if (deco) lines.push(`text-decoration: ${deco};`);
     }
     if (style?.fontFeatureSettings?.trim()) lines.push(`font-feature-settings: ${style.fontFeatureSettings};`);
+    if (style?.fontVariationSettings?.trim()) lines.push(`font-variation-settings: ${style.fontVariationSettings};`);
+    lines.push("font-kerning: normal;");
     lines.push(`color: ${fill};`);
   }
 
@@ -960,7 +1025,28 @@ function buildSpecPayload(doc: Doc, node: Node) {
   const stroke = resolveStroke(doc, node);
   const textStyle = node.type === "text" ? resolveTextStyle(doc, node) : null;
   const abs = getAbsoluteFrame(doc, node.id);
+  const parentAbs = node.parentId ? getAbsoluteFrame(doc, node.parentId) : null;
   const componentName = node.instanceOf ? doc.nodes[node.instanceOf]?.name ?? node.instanceOf : null;
+  const sourceComponent = node.instanceOf ? doc.nodes[node.instanceOf] : null;
+  const selectedVariant =
+    sourceComponent?.type === "component"
+      ? sourceComponent.variants?.find((variant) => variant.id === (node.variantId ?? sourceComponent.variants?.[0]?.id))
+      : null;
+  const componentRoot = findComponentRoot(doc, node.id);
+  const propertyOwner = sourceComponent?.type === "component" ? sourceComponent : componentRoot;
+  const propertyDefinition =
+    propertyOwner?.type === "component"
+      ? propertyOwner.propertyDefinitions?.[node.sourceId ?? node.id] ?? propertyOwner.propertyDefinitions?.[node.id]
+      : null;
+  const spacing =
+    abs && parentAbs
+      ? {
+          left: abs.x - parentAbs.x,
+          top: abs.y - parentAbs.y,
+          right: parentAbs.x + parentAbs.w - (abs.x + abs.w),
+          bottom: parentAbs.y + parentAbs.h - (abs.y + abs.h),
+        }
+      : null;
   return {
     meta: {
       id: node.id,
@@ -971,9 +1057,15 @@ function buildSpecPayload(doc: Doc, node: Node) {
       componentId: node.componentId ?? null,
       instanceOf: node.instanceOf ?? null,
       instanceName: componentName,
+      variantId: node.variantId ?? null,
+      variantName: selectedVariant?.name ?? null,
+      variantProps: selectedVariant?.props ?? null,
+      propertyName: propertyDefinition?.name ?? null,
+      propertyKind: propertyDefinition?.kind ?? null,
     },
     frame: { ...node.frame },
     absolute: abs ? { x: abs.x, y: abs.y, w: abs.w, h: abs.h } : null,
+    spacing,
     style: {
       fill,
       stroke,
@@ -999,19 +1091,54 @@ function buildSpecPayload(doc: Doc, node: Node) {
           ? {
               dir: node.layout.dir,
               gap: node.layout.gap,
+              gapMode: node.layout.gapMode ?? "fixed",
+              justify: node.layout.justify ?? "start",
               padding: node.layout.padding,
               align: node.layout.align,
               wrap: node.layout.wrap,
+              wrapGap: node.layout.wrapGap ?? node.layout.gap,
+              wrapAlign: node.layout.wrapAlign ?? "start",
             }
           : null,
       sizing: node.layoutSizing ?? null,
+      layoutPositioning: node.layoutPositioning ?? "auto",
       constraints: node.constraints ?? null,
+      overflowScrolling: node.overflowScrolling ?? "none",
     },
     tokens: {
       fillStyle: findStyleName(doc, node.style.fillStyleId, "fill"),
       strokeStyle: findStyleName(doc, node.style.strokeStyleId, "stroke"),
+      effectStyle: findStyleName(doc, node.style.effectStyleId, "effect"),
       textStyle: findStyleName(doc, node.text?.styleRef, "text"),
       fillVariable: findVariableName(doc, node.style.fillRef),
+      strokeVariable: findVariableName(doc, node.style.strokeRef),
+      activeMode: doc.variableMode ?? doc.variableModes?.[0] ?? null,
+    },
+    export: {
+      settings: node.exportSettings ?? [],
+    },
+    slot: node.slotId ? { id: node.slotId } : null,
+    handoff: {
+      readyForDev: node.dev?.readyForDev ?? false,
+      codeLinks:
+        node.dev?.codeLinks?.map((link) => ({
+          title: link.title,
+          kind: link.kind,
+          url: link.url ?? null,
+          exportKey: link.exportKey ?? null,
+        })) ?? [],
+    },
+    dev: {
+      readyForDev: node.dev?.readyForDev ?? false,
+      status: node.dev?.status ?? "draft",
+      annotationCount: node.dev?.annotations?.length ?? 0,
+      codeLinks:
+        node.dev?.codeLinks?.map((link) => ({
+          title: link.title,
+          kind: link.kind,
+          url: link.url ?? null,
+          exportKey: link.exportKey ?? null,
+        })) ?? [],
     },
   };
 }
@@ -1021,15 +1148,36 @@ function buildSpecLines(doc: Doc, node: Node) {
   const stroke = resolveStroke(doc, node);
   const fillStyleName = findStyleName(doc, node.style.fillStyleId, "fill");
   const strokeStyleName = findStyleName(doc, node.style.strokeStyleId, "stroke");
+  const effectStyleName = findStyleName(doc, node.style.effectStyleId, "effect");
   const textStyleName = findStyleName(doc, node.text?.styleRef, "text");
   const fillVarName = findVariableName(doc, node.style.fillRef);
+  const strokeVarName = findVariableName(doc, node.style.strokeRef);
   const componentName = node.instanceOf ? doc.nodes[node.instanceOf]?.name ?? node.instanceOf : null;
+  const abs = getAbsoluteFrame(doc, node.id);
+  const parentAbs = node.parentId ? getAbsoluteFrame(doc, node.parentId) : null;
+  const sourceComponent = node.instanceOf ? doc.nodes[node.instanceOf] : null;
+  const selectedVariant =
+    sourceComponent?.type === "component"
+      ? sourceComponent.variants?.find((variant) => variant.id === (node.variantId ?? sourceComponent.variants?.[0]?.id))
+      : null;
+  const componentRoot = findComponentRoot(doc, node.id);
+  const propertyOwner = sourceComponent?.type === "component" ? sourceComponent : componentRoot;
+  const propertyDefinition =
+    propertyOwner?.type === "component"
+      ? propertyOwner.propertyDefinitions?.[node.sourceId ?? node.id] ?? propertyOwner.propertyDefinitions?.[node.id]
+      : null;
   const lines = [
     `W ${Math.round(node.frame.w)} H ${Math.round(node.frame.h)}`,
+    `Pos ${Math.round(node.frame.x)}, ${Math.round(node.frame.y)}`,
     `Fill ${fill}`,
     `Stroke ${stroke.width}px ${stroke.color}`,
     `Opacity ${Math.round(node.style.opacity * 100)}%`,
   ];
+  if (abs && parentAbs) {
+    lines.push(
+      `Spacing L ${Math.round(abs.x - parentAbs.x)} T ${Math.round(abs.y - parentAbs.y)} R ${Math.round(parentAbs.x + parentAbs.w - (abs.x + abs.w))} B ${Math.round(parentAbs.y + parentAbs.h - (abs.y + abs.h))}`,
+    );
+  }
   if (typeof node.style.radius === "number") {
     lines.push(`Corner radius ${Math.round(node.style.radius)}px`);
   } else if (node.style.radius) {
@@ -1044,11 +1192,18 @@ function buildSpecLines(doc: Doc, node: Node) {
   }
   if (node.layout?.mode === "auto") {
     lines.push(`Auto layout ${node.layout.dir} gap ${node.layout.gap} padding ${node.layout.padding.t}/${node.layout.padding.r}/${node.layout.padding.b}/${node.layout.padding.l} ${node.layout.align} ${node.layout.wrap ? "wrap" : "nowrap"}`);
+    lines.push(`Auto justify ${node.layout.justify ?? "start"} gapMode ${node.layout.gapMode ?? "fixed"} wrapGap ${node.layout.wrapGap ?? node.layout.gap} wrapAlign ${node.layout.wrapAlign ?? "start"}`);
   } else {
     lines.push("Fixed layout");
   }
   if (node.layoutSizing) {
     lines.push(`Sizing W ${node.layoutSizing.width} H ${node.layoutSizing.height}`);
+  }
+  if (node.layoutPositioning === "absolute") {
+    lines.push("Ignore Auto Layout");
+  }
+  if (node.overflowScrolling && node.overflowScrolling !== "none") {
+    lines.push(`Overflow ${node.overflowScrolling}`);
   }
   const constraintLabels: Array<[keyof NonNullable<Node["constraints"]>, string]> = [
     ["left", "L"],
@@ -1067,9 +1222,21 @@ function buildSpecLines(doc: Doc, node: Node) {
   if (fillStyleName) lines.push(`Fill style ${fillStyleName}`);
   if (fillVarName) lines.push(`Fill variable ${fillVarName}`);
   if (strokeStyleName) lines.push(`Stroke style ${strokeStyleName}`);
+  if (effectStyleName) lines.push(`Effect style ${effectStyleName}`);
+  if (strokeVarName) lines.push(`Stroke variable ${strokeVarName}`);
   if (textStyleName) lines.push(`Text style ${textStyleName}`);
+  if (doc.variableMode) lines.push(`Active mode ${doc.variableMode}`);
+  if (selectedVariant) lines.push(`Variant ${formatVariantProps(selectedVariant.props) || selectedVariant.name}`);
+  if (propertyDefinition) lines.push(`Component property ${propertyDefinition.kind} ${propertyDefinition.name}`);
+  if (node.exportSettings?.length) {
+    lines.push(`Exports ${node.exportSettings.map((setting) => `${setting.format.toUpperCase()}@${setting.scale}x`).join(", ")}`);
+  }
+  if (node.slotId) lines.push(`Slot ${node.slotId}`);
   if (node.type === "component") lines.push("Component root");
   if (node.type === "instance" && componentName) lines.push(`Instance of ${componentName}`);
+  if (node.dev?.readyForDev) lines.push("Ready for dev true");
+  if (node.dev?.annotations?.length) lines.push(`Annotations ${node.dev.annotations.length}`);
+  if (node.dev?.codeLinks?.length) lines.push(`Code links ${node.dev.codeLinks.length}`);
   return lines;
 }
 
@@ -1238,7 +1405,7 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
           </g>
         );
       }
-      const path = (node.shape?.pathData ?? "").trim() || defaultPath;
+      const path = primaryPathDataFromShape(node.shape) || defaultPath;
       const pathFill = outline ? "transparent" : fill;
       return (
         <path
@@ -1290,16 +1457,180 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
       );
     }
     case "text": {
-      const text = resolveTextTokens(doc, node.text?.value ?? "Text");
+      const text = resolveTextTokens(doc, resolveBoundNodeTextValue(doc, node.text) || "Text");
       const style = resolveTextStyle(doc, node) ?? DEFAULT_TEXT_STYLE;
       const fontSize = style.fontSize ?? 16;
       const align = style.align ?? "left";
       const anchor = align === "center" ? "middle" : align === "right" ? "end" : "start";
       const textX = align === "center" ? node.frame.w / 2 : align === "right" ? node.frame.w : 0;
-      const lineHeightRatio = style.lineHeight ?? 1.4;
-      const lineHeight = (Number.isFinite(lineHeightRatio) && lineHeightRatio > 0 ? lineHeightRatio : 1.4) * fontSize;
+      const { lineHeightRatio, lineHeight } = getTextLineMetrics(style);
       const wrapped = node.text?.wrap !== false;
-      const lines = wrapped ? wrapTextLines(text, style, Math.max(4, node.frame.w)) : text.split("\n");
+      const paragraphSpacing = getParagraphSpacing(style);
+      const { lines, lineOffsets } = getRenderedTextLines(text, style, Math.max(4, node.frame.w), wrapped);
+      const canUseRichText = hasRichTextRanges(node.text?.ranges) && text === resolveBoundNodeTextValue(doc, node.text);
+      const richRuns = canUseRichText
+        ? resolveRichTextRuns(text, style, resolveTextRangeBindings(doc, node.text?.ranges) ?? node.text?.ranges)
+        : null;
+      const richParagraphs = richRuns?.length ? splitRichTextRunsByParagraph(richRuns) : null;
+      const textPath = node.text?.textPath;
+      if (textPath?.pathData) {
+        const pathId = getTextPathId(node.id, "adv-text-path");
+        const textPathRuns =
+          richRuns?.length
+            ? richRuns.map((run) => ({ ...run, text: run.text.replace(/\s+/g, " ") }))
+            : [{ text: normalizeTextPathText(text), style, fill: baseFill }];
+        return (
+          <g>
+            <defs>
+              <path id={pathId} d={textPath.pathData} />
+            </defs>
+            <text
+              x={0}
+              y={0}
+              fill={baseFill}
+              fontFamily={style.fontFamily ?? DEFAULT_FONT_FAMILY}
+              fontSize={fontSize}
+              fontWeight={style.fontWeight ?? 500}
+              fontStyle={style.italic ? "italic" : "normal"}
+              style={{
+                textDecoration: [style.underline && "underline", style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                letterSpacing: style.letterSpacing ?? 0,
+                fontFeatureSettings: style.fontFeatureSettings?.trim() || undefined,
+                fontVariationSettings: style.fontVariationSettings?.trim() || undefined,
+                fontKerning: "normal",
+              }}
+              filter={filterId ? `url(#${filterId})` : undefined}
+            >
+              <textPath href={`#${pathId}`} startOffset={normalizeTextPathStartOffset(textPath.startOffset)}>
+                {textPathRuns.map((run, index) => (
+                  <tspan
+                    key={`${node.id}-text-path-${index}`}
+                    fill={run.fill ?? baseFill}
+                    fontFamily={run.style.fontFamily ?? DEFAULT_FONT_FAMILY}
+                    fontSize={run.style.fontSize ?? fontSize}
+                    fontWeight={run.style.fontWeight ?? 500}
+                    fontStyle={run.style.italic ? "italic" : "normal"}
+                    style={{
+                      textDecoration: [run.style.underline && "underline", run.style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                      letterSpacing: run.style.letterSpacing ?? 0,
+                      fontFeatureSettings: run.style.fontFeatureSettings?.trim() || undefined,
+                      fontVariationSettings: run.style.fontVariationSettings?.trim() || undefined,
+                      fontKerning: "normal",
+                    }}
+                  >
+                    {run.text}
+                  </tspan>
+                ))}
+              </textPath>
+            </text>
+          </g>
+        );
+      }
+      if (align === "justify") {
+        const paragraphs = text.split("\n");
+        return (
+          <foreignObject x={0} y={0} width={node.frame.w} height={node.frame.h} filter={filterId ? `url(#${filterId})` : undefined}>
+            <div
+              {...({ xmlns: "http://www.w3.org/1999/xhtml" } as React.HTMLAttributes<HTMLDivElement>)}
+              style={{
+                width: node.frame.w,
+                height: node.frame.h,
+                overflow: "hidden",
+                color: baseFill,
+                fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY,
+                fontSize,
+                fontWeight: style.fontWeight ?? 500,
+                fontStyle: style.italic ? "italic" : "normal",
+                lineHeight: String(lineHeightRatio),
+                letterSpacing: style.letterSpacing ?? 0,
+                textAlign: "justify",
+                textDecoration: [style.underline && "underline", style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                textTransform: style.textCase === "upper" ? "uppercase" : style.textCase === "lower" ? "lowercase" : style.textCase === "capitalize" ? "capitalize" : undefined,
+                fontFeatureSettings: style.fontFeatureSettings?.trim() || undefined,
+                fontVariationSettings: style.fontVariationSettings?.trim() || undefined,
+                fontKerning: "normal",
+                display: "flex",
+                flexDirection: "column",
+                gap: paragraphSpacing,
+              }}
+            >
+              {paragraphs.map((paragraph, paragraphIndex) => (
+                <div
+                  key={`${node.id}-justify-p-${paragraphIndex}`}
+                  style={{
+                    whiteSpace: wrapped ? "break-spaces" : "pre",
+                    wordBreak: wrapped ? "break-word" : "normal",
+                    minHeight: lineHeight,
+                  }}
+                >
+                  {paragraph || " "}
+                </div>
+              ))}
+            </div>
+          </foreignObject>
+        );
+      }
+      if (richRuns?.length) {
+        return (
+          <foreignObject x={0} y={0} width={node.frame.w} height={node.frame.h} filter={filterId ? `url(#${filterId})` : undefined}>
+            <div
+              {...({ xmlns: "http://www.w3.org/1999/xhtml" } as React.HTMLAttributes<HTMLDivElement>)}
+              style={{
+                width: node.frame.w,
+                height: node.frame.h,
+                overflow: "hidden",
+                color: baseFill,
+                fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY,
+                fontSize,
+                fontWeight: style.fontWeight ?? 500,
+                fontStyle: style.italic ? "italic" : "normal",
+                lineHeight: String(lineHeightRatio),
+                letterSpacing: style.letterSpacing ?? 0,
+                textAlign: align,
+                fontFeatureSettings: style.fontFeatureSettings?.trim() || undefined,
+                fontVariationSettings: style.fontVariationSettings?.trim() || undefined,
+                fontKerning: "normal",
+                display: "flex",
+                flexDirection: "column",
+                gap: paragraphSpacing,
+              }}
+            >
+              {richParagraphs?.map((paragraph, paragraphIndex) => (
+                <div
+                  key={`${node.id}-rich-p-${paragraphIndex}`}
+                  style={{
+                    whiteSpace: wrapped ? "break-spaces" : "pre",
+                    wordBreak: wrapped ? "break-word" : "normal",
+                    minHeight: lineHeight,
+                  }}
+                >
+                  {paragraph.runs.length
+                    ? paragraph.runs.map((run, index) => (
+                        <span
+                          key={`${node.id}-rich-${paragraphIndex}-${index}`}
+                          style={{
+                            color: run.fill ?? baseFill,
+                            fontFamily: run.style.fontFamily ?? DEFAULT_FONT_FAMILY,
+                            fontSize: run.style.fontSize ?? fontSize,
+                            fontWeight: run.style.fontWeight ?? 500,
+                            fontStyle: run.style.italic ? "italic" : "normal",
+                            textDecoration: [run.style.underline && "underline", run.style.lineThrough && "line-through"].filter(Boolean).join(" ") || undefined,
+                            letterSpacing: run.style.letterSpacing ?? 0,
+                            fontFeatureSettings: run.style.fontFeatureSettings?.trim() || undefined,
+                            fontVariationSettings: run.style.fontVariationSettings?.trim() || undefined,
+                            fontKerning: "normal",
+                          }}
+                        >
+                          {run.text}
+                        </span>
+                      ))
+                    : " "}
+                </div>
+              ))}
+            </div>
+          </foreignObject>
+        );
+      }
       return (
         <text
           x={textX}
@@ -1314,12 +1645,15 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
             textTransform: style.textCase === "upper" ? "uppercase" : style.textCase === "lower" ? "lowercase" : style.textCase === "capitalize" ? "capitalize" : undefined,
             letterSpacing: style.letterSpacing ?? 0,
             fontFeatureSettings: style.fontFeatureSettings?.trim() || undefined,
+            fontVariationSettings: style.fontVariationSettings?.trim() || undefined,
+            fontKerning: "normal",
           }}
           textAnchor={anchor}
+          xmlSpace="preserve"
           filter={filterId ? `url(#${filterId})` : undefined}
         >
           {lines.map((line, index) => (
-            <tspan key={`${node.id}-line-${index}`} x={textX} dy={index === 0 ? 0 : lineHeight}>
+            <tspan key={`${node.id}-line-${index}`} x={textX} y={fontSize + (lineOffsets[index] ?? index * lineHeight)}>
               {line || " "}
             </tspan>
           ))}
@@ -1455,7 +1789,7 @@ function buildGradientDefs(doc: Doc, prefix: string) {
     defs.push(
       <linearGradient key={id} id={id} gradientUnits="objectBoundingBox" x1={x1} y1={y1} x2={x2} y2={y2}>
         {stops.map((s, i) => (
-          <stop key={i} offset={s.offset} stopColor={s.color} />
+          <stop key={i} offset={s.offset} stopColor={resolveGradientStopColor(doc, s)} />
         ))}
       </linearGradient>,
     );
@@ -1472,7 +1806,7 @@ function buildGradientDefs(doc: Doc, prefix: string) {
         r={clamp01(fill.r, 0.5)}
       >
         {stops.map((s, i) => (
-          <stop key={i} offset={s.offset} stopColor={s.color} />
+          <stop key={i} offset={s.offset} stopColor={resolveGradientStopColor(doc, s)} />
         ))}
       </radialGradient>,
     );
@@ -1618,12 +1952,6 @@ function buildEffectDefs(doc: Doc, prefix: string, skip?: boolean) {
   return defs;
 }
 
-function makeSafeFilename(value: string) {
-  const trimmed = value.trim();
-  const base = trimmed.length ? trimmed : "advanced_export";
-  return base.replace(/[\\/:*?"<>|]+/g, "_");
-}
-
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -1662,21 +1990,25 @@ function cloneStyle(style: Node["style"]) {
 }
 
 function cloneText(text?: Node["text"]) {
-  return text
-    ? {
-        value: text.value,
-        style: { ...text.style },
-        styleRef: text.styleRef,
-        wrap: text.wrap,
-        autoSize: text.autoSize,
-      }
-    : undefined;
+  return cloneNodeText(text);
 }
 
 function cloneLayout(layout?: Node["layout"]): LayoutMode | undefined {
   if (!layout) return undefined;
-  if (layout.mode === "auto" && "dir" in layout && "padding" in layout)
-    return { ...layout, padding: { ...layout.padding } };
+  if (layout.mode === "auto") {
+    return {
+      ...layout,
+      padding: { ...layout.padding },
+    };
+  }
+  if (layout.mode === "grid") {
+    return {
+      ...layout,
+      padding: { ...layout.padding },
+      columnsSizing: layout.columnsSizing?.map((track) => ({ ...track })),
+      rowsSizing: layout.rowsSizing?.map((track) => ({ ...track })),
+    };
+  }
   return { mode: "fixed" };
 }
 
@@ -1703,9 +2035,14 @@ function cloneNodeOverrides(overrides: NodeOverride): NodeOverride {
     text: overrides.text ? cloneText(overrides.text) : undefined,
     image: overrides.image ? { ...overrides.image } : undefined,
     video: overrides.video ? { ...overrides.video } : undefined,
+    instanceOf: overrides.instanceOf,
+    instanceLibraryId: overrides.instanceLibraryId,
+    variantId: overrides.variantId,
     shape: overrides.shape ? { ...overrides.shape } : undefined,
     layout: overrides.layout ? cloneLayout(overrides.layout) : undefined,
     layoutSizing: overrides.layoutSizing ? { ...overrides.layoutSizing } : undefined,
+    layoutPositioning: overrides.layoutPositioning,
+    gridChild: overrides.gridChild ? { ...overrides.gridChild } : undefined,
     constraints: overrides.constraints ? { ...overrides.constraints } : undefined,
     data: overrides.data ? { ...overrides.data } : undefined,
     prototype: overrides.prototype ? clonePrototype(overrides.prototype) : undefined,
@@ -1723,8 +2060,17 @@ function cloneNodeData(node: Node): Node {
     shape: node.shape ? { ...node.shape } : undefined,
     layout: cloneLayout(node.layout),
     layoutSizing: node.layoutSizing ? { ...node.layoutSizing } : undefined,
+    layoutPositioning: node.layoutPositioning,
+    gridChild: node.gridChild ? { ...node.gridChild } : undefined,
     constraints: node.constraints ? { ...node.constraints } : undefined,
     data: node.data ? { ...node.data } : undefined,
+    variants: node.variants?.map((variant) => ({
+      ...variant,
+      props: variant.props ? { ...variant.props } : undefined,
+    })),
+    propertyDefinitions: node.propertyDefinitions
+      ? Object.fromEntries(Object.entries(node.propertyDefinitions).map(([key, value]) => [key, { ...value }]))
+      : undefined,
     overrides: node.overrides ? cloneNodeOverrides(node.overrides) : undefined,
     prototype: clonePrototype(node.prototype),
     children: [...node.children],
@@ -1751,8 +2097,13 @@ function buildNodeOverride(master: Node, instance: Node, options?: { ignoreFrame
   if (!isDeepEqual(master.text, instance.text)) override.text = instanceClone.text;
   if (!isDeepEqual(master.image, instance.image)) override.image = instanceClone.image;
   if (!isDeepEqual(master.video, instance.video)) override.video = instanceClone.video;
+  if (instance.instanceOf !== master.instanceOf) override.instanceOf = instanceClone.instanceOf;
+  if (instance.instanceLibraryId !== master.instanceLibraryId) override.instanceLibraryId = instanceClone.instanceLibraryId;
+  if (instance.variantId !== master.variantId) override.variantId = instanceClone.variantId;
   if (!isDeepEqual(master.layout, instance.layout)) override.layout = instanceClone.layout;
   if (!isDeepEqual(master.layoutSizing, instance.layoutSizing)) override.layoutSizing = instanceClone.layoutSizing;
+  if (instance.layoutPositioning !== master.layoutPositioning) override.layoutPositioning = instanceClone.layoutPositioning;
+  if (!isDeepEqual(master.gridChild, instance.gridChild)) override.gridChild = instanceClone.gridChild;
   if (!isDeepEqual(master.constraints, instance.constraints)) override.constraints = instanceClone.constraints;
   if (!isDeepEqual(master.data, instance.data)) override.data = instanceClone.data;
   if (!isDeepEqual(master.prototype, instance.prototype)) override.prototype = instanceClone.prototype;
@@ -1794,8 +2145,13 @@ function applyNodeOverride(node: Node, override: NodeOverride, options?: { prese
   if ("text" in override) node.text = override.text ? cloneText(override.text) : undefined;
   if ("image" in override) node.image = override.image ? { ...override.image } : undefined;
   if ("video" in override) node.video = override.video ? { ...override.video } : undefined;
+  if ("instanceOf" in override) node.instanceOf = override.instanceOf;
+  if ("instanceLibraryId" in override) node.instanceLibraryId = override.instanceLibraryId;
+  if ("variantId" in override) node.variantId = override.variantId;
   if ("layout" in override) node.layout = override.layout ? cloneLayout(override.layout) : undefined;
   if ("layoutSizing" in override) node.layoutSizing = override.layoutSizing ? { ...override.layoutSizing } : undefined;
+  if ("layoutPositioning" in override) node.layoutPositioning = override.layoutPositioning;
+  if ("gridChild" in override) node.gridChild = override.gridChild ? { ...override.gridChild } : undefined;
   if ("constraints" in override) node.constraints = override.constraints ? { ...override.constraints } : undefined;
   if ("data" in override) node.data = override.data ? { ...override.data } : undefined;
   if ("prototype" in override) node.prototype = override.prototype ? clonePrototype(override.prototype) : undefined;
@@ -2125,6 +2481,28 @@ export default function AdvancedEditor() {
   const [styleImportText, setStyleImportText] = useState<string>("");
   const [styleImportError, setStyleImportError] = useState<string | null>(null);
   const [styleApplyScope, setStyleApplyScope] = useState<"selection" | "page" | "document">("selection");
+  const [libraryIoOpen, setLibraryIoOpen] = useState(false);
+  const [libraryName, setLibraryName] = useState<string>("NULL Design Library");
+  const [libraryJsonText, setLibraryJsonText] = useState<string>("");
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [libraryPreview, setLibraryPreview] = useState<LibraryUpdatePreview | null>(null);
+  const [devAnnotationDraft, setDevAnnotationDraft] = useState("");
+  const [devAnnotationStatusDraft, setDevAnnotationStatusDraft] = useState<DevAnnotationStatus>("todo");
+  const [devCodeLinkTitle, setDevCodeLinkTitle] = useState("");
+  const [devCodeLinkKind, setDevCodeLinkKind] = useState<DevCodeLinkKind>("docs");
+  const [devCodeLinkUrl, setDevCodeLinkUrl] = useState("");
+  const [devCodeLinkSnippet, setDevCodeLinkSnippet] = useState("");
+  const [devCodeLinkLanguage, setDevCodeLinkLanguage] = useState("");
+  const [devCodeLinkExportKey, setDevCodeLinkExportKey] = useState("");
+  const [devCompareVersionId, setDevCompareVersionId] = useState("");
+  const [devCompareLoading, setDevCompareLoading] = useState(false);
+  const [devCompareError, setDevCompareError] = useState<string | null>(null);
+  const [devCompareLabel, setDevCompareLabel] = useState<string>("");
+  const [devCompareSections, setDevCompareSections] = useState<Array<{ key: string; label: string; changed: boolean; before: string; after: string }>>([]);
+  const [playgroundVariantId, setPlaygroundVariantId] = useState("");
+  const [playgroundTextProps, setPlaygroundTextProps] = useState<Record<string, string>>({});
+  const [playgroundBooleanProps, setPlaygroundBooleanProps] = useState<Record<string, boolean>>({});
+  const [playgroundInstanceProps, setPlaygroundInstanceProps] = useState<Record<string, string>>({});
   const [variableSearch, setVariableSearch] = useState<string>("");
   const [variableTypeFilter, setVariableTypeFilter] = useState<"all" | VariableType>("all");
   const [newVariableName, setNewVariableName] = useState<string>("");
@@ -2143,11 +2521,13 @@ export default function AdvancedEditor() {
   const [componentVersionName, setComponentVersionName] = useState<string>("");
   const [variantEditId, setVariantEditId] = useState<string | null>(null);
   const [variantEditName, setVariantEditName] = useState<string>("");
+  const [variantAxisDraft, setVariantAxisDraft] = useState<string>("");
   const [bulkImageScope, setBulkImageScope] = useState<"selection" | "page" | "document">("page");
   const [bulkImageUrl, setBulkImageUrl] = useState<string>("");
   const [newBreakpointName, setNewBreakpointName] = useState<string>("");
   const [newBreakpointWidth, setNewBreakpointWidth] = useState<number>(375);
   const [newBreakpointHeight, setNewBreakpointHeight] = useState<number>(812);
+  const [rotationDraft, setRotationDraft] = useState<string>("0");
   const lastBreakpointPageRef = useRef<string | null>(null);
   const [panelMode, setPanelMode] = useState<"design" | "prototype" | "dev" | "export" | "workflow">("design");
   const [workflows, setWorkflows] = useState<Array<{ id: string; name: string; trigger: unknown; steps: unknown; enabled: boolean }>>([]);
@@ -2193,7 +2573,9 @@ export default function AdvancedEditor() {
   const [versionPreviewNodeIdsTruncated, setVersionPreviewNodeIdsTruncated] = useState<Record<string, boolean>>({});
   const [branchNameInput, setBranchNameInput] = useState("");
   const [branchTargetVersionId, setBranchTargetVersionId] = useState("");
-  const [branches, setBranches] = useState<Record<string, string>>({});
+  const [selectedBranchReviewId, setSelectedBranchReviewId] = useState<string | null>(null);
+  const [branchCompareLoading, setBranchCompareLoading] = useState<string | null>(null);
+  const [branchCompareError, setBranchCompareError] = useState<string | null>(null);
   const [isE2E, setIsE2E] = useState(false);
   const [collabEnabled, setCollabEnabled] = useState(true);
   const [collabName, setCollabName] = useState("");
@@ -2238,6 +2620,8 @@ export default function AdvancedEditor() {
   const collabDocTimerRef = useRef<number | null>(null);
   const collabDocLastSentRef = useRef(0);
   const collabDocLastRemoteTsRef = useRef(0);
+  const collabDocLastRemoteOpIdRef = useRef("");
+  const collabLatestLocalOpRef = useRef<EditorDocOperation | null>(null);
   const collabApplyingRemoteRef = useRef(false);
   const autoSaveTimerRef = useRef<number | null>(null);
   const autoSaveDirtyRef = useRef(false);
@@ -2278,10 +2662,31 @@ export default function AdvancedEditor() {
   }, []);
   const [pluginJson, setPluginJson] = useState("");
   const [pluginError, setPluginError] = useState<string | null>(null);
+  const [storePlugins, setStorePlugins] = useState<(StorePlugin & { digest?: string; storeVersion?: string })[]>([]);
+  const [storePluginQuery, setStorePluginQuery] = useState("");
+  const [storePluginCategory, setStorePluginCategory] = useState<StorePlugin["category"] | "all">("all");
+  const [savedPluginStoreIds, setSavedPluginStoreIds] = useState<string[]>([]);
 
   const [widgetInput, setWidgetInput] = useState("");
   const [widgetMode, setWidgetMode] = useState<"html" | "url">("html");
   const [widgetError, setWidgetError] = useState<string | null>(null);
+  const [storeWidgets, setStoreWidgets] = useState<(StoreWidget & { digest?: string; storeVersion?: string })[]>([]);
+  const [storeWidgetQuery, setStoreWidgetQuery] = useState("");
+  const [storeWidgetCategory, setStoreWidgetCategory] = useState<StoreWidget["category"] | "all">("all");
+  const [savedWidgetStoreIds, setSavedWidgetStoreIds] = useState<string[]>([]);
+  const [resourceHubQuery, setResourceHubQuery] = useState("");
+  const [resourceHubType, setResourceHubType] = useState<"all" | "library" | "installed-plugin" | "plugin-store" | "widget-store">("all");
+  const [storeApprovalRequests, setStoreApprovalRequests] = useState<StoreApprovalRequest[]>([]);
+  const [storeAuditEntries, setStoreAuditEntries] = useState<StoreAuditEntry[]>([]);
+  const [storeGovernancePolicy, setStoreGovernancePolicy] = useState<StoreGovernancePolicy>({
+    scope: "page",
+    pluginApprovalRequired: false,
+    widgetApprovalRequired: true,
+    allowSave: true,
+    allowedPermissions: ["editor", "export", "ui"],
+    updatedAt: new Date(0).toISOString(),
+  });
+  const [storeGovernanceRole, setStoreGovernanceRole] = useState<"owner" | "admin" | "member" | "viewer" | null>(null);
 
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   /** NOTE: comment removed (encoding issue). */
@@ -2339,6 +2744,11 @@ export default function AdvancedEditor() {
   const [figmaImportToken, setFigmaImportToken] = useState("");
   const [figmaImportLoading, setFigmaImportLoading] = useState(false);
   const [figmaImportError, setFigmaImportError] = useState<string | null>(null);
+  const [webImportOpen, setWebImportOpen] = useState(false);
+  const [webImportUrl, setWebImportUrl] = useState("");
+  const [webImportViewportId, setWebImportViewportId] = useState<WebImportViewportId>("desktop");
+  const [webImportLoading, setWebImportLoading] = useState(false);
+  const [webImportError, setWebImportError] = useState<string | null>(null);
   const [toolbarOverflowRect, setToolbarOverflowRect] = useState({ left: 0, top: 0 });
   useLayoutEffect(() => {
     if (!toolbarOverflowOpen) return;
@@ -2432,15 +2842,11 @@ export default function AdvancedEditor() {
   const dragRef = useRef<DragState | null>(null);
   /** NOTE: comment removed (encoding issue). */
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
+  const [activeSmartGuides, setActiveSmartGuides] = useState<ReturnType<typeof computeSmartSnapFeedback> | null>(null);
   const dragDeltaRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
   const [marquee, setMarquee] = useState<Rect | null>(null);
   /** NOTE: comment removed (encoding issue). */
-  const [pathEditState, setPathEditState] = useState<{
-    nodeId: string;
-    anchors: PathAnchor[];
-    closed: boolean;
-    addStart?: { x: number; y: number };
-  } | null>(null);
+  const [pathEditState, setPathEditState] = useState<PathEditState | null>(null);
   const pathEditStateRef = useRef(pathEditState);
   useEffect(() => {
     pathEditStateRef.current = pathEditState;
@@ -2687,6 +3093,31 @@ export default function AdvancedEditor() {
     };
   }, [pageId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadCatalog = async () => {
+      try {
+        const [pluginRes, widgetRes] = await Promise.all([
+          fetch("/api/plugins/store"),
+          fetch("/api/widgets/store"),
+        ]);
+        const [pluginData, widgetData] = await Promise.all([
+          pluginRes.json().catch(() => null),
+          widgetRes.json().catch(() => null),
+        ]);
+        if (cancelled) return;
+        if (Array.isArray(pluginData?.plugins)) setStorePlugins(pluginData.plugins);
+        if (Array.isArray(widgetData?.widgets)) setStoreWidgets(widgetData.widgets);
+      } catch {
+        // ignore
+      }
+    };
+    void loadCatalog();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const installPlugins = useCallback(async (normalized: PluginManifest[], consent: boolean) => {
     if (!normalized.length) return false;
     if (pageId) {
@@ -2729,10 +3160,10 @@ export default function AdvancedEditor() {
   useEffect(() => {
     if (typeof localStorage === "undefined") return;
     try {
-      const raw = localStorage.getItem(BRANCH_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") setBranches(parsed);
+      const savedPlugins = JSON.parse(localStorage.getItem("editor_saved_plugin_store_ids") ?? "[]");
+      const savedWidgets = JSON.parse(localStorage.getItem("editor_saved_widget_store_ids") ?? "[]");
+      if (Array.isArray(savedPlugins)) setSavedPluginStoreIds(savedPlugins.filter((value) => typeof value === "string"));
+      if (Array.isArray(savedWidgets)) setSavedWidgetStoreIds(savedWidgets.filter((value) => typeof value === "string"));
     } catch {
       // ignore
     }
@@ -2741,11 +3172,45 @@ export default function AdvancedEditor() {
   useEffect(() => {
     if (typeof localStorage === "undefined") return;
     try {
-      localStorage.setItem(BRANCH_STORAGE_KEY, JSON.stringify(branches));
+      localStorage.setItem("editor_saved_plugin_store_ids", JSON.stringify(savedPluginStoreIds));
+      localStorage.setItem("editor_saved_widget_store_ids", JSON.stringify(savedWidgetStoreIds));
     } catch {
       // ignore
     }
-  }, [branches]);
+  }, [savedPluginStoreIds, savedWidgetStoreIds]);
+
+  useEffect(() => {
+    if (!pageId) return;
+    let cancelled = false;
+    const loadGovernance = async () => {
+      try {
+        const res = await fetch(`/api/app/${pageId}/store-governance`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null);
+        if (cancelled || !data?.governance) return;
+        setSavedPluginStoreIds(
+          (data.governance.saved ?? [])
+            .filter((entry: { type?: string; storeId?: string }) => entry.type === "plugin" && typeof entry.storeId === "string")
+            .map((entry: { storeId: string }) => entry.storeId),
+        );
+        setSavedWidgetStoreIds(
+          (data.governance.saved ?? [])
+            .filter((entry: { type?: string; storeId?: string }) => entry.type === "widget" && typeof entry.storeId === "string")
+            .map((entry: { storeId: string }) => entry.storeId),
+        );
+        setStoreApprovalRequests(Array.isArray(data.governance.requests) ? data.governance.requests : []);
+        setStoreAuditEntries(Array.isArray(data.governance.audit) ? data.governance.audit : []);
+        if (data.governance.policy) setStoreGovernancePolicy(data.governance.policy);
+        setStoreGovernanceRole(data.role ?? null);
+      } catch {
+        // ignore
+      }
+    };
+    void loadGovernance();
+    return () => {
+      cancelled = true;
+    };
+  }, [pageId]);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -2921,7 +3386,7 @@ export default function AdvancedEditor() {
   }, []);
 
   const emitDocSync = useCallback(
-    (next: Doc, deletedNodeIds: string[], deletedPageIds: string[], force = false) => {
+    (next: Doc, deletedNodeIds: string[], deletedPageIds: string[], force = false, source: EditorDocOperation["source"] = "commit") => {
       if (!collabEnabled || !pageId) return;
       const socket = collabSocketRef.current;
       const identity = getCollabIdentity();
@@ -2929,16 +3394,19 @@ export default function AdvancedEditor() {
       const now = Date.now();
       if (!force && now - collabDocLastSentRef.current < 120) return;
       collabDocLastSentRef.current = now;
-      const content = serializeDoc(next);
-      content.selection = [];
-      socket.emit("editor:doc", {
+      const operation = buildEditorDocOperation({
+        doc: next,
         ts: now,
+        opId: force && collabLatestLocalOpRef.current ? collabLatestLocalOpRef.current.opId : undefined,
         sessionId: identity.sessionId || undefined,
         senderId: identity.presenceId,
-        content,
         deletedNodeIds,
         deletedPageIds,
+        source,
       });
+      operation.content.selection = [];
+      collabLatestLocalOpRef.current = operation;
+      socket.emit("editor:op", wrapEditorDocOperation(operation));
     },
     [collabEnabled, pageId, getCollabIdentity],
   );
@@ -2959,6 +3427,45 @@ export default function AdvancedEditor() {
     [collabEnabled, pageId, emitDocSync],
   );
 
+  const applyIncomingCollabOperation = useCallback(
+    (payload: unknown, sync = false) => {
+      const identity = getCollabIdentity();
+      const operation = normalizeEditorDocOperation(payload);
+      if (!operation) return;
+      if (isEditorDocOperationFromIdentity(operation, identity)) return;
+      if (operation.opId && collabDocLastRemoteOpIdRef.current === operation.opId) return;
+      if (!sync && operation.ts < collabDocLastRemoteTsRef.current) return;
+      const preferLocal = shouldPreferLocalCollabState(collabLatestLocalOpRef.current, operation);
+      collabDocLastRemoteTsRef.current = Math.max(collabDocLastRemoteTsRef.current, operation.ts);
+      collabDocLastRemoteOpIdRef.current = operation.opId;
+      try {
+        collabApplyingRemoteRef.current = true;
+        const merged = applyEditorDocOperation(docRef.current, operation, { preferLocal });
+        const laidOut = layoutDoc(merged.doc);
+        setDoc(laidOut);
+        if (isOwner) {
+          autoSaveDirtyRef.current = true;
+        }
+        if (preferLocal && merged.conflict.rebroadcast) {
+          window.setTimeout(() => {
+            emitDocSync(
+              laidOut,
+              collabLatestLocalOpRef.current?.deletedNodeIds ?? [],
+              collabLatestLocalOpRef.current?.deletedPageIds ?? [],
+              true,
+              "recovery",
+            );
+          }, 60);
+        } else if (collabLatestLocalOpRef.current && collabLatestLocalOpRef.current.ts <= operation.ts) {
+          collabLatestLocalOpRef.current = null;
+        }
+      } finally {
+        collabApplyingRemoteRef.current = false;
+      }
+    },
+    [emitDocSync, getCollabIdentity, isOwner],
+  );
+
   useEffect(() => {
     if (isE2E) return;
     if (!pageId) return;
@@ -2972,10 +3479,13 @@ export default function AdvancedEditor() {
     void fetchCollabInvite();
   }, [pageId, isOwner, fetchCollabInvite]);
 
-  useEffect(() => {
-    if (!versionListOpen || !pageId) return;
+  const loadVersionList = useCallback(() => {
+    if (!pageId) {
+      setVersionList([]);
+      return Promise.resolve();
+    }
     setVersionListLoading(true);
-    ensureAnonId()
+    return ensureAnonId()
       .then((anonId) =>
         fetch(`/api/pages/${pageId}/versions`, { headers: anonId ? { "x-anon-user-id": anonId } : undefined })
       )
@@ -2989,7 +3499,12 @@ export default function AdvancedEditor() {
       })
       .catch(() => setVersionList([]))
       .finally(() => setVersionListLoading(false));
-  }, [versionListOpen, pageId, ensureAnonId]);
+  }, [pageId, ensureAnonId]);
+
+  useEffect(() => {
+    if (!versionListOpen || !pageId) return;
+    void loadVersionList();
+  }, [versionListOpen, pageId, loadVersionList]);
 
   const fetchVersionPreview = useCallback(
     (versionId: string) => {
@@ -3013,6 +3528,20 @@ export default function AdvancedEditor() {
         .catch(() => {});
     },
     [pageId, ensureAnonId]
+  );
+
+  const fetchVersionContentDoc = useCallback(
+    async (versionId: string) => {
+      if (!pageId) return null;
+      const anonId = await ensureAnonId();
+      const res = await fetch(`/api/pages/${pageId}/versions/${versionId}?include=content`, {
+        headers: anonId ? { "x-anon-user-id": anonId } : undefined,
+      });
+      const data = (await res.json().catch(() => null)) as { version?: { content?: unknown } } | null;
+      if (!res.ok || !data?.version?.content) return null;
+      return hydrateDoc(data.version.content);
+    },
+    [ensureAnonId, pageId],
   );
 
   const restoreVersion = useCallback(
@@ -3146,66 +3675,19 @@ export default function AdvancedEditor() {
         return next;
       });
     };
-    const onDoc = (payload: { ts?: number; sessionId?: string; senderId?: string; content?: Doc | { schema?: string }; deletedNodeIds?: string[]; deletedPageIds?: string[] }) => {
-      const identity = getCollabIdentity();
-      if (payload?.senderId && identity?.presenceId === payload.senderId) return;
-      if (payload?.sessionId && identity?.sessionId === payload.sessionId) return;
-      if (!payload?.content || (payload.content as { schema?: string }).schema !== "null_advanced_v1") return;
-      const ts = typeof payload.ts === "number" ? payload.ts : Date.now();
-      if (ts <= collabDocLastRemoteTsRef.current) return;
-      collabDocLastRemoteTsRef.current = ts;
-      try {
-        collabApplyingRemoteRef.current = true;
-        const incoming = hydrateDoc(payload.content as unknown as Doc);
-        const base = docRef.current;
-        const mergedNodes = { ...base.nodes, ...incoming.nodes };
-        const incomingPageIds = new Set(incoming.pages.map((p) => p.id));
-        const mergedPages = [
-          ...incoming.pages,
-          ...base.pages.filter((p) => !incomingPageIds.has(p.id)),
-        ];
-        const mergeById = <T extends { id: string }>(current: T[] | undefined, next: T[] | undefined) => {
-          const map = new Map<string, T>();
-          (current ?? []).forEach((item) => map.set(item.id, item));
-          (next ?? []).forEach((item) => map.set(item.id, item));
-          return Array.from(map.values());
-        };
-        const merged: Doc = {
-          ...base,
-          ...incoming,
-          nodes: mergedNodes,
-          pages: mergedPages,
-          styles: mergeById(base.styles, incoming.styles),
-          variables: mergeById(base.variables, incoming.variables),
-          components: { ...base.components, ...incoming.components },
-          libraries: mergeById(base.libraries, incoming.libraries),
-          variableModes: incoming.variableModes ?? base.variableModes,
-          variableMode: incoming.variableMode ?? base.variableMode,
-          prototype: incoming.prototype ?? base.prototype,
-          selection: base.selection,
-          view: base.view,
-        };
-        const deletedNodeIds = Array.isArray(payload.deletedNodeIds) ? payload.deletedNodeIds : [];
-        deletedNodeIds.forEach((id) => {
-          delete merged.nodes[id];
-        });
-        const deletedPageIds = Array.isArray(payload.deletedPageIds) ? payload.deletedPageIds : [];
-        if (deletedPageIds.length) {
-          merged.pages = merged.pages.filter((p) => !deletedPageIds.includes(p.id));
-        }
-        setDoc(layoutDoc(merged));
-        if (isOwner) {
-          autoSaveDirtyRef.current = true;
-        }
-      } finally {
-        collabApplyingRemoteRef.current = false;
-      }
+    const onOperation = (payload: unknown) => {
+      applyIncomingCollabOperation(payload, false);
+    };
+    const onOperationSync = (payload: unknown) => {
+      applyIncomingCollabOperation(payload, true);
     };
 
     socket.on("editor:peers", onPeers);
     socket.on("editor:presence", onPresence);
     socket.on("editor:leave", onLeave);
-    socket.on("editor:doc", onDoc);
+    socket.on("editor:op", onOperation);
+    socket.on("editor:op:sync", onOperationSync);
+    socket.on("editor:doc", onOperation);
     socket.on("connect", () => emitCollabPresence({}, true));
     socket.on("disconnect", () => setCollabPeers({}));
 
@@ -3215,12 +3697,14 @@ export default function AdvancedEditor() {
       socket.off("editor:peers", onPeers);
       socket.off("editor:presence", onPresence);
       socket.off("editor:leave", onLeave);
-      socket.off("editor:doc", onDoc);
+      socket.off("editor:op", onOperation);
+      socket.off("editor:op:sync", onOperationSync);
+      socket.off("editor:doc", onOperation);
       socket.disconnect();
       collabSocketRef.current = null;
       setCollabPeers({});
     };
-  }, [isE2E, collabEnabled, emitCollabPresence, pageId, getCollabIdentity, isOwner, collabInvite, anonId]);
+  }, [isE2E, collabEnabled, emitCollabPresence, pageId, collabInvite, anonId, applyIncomingCollabOperation]);
 
   useEffect(() => {
     if (isE2E) return;
@@ -3369,126 +3853,61 @@ export default function AdvancedEditor() {
   }, [builtinPlugins, installedPlugins]);
 
   const builtinPluginIds = useMemo(() => new Set(builtinPlugins.map((plugin) => plugin.id)), [builtinPlugins]);
+  const filteredStorePlugins = useMemo(
+    () =>
+      storePlugins.filter((plugin) => {
+        if (storePluginCategory !== "all" && plugin.category !== storePluginCategory) return false;
+        const query = storePluginQuery.trim().toLowerCase();
+        if (!query) return true;
+        return [plugin.name, plugin.description, plugin.detail, ...(plugin.tags ?? [])]
+          .filter((value): value is string => Boolean(value))
+          .some((value) => value.toLowerCase().includes(query));
+      }),
+    [storePluginCategory, storePluginQuery, storePlugins],
+  );
+  const filteredStoreWidgets = useMemo(
+    () =>
+      storeWidgets.filter((widget) => {
+        if (storeWidgetCategory !== "all" && widget.category !== storeWidgetCategory) return false;
+        const query = storeWidgetQuery.trim().toLowerCase();
+        if (!query) return true;
+        return [widget.name, widget.description, widget.detail, ...(widget.tags ?? [])]
+          .filter((value): value is string => Boolean(value))
+          .some((value) => value.toLowerCase().includes(query));
+      }),
+    [storeWidgetCategory, storeWidgetQuery, storeWidgets],
+  );
+  const resourceHubEntries = useMemo(
+    () =>
+      buildResourceHubEntries({
+        query: resourceHubQuery,
+        type: resourceHubType,
+        libraries: doc.libraries ?? [],
+        installedPlugins,
+        storePlugins: filteredStorePlugins,
+        storeWidgets: filteredStoreWidgets,
+        savedPluginStoreIds,
+        savedWidgetStoreIds,
+      }),
+    [
+      doc.libraries,
+      filteredStorePlugins,
+      filteredStoreWidgets,
+      installedPlugins,
+      resourceHubQuery,
+      resourceHubType,
+      savedPluginStoreIds,
+      savedWidgetStoreIds,
+    ],
+  );
 
-  type InteractionTimelineItem = {
-    id: string;
-    nodeId: string;
-    nodeName: string;
-    trigger: PrototypeTrigger;
-    actionLabel: string;
-    delayMs: number;
-    durationMs: number;
-    totalMs: number;
-  };
-  type InteractionTimelinePage = {
-    pageId: string;
-    pageName: string;
-    maxMs: number;
-    items: InteractionTimelineItem[];
-  };
-
-  const interactionTimeline = useMemo<InteractionTimelinePage[]>(() => {
-    const pageNameById = Object.fromEntries(doc.pages.map((p) => [p.id, p.name]));
-    return doc.pages
-      .map((page) => {
-        const rootId = page.rootId;
-        if (!rootId) return { pageId: page.id, pageName: page.name, items: [], maxMs: 0 };
-        const ids = flattenIds(doc, rootId);
-        const items: InteractionTimelineItem[] = [];
-        ids.forEach((id) => {
-          const node = doc.nodes[id];
-          const interactions = node?.prototype?.interactions ?? [];
-          interactions.forEach((interaction) => {
-            const action = interaction.action;
-            const delayMs = "delayMs" in action && typeof action.delayMs === "number" ? action.delayMs : 0;
-            const transition = "transition" in action ? action.transition : undefined;
-            const durationMs =
-              transition && transition.type !== "instant"
-                ? typeof transition.duration === "number"
-                  ? transition.duration
-                  : 300
-                : 0;
-            let actionLabel: string = action.type;
-            if (action.type === "navigate") actionLabel = `navigate -> ${pageNameById[action.targetPageId] ?? action.targetPageId}`;
-            if (action.type === "overlay") actionLabel = `overlay -> ${pageNameById[action.targetPageId] ?? action.targetPageId}`;
-            if (action.type === "back") actionLabel = "back";
-            if (action.type === "closeOverlay") actionLabel = "close overlay";
-            if (action.type === "url") actionLabel = "url";
-            if (action.type === "submit") actionLabel = "submit";
-            if (action.type === "setVariable") actionLabel = `set var: ${action.variableId}`;
-            if (action.type === "setGlobalState") actionLabel = `set state: ${action.key}`;
-            if (action.type === "scrollTo") actionLabel = "scroll to";
-            if (action.type === "setVariant") actionLabel = `set variant: ${action.variantId}`;
-            if (action.type === "apiCall") actionLabel = "api call";
-            if (action.type === "nativeCall") actionLabel = `native: ${action.name}`;
-            if (action.type === "appAuth") actionLabel = `auth: ${action.action}`;
-            const totalMs = Math.max(0, delayMs + durationMs);
-            items.push({
-              id: interaction.id,
-              nodeId: node?.id ?? id,
-              nodeName: node ? toLabel(node) : id,
-              trigger: interaction.trigger,
-              actionLabel,
-              delayMs,
-              durationMs,
-              totalMs,
-            });
-          });
-        });
-        const maxMs = items.reduce((acc, item) => Math.max(acc, item.totalMs), 0);
-        const sorted = items.slice().sort((a, b) => a.totalMs - b.totalMs);
-        return { pageId: page.id, pageName: page.name, items: sorted, maxMs: Math.max(200, maxMs) };
-      })
-      .filter((entry) => entry.items.length);
-  }, [doc]);
-
-  const interactionTree = useMemo(() => {
-    const pageNameById = Object.fromEntries(doc.pages.map((p) => [p.id, p.name]));
-    return doc.pages
-      .map((page) => {
-        const rootId = page.rootId;
-        if (!rootId) return { pageId: page.id, pageName: page.name, items: [] as Array<{ id: string; nodeId: string; nodeName: string; trigger: PrototypeTrigger; actionLabel: string }> };
-        const ids = flattenIds(doc, rootId);
-        const items: Array<{ id: string; nodeId: string; nodeName: string; trigger: PrototypeTrigger; actionLabel: string }> = [];
-        ids.forEach((id) => {
-          const node = doc.nodes[id];
-          const interactions = node?.prototype?.interactions ?? [];
-          interactions.forEach((interaction) => {
-            const action = interaction.action;
-            let actionLabel: string = action.type;
-            if (action.type === "navigate") actionLabel = "Label";
-            if (action.type === "overlay") actionLabel = "Label";
-            if (action.type === "back") actionLabel = "Label";
-            if (action.type === "closeOverlay") actionLabel = "Label";
-            if (action.type === "url") actionLabel = `URL: ${action.url}`;
-            if (action.type === "submit") actionLabel = "Label";
-            if (action.type === "setVariable") actionLabel = "Label";
-            if (action.type === "setGlobalState") actionLabel = "Label";
-            if (action.type === "scrollTo") actionLabel = "Label";
-            if (action.type === "setVariant") actionLabel = "Label";
-            if (action.type === "apiCall") actionLabel = "Label";
-            if (action.type === "nativeCall") {
-              const cmd = findNativeCommand(action.name);
-              const label = cmd ? `${cmd.title} (${cmd.name})` : (action.name ?? "");
-              actionLabel = "Label";
-            }
-            if (action.type === "appAuth") actionLabel = "Label";
-            if ("condition" in action && action.condition?.variableId) {
-              actionLabel += " (Label)";
-            }
-            items.push({
-              id: interaction.id,
-              nodeId: node.id,
-              nodeName: toLabel(node),
-              trigger: interaction.trigger,
-              actionLabel,
-            });
-          });
-        });
-        return { pageId: page.id, pageName: page.name, items };
-      })
-      .filter((entry) => entry.items.length);
-  }, [doc]);
+  const interactionFlow = useMemo(() => buildPrototypeFlow(doc), [doc]);
+  const interactionTimeline = interactionFlow;
+  const interactionTree = interactionFlow;
+  const interactionIssuePages = useMemo(
+    () => interactionFlow.filter((page) => page.items.some((item) => item.diagnostics.some((issue) => issue.severity === "warn"))),
+    [interactionFlow],
+  );
 
   const auditIssues = useMemo(() => {
     if (!auditMode) return [] as AuditIssue[];
@@ -3873,15 +4292,42 @@ export default function AdvancedEditor() {
     const textPatch = patch.text ?? null;
     const textChanged =
       textPatch !== null &&
-      ("value" in textPatch || "style" in textPatch || "styleRef" in textPatch || "autoSize" in textPatch || "wrap" in textPatch);
-    if (nextNode.type === "text" && nextNode.text?.autoSize && (textChanged || (textPatch !== null && "autoSize" in textPatch && (textPatch as { autoSize?: boolean }).autoSize))) {
-      const resolvedStyle = resolveTextStyle(draft, nextNode as Node) ?? nextNode.text?.style ?? DEFAULT_TEXT_STYLE;
+      ("value" in textPatch ||
+        "style" in textPatch ||
+        "styleRef" in textPatch ||
+        "autoSize" in textPatch ||
+        "wrap" in textPatch ||
+        "ranges" in textPatch ||
+        "textPath" in textPatch);
+    const nextSizing = nextNode.layoutSizing ?? { width: "fixed", height: "fixed" };
+    const textSizingChanged =
+      nextNode.type === "text" &&
+      Boolean(
+        patch.layoutSizing &&
+        (patch.layoutSizing.width === "hug" || patch.layoutSizing.height === "hug"),
+      );
+    const shouldMeasureTextContent =
+      nextNode.type === "text" &&
+      (textChanged || textSizingChanged) &&
+      (nextNode.text?.autoSize || nextSizing.width === "hug" || nextSizing.height === "hug");
+    if (shouldMeasureTextContent) {
+      const resolvedStyle = resolveTextMeasurementStyle(
+        nextNode.text,
+        resolveTextStyle(draft, nextNode as Node) ?? nextNode.text?.style ?? DEFAULT_TEXT_STYLE,
+      );
       const textValue = resolveTextTokens(draft, nextNode.text?.value ?? "");
-      const measured = measureTextBlock(textValue, resolvedStyle, undefined, false);
+      const resizedText = resolveTextContentFrameSize(nextNode.frame, textValue, resolvedStyle, {
+        wrap: nextNode.text?.wrap !== false,
+        autoSize: nextNode.text?.autoSize,
+        layoutSizing: nextSizing,
+        widthPadding: 4,
+        heightPadding: 2,
+        minWidth: 20,
+        minHeight: 20,
+      });
       nextNode.frame = {
         ...nextNode.frame,
-        w: Math.max(20, Math.round(measured.width + 4)),
-        h: Math.max(20, Math.round(measured.height + 2)),
+        ...resizedText.frame,
       };
     }
     if (sizeChangedW || sizeChangedH) {
@@ -3960,14 +4406,10 @@ export default function AdvancedEditor() {
       setTextEditingId(null);
       return;
     }
-    const baseText = node.text ?? { value: "", style: DEFAULT_TEXT_STYLE };
     updateNode(
       textEditingId,
       {
-        text: {
-          ...baseText,
-          value: textEditingValue,
-        },
+        text: setNodeTextValue(node.text, textEditingValue),
       },
       true,
     );
@@ -3979,16 +4421,26 @@ export default function AdvancedEditor() {
       const draft = docRef.current;
       const node = draft.nodes[nodeId];
       if (!node || node.type !== "text") return;
-      const style = resolveTextStyle(draft, node) ?? node.text?.style ?? DEFAULT_TEXT_STYLE;
+      const style = resolveTextMeasurementStyle(
+        node.text,
+        resolveTextStyle(draft, node) ?? node.text?.style ?? DEFAULT_TEXT_STYLE,
+      );
       const textValue = resolveTextTokens(draft, node.text?.value ?? "");
       const wrapped = node.text?.wrap !== false;
-      const measured = measureTextBlock(textValue, style, wrapped ? node.frame.w : undefined, wrapped);
+      const resizedText = resolveTextContentFrameSize(node.frame, textValue, style, {
+        wrap: wrapped,
+        autoSize: enableAuto ? true : node.text?.autoSize,
+        layoutSizing: node.layoutSizing,
+        widthPadding: 4,
+        heightPadding: 2,
+        minWidth: 20,
+        minHeight: 20,
+      });
       const nextFrame = {
         ...node.frame,
-        w: wrapped ? node.frame.w : Math.max(20, Math.round(measured.width + 4)),
-        h: Math.max(20, Math.round(measured.height + 2)),
+        ...resizedText.frame,
       };
-      const baseText = node.text ?? { value: "", style: DEFAULT_TEXT_STYLE };
+      const baseText = ensureNodeText(node.text);
       updateNode(
         nodeId,
         {
@@ -4153,13 +4605,7 @@ export default function AdvancedEditor() {
     const dy = pt.y - drag.startY;
 
     if (drag.mode === "move") {
-      const lockAxis = e.shiftKey;
-      let moveX = dx;
-      let moveY = dy;
-      if (lockAxis) {
-        if (Math.abs(dx) > Math.abs(dy)) moveY = 0;
-        else moveX = 0;
-      }
+      let { moveX, moveY } = applyAxisLock(dx, dy, e.shiftKey);
       const snapped = gridSnapRef.current;
       if (!snapped && drag.ids.length === 1 && !e.altKey) {
         const id = drag.ids[0];
@@ -4168,119 +4614,70 @@ export default function AdvancedEditor() {
         if (abs) {
           const moving = { x: abs.x + moveX, y: abs.y + moveY, w: abs.w, h: abs.h };
           const pageRootId = ensurePageRoot(draft, activePageIdRef.current);
-          const otherIds = flattenIds(draft, pageRootId)
-            .filter((cid) => cid !== pageRootId && cid !== id)
-            .filter((cid) => {
-              const node = draft.nodes[cid];
-              return Boolean(node) && !node.hidden;
-            });
-          const targetX: number[] = [];
-          const targetY: number[] = [];
-          otherIds.forEach((cid) => {
-            const rect = getAbsoluteFrame(draft, cid);
-            if (!rect) return;
-            targetX.push(rect.x, rect.x + rect.w / 2, rect.x + rect.w);
-            targetY.push(rect.y, rect.y + rect.h / 2, rect.y + rect.h);
-          });
           const parentId = draft.nodes[id]?.parentId;
-          if (parentId) {
-            const parentRect = getAbsoluteFrame(draft, parentId);
-            if (parentRect) {
-              targetX.push(parentRect.x, parentRect.x + parentRect.w / 2, parentRect.x + parentRect.w);
-              targetY.push(parentRect.y, parentRect.y + parentRect.h / 2, parentRect.y + parentRect.h);
-            }
-          }
-          const movingX = [moving.x, moving.x + moving.w / 2, moving.x + moving.w];
-          const movingY = [moving.y, moving.y + moving.h / 2, moving.y + moving.h];
+          const parentRect = parentId ? getAbsoluteFrame(draft, parentId) : null;
+          const { targetX, targetY, targetRects } = collectMoveSnapTargets({
+            candidateIds: flattenIds(draft, pageRootId).filter((cid) => cid !== pageRootId),
+            movingId: id,
+            resolveRect: (cid) => getAbsoluteFrame(draft, cid),
+            isHidden: (cid) => Boolean(draft.nodes[cid]?.hidden),
+            extraRects: parentRect ? [parentRect] : [],
+          });
           const threshold = 6 / Math.max(draft.view.zoom, 0.1);
-          let bestDx = 0;
-          let bestDxAbs = threshold + 1;
-          targetX.forEach((target) => {
-            movingX.forEach((line) => {
-              const diff = target - line;
-              const absDiff = Math.abs(diff);
-              if (absDiff < bestDxAbs) {
-                bestDxAbs = absDiff;
-                bestDx = diff;
-              }
-            });
+          const smartSnap = computeSmartSnapFeedback({
+            moving,
+            targetX,
+            targetY,
+            threshold,
+            targetRects,
+            parentRect,
           });
-          if (bestDxAbs <= threshold) moveX += bestDx;
-          let bestDy = 0;
-          let bestDyAbs = threshold + 1;
-          targetY.forEach((target) => {
-            movingY.forEach((line) => {
-              const diff = target - line;
-              const absDiff = Math.abs(diff);
-              if (absDiff < bestDyAbs) {
-                bestDyAbs = absDiff;
-                bestDy = diff;
-              }
-            });
-          });
-          if (bestDyAbs <= threshold) moveY += bestDy;
+          moveX += smartSnap.dx;
+          moveY += smartSnap.dy;
+          setActiveSmartGuides(
+            smartSnap.guideX !== undefined || smartSnap.guideY !== undefined || smartSnap.distances.length
+              ? smartSnap
+              : null,
+          );
+        } else {
+          setActiveSmartGuides(null);
         }
+      } else {
+        setActiveSmartGuides(null);
       }
-      const o = drag.origins[drag.ids[0]];
-      if (o) {
-        const dx = snapValue(o.x + moveX, snapped, "x") - o.x;
-        const dy = snapValue(o.y + moveY, snapped, "y") - o.y;
-        dragDeltaRef.current = { dx, dy };
-        setDragDelta({ dx, dy });
+      const preview = computeMovePreview({
+        anchorOrigin: drag.origins[drag.ids[0]],
+        moveX,
+        moveY,
+        gridSnap: snapped,
+        snapValue,
+        ids: drag.ids,
+        origins: drag.origins,
+      });
+      if (preview) {
+        dragDeltaRef.current = preview.delta;
+        setDragDelta(preview.delta);
         if (collabEnabled && !collabApplyingRemoteRef.current) {
-          if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-            const frames: Record<string, Frame> = {};
-            drag.ids.forEach((id) => {
-              const origin = drag.origins[id];
-              if (origin) frames[id] = { ...origin, x: origin.x + dx, y: origin.y + dy };
-            });
-            const preview = applyFrameUpdates(docRef.current, frames);
-            scheduleDocBroadcast(preview, [], []);
+          if (Math.abs(preview.delta.dx) > 0.01 || Math.abs(preview.delta.dy) > 0.01) {
+            const nextDoc = applyFrameUpdates(docRef.current, preview.frames);
+            scheduleDocBroadcast(nextDoc, [], []);
           }
         }
       }
     }
 
     if (drag.mode === "resize") {
-      const origin = drag.origin;
-      let x = origin.x;
-      let y = origin.y;
-      let w = origin.w;
-      let h = origin.h;
-
-      if (drag.handle.includes("e")) w = snapValue(Math.max(20, origin.w + dx), gridSnap);
-      if (drag.handle.includes("s")) h = snapValue(Math.max(20, origin.h + dy), gridSnap);
-      if (drag.handle.includes("w")) {
-        x = snapValue(origin.x + dx, gridSnap, "x");
-        w = snapValue(Math.max(20, origin.w - dx), gridSnap);
-      }
-      if (drag.handle.includes("n")) {
-        y = snapValue(origin.y + dy, gridSnap, "y");
-        h = snapValue(Math.max(20, origin.h - dy), gridSnap);
-      }
-
-      const keepRatio = e.shiftKey;
-      const fromCenter = e.altKey;
-      if (keepRatio && origin.h !== 0) {
-        const ratio = origin.w / origin.h;
-        if (drag.handle.includes("e") || drag.handle.includes("w")) {
-          h = snapValue(Math.max(20, w / ratio), gridSnap);
-          y = snapValue(origin.y + (origin.h - h) / 2, gridSnap, "y");
-        }
-        if (drag.handle.includes("n") || drag.handle.includes("s")) {
-          w = snapValue(Math.max(20, h * ratio), gridSnap);
-          x = snapValue(origin.x + (origin.w - w) / 2, gridSnap, "x");
-        }
-      }
-
-      if (fromCenter) {
-        const cx = origin.x + origin.w / 2;
-        const cy = origin.y + origin.h / 2;
-        x = snapValue(cx - w / 2, gridSnap, "x");
-        y = snapValue(cy - h / 2, gridSnap, "y");
-      }
-
-      const preview = updateFrames({ [drag.id]: { x, y, w, h, rotation: origin.rotation } }, false);
+      const previewFrame = computeResizePreviewFrame({
+        origin: drag.origin,
+        handle: drag.handle,
+        dx,
+        dy,
+        gridSnap,
+        keepRatio: e.shiftKey,
+        fromCenter: e.altKey,
+        snapValue,
+      });
+      const preview = updateFrames({ [drag.id]: previewFrame }, false);
       if (collabEnabled && !collabApplyingRemoteRef.current) {
         scheduleDocBroadcast(preview, [], []);
       }
@@ -4334,78 +4731,18 @@ export default function AdvancedEditor() {
     if (drag.mode === "pathEdit") {
       const state = pathEditStateRef.current;
       if (!state) return;
-      const dx = pt.x - drag.startX;
-      const dy = pt.y - drag.startY;
-      const orig = drag.originAnchors[drag.anchorIndex];
-      if (!orig) return;
-      const anchors = state.anchors.map((a, i) => {
-        if (i !== drag.anchorIndex) return a;
-        const anchor: PathAnchor = { ...a };
-        if (drag.kind === "anchor") {
-          anchor.x = orig.x + dx;
-          anchor.y = orig.y + dy;
-          if (orig.handle1X != null) anchor.handle1X = orig.handle1X + dx;
-          if (orig.handle1Y != null) anchor.handle1Y = orig.handle1Y + dy;
-          if (orig.handle2X != null) anchor.handle2X = orig.handle2X + dx;
-          if (orig.handle2Y != null) anchor.handle2Y = orig.handle2Y + dy;
-        } else if (drag.kind === "handle1" && orig.handle1X != null && orig.handle1Y != null) {
-          let hx = orig.handle1X + dx;
-          let hy = orig.handle1Y + dy;
-          if (e.shiftKey) {
-            const dir = snapDirection45(hx - orig.x, hy - orig.y);
-            const len = Math.hypot(hx - orig.x, hy - orig.y);
-            hx = orig.x + dir.x * len;
-            hy = orig.y + dir.y * len;
-          }
-          if (e.altKey) {
-            anchor.handle1X = hx;
-            anchor.handle1Y = hy;
-          } else if (orig.handle2X != null && orig.handle2Y != null && !anchor.isSmooth) {
-            const ax = orig.x;
-            const ay = orig.y;
-            const d1x = hx - ax;
-            const d1y = hy - ay;
-            const len = Math.hypot(d1x, d1y) || 1;
-            const d2len = Math.hypot(orig.handle2X - ax, orig.handle2Y - ay) || len;
-            anchor.handle1X = hx;
-            anchor.handle1Y = hy;
-            anchor.handle2X = ax - (d1x / len) * d2len;
-            anchor.handle2Y = ay - (d1y / len) * d2len;
-          } else {
-            anchor.handle1X = hx;
-            anchor.handle1Y = hy;
-          }
-        } else if (drag.kind === "handle2" && orig.handle2X != null && orig.handle2Y != null) {
-          let hx = orig.handle2X + dx;
-          let hy = orig.handle2Y + dy;
-          if (e.shiftKey) {
-            const dir = snapDirection45(hx - orig.x, hy - orig.y);
-            const len = Math.hypot(hx - orig.x, hy - orig.y);
-            hx = orig.x + dir.x * len;
-            hy = orig.y + dir.y * len;
-          }
-          if (e.altKey) {
-            anchor.handle2X = hx;
-            anchor.handle2Y = hy;
-          } else if (orig.handle1X != null && orig.handle1Y != null && !anchor.isSmooth) {
-            const ax = orig.x;
-            const ay = orig.y;
-            const d2x = hx - ax;
-            const d2y = hy - ay;
-            const len = Math.hypot(d2x, d2y) || 1;
-            const d1len = Math.hypot(orig.handle1X - ax, orig.handle1Y - ay) || len;
-            anchor.handle2X = hx;
-            anchor.handle2Y = hy;
-            anchor.handle1X = ax - (d2x / len) * d1len;
-            anchor.handle1Y = ay - (d2y / len) * d1len;
-          } else {
-            anchor.handle2X = hx;
-            anchor.handle2Y = hy;
-          }
-        }
-        return anchor;
-      });
-      setPathEditState({ ...state, anchors });
+      setPathEditState(
+        applyPathEditDrag({
+          state,
+          anchorIndex: drag.anchorIndex,
+          kind: drag.kind,
+          originAnchors: drag.originAnchors,
+          point: pt,
+          start: { x: drag.startX, y: drag.startY },
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+        }),
+      );
     }
   }
 
@@ -4414,32 +4751,26 @@ export default function AdvancedEditor() {
     if (!drag || drag.pointerId !== e.pointerId) return;
     drag.capture?.releasePointerCapture(drag.pointerId);
     dragRef.current = null;
+    setActiveSmartGuides(null);
 
     if (drag.mode === "resize") {
-      const draft = docRef.current;
-      const node = draft.nodes[drag.id];
-      if (node && node.children.length) {
-        if (node.layout?.mode === "auto") {
-          const laidOut = layoutDoc(draft);
-          refreshOverridesForSubtree(laidOut, drag.id);
-          commit(laidOut);
-        } else {
-          const constrained = applyConstraintsOnResize(draft, drag.id, drag.origin, node.frame);
-          refreshOverridesForSubtree(constrained, drag.id);
-          commit(constrained);
-        }
-      } else {
-        commit(cloneDoc(draft));
-      }
+      const result = finalizeResizeDoc({
+        draft: docRef.current,
+        nodeId: drag.id,
+        origin: drag.origin,
+        deps: {
+          layoutDoc,
+          applyConstraintsOnResize,
+          refreshOverridesForSubtree,
+          cloneDoc,
+        },
+      });
+      commit(result.nextDoc);
       return;
     }
     if (drag.mode === "move") {
       const delta = dragDeltaRef.current ?? { dx: 0, dy: 0 };
-      const frames: Record<string, Frame> = {};
-      drag.ids.forEach((id) => {
-        const origin = drag.origins[id];
-        if (origin) frames[id] = { ...origin, x: origin.x + delta.dx, y: origin.y + delta.dy };
-      });
+      const frames = buildMovedFrames({ ids: drag.ids, origins: drag.origins, delta });
       updateFrames(frames, true);
       setDragDelta(null);
       return;
@@ -4452,38 +4783,16 @@ export default function AdvancedEditor() {
       const pt = svgPoint(e);
       const state = pathEditStateRef.current;
       if (state && state.anchors.length > 0) {
-        const snapped = gridSnapRef.current ?? false;
-        let x = snapValue(pt.x, snapped, "x");
-        let y = snapValue(pt.y, snapped, "y");
-        if (e.shiftKey) {
-          const last = state.anchors[state.anchors.length - 1];
-          const dx = pt.x - last.x;
-          const dy = pt.y - last.y;
-          const len = Math.hypot(dx, dy);
-          if (len > 1e-6) {
-            const dir = snapDirection45(dx, dy);
-            const snappedLen = Math.max(len, 1);
-            x = last.x + dir.x * snappedLen;
-            y = last.y + dir.y * snappedLen;
-          }
-        }
-        const dist = Math.hypot(pt.x - drag.startX, pt.y - drag.startY);
-        const isCurve = dist > 6;
-        const newAnchors = state.anchors.slice(0, -1);
-        const last = { ...state.anchors[state.anchors.length - 1] };
-        const newAnchor: PathAnchor = { x, y };
-        if (isCurve) {
-          const dx = x - last.x;
-          const dy = y - last.y;
-          const k = 1 / 3;
-          last.handle2X = last.x + dx * k;
-          last.handle2Y = last.y + dy * k;
-          newAnchor.handle1X = x - dx * k;
-          newAnchor.handle1Y = y - dy * k;
-        }
-        newAnchors.push(last);
-        newAnchors.push(newAnchor);
-        setPathEditState({ ...state, anchors: newAnchors, addStart: undefined });
+        setPathEditState(
+          appendPathAnchorFromPointer({
+            state,
+            point: pt,
+            start: { x: drag.startX, y: drag.startY },
+            shiftKey: e.shiftKey,
+            snapValue,
+            snapToGrid: gridSnapRef.current ?? false,
+          }),
+        );
       }
       return;
     }
@@ -4528,44 +4837,34 @@ export default function AdvancedEditor() {
     commit(cloneDoc(docRef.current));
   }
 
-  const PATH_HIT_RADIUS = 10;
-  const PATH_HANDLE_RADIUS = 8;
-
-  function hitPathAnchorOrHandle(
-    pt: { x: number; y: number },
-    anchors: PathAnchor[]
-  ): { kind: "anchor" | "handle1" | "handle2"; index: number } | null {
-    for (let i = 0; i < anchors.length; i++) {
-      const a = anchors[i];
-      if (Math.hypot(pt.x - a.x, pt.y - a.y) <= PATH_HIT_RADIUS) return { kind: "anchor", index: i };
-      if (a.handle1X != null && a.handle1Y != null) {
-        if (Math.hypot(pt.x - a.handle1X, pt.y - a.handle1Y) <= PATH_HANDLE_RADIUS) return { kind: "handle1", index: i };
-      }
-      if (a.handle2X != null && a.handle2Y != null) {
-        if (Math.hypot(pt.x - a.handle2X, pt.y - a.handle2Y) <= PATH_HANDLE_RADIUS) return { kind: "handle2", index: i };
-      }
-    }
-    return null;
-  }
-
   function commitPathEdit(closePath: boolean) {
     const state = pathEditStateRef.current;
     if (!state) return;
     const closed = closePath || state.closed;
-    const d = anchorsToPathData(state.anchors, closed);
-    const bounds = pathDataToBounds(d, 0);
+    const d = serializePathEditState({ ...state, closed });
     const next = cloneDoc(docRef.current);
     const node = next.nodes[state.nodeId];
     if (!node) {
       setPathEditState(null);
       return;
     }
+    const absoluteFrame = getAbsoluteFrame(next, state.nodeId);
+    if (!absoluteFrame) {
+      setPathEditState(null);
+      return;
+    }
     const parentId = node.parentId;
     const parentRect = parentId ? getAbsoluteFrame(next, parentId) : null;
-    const relX = parentRect ? bounds.x - parentRect.x : bounds.x;
-    const relY = parentRect ? bounds.y - parentRect.y : bounds.y;
-    node.shape = { ...node.shape, pathData: translatePathD(d, -bounds.x, -bounds.y) };
-    node.frame = { ...node.frame, x: relX, y: relY, w: bounds.w, h: bounds.h };
+    const committed = commitEditedPathShape(
+      node.shape,
+      { x: absoluteFrame.x, y: absoluteFrame.y, w: absoluteFrame.w, h: absoluteFrame.h, rotation: absoluteFrame.rotation ?? 0 },
+      state.source,
+      d,
+    );
+    const relX = parentRect ? committed.frame.x - parentRect.x : committed.frame.x;
+    const relY = parentRect ? committed.frame.y - parentRect.y : committed.frame.y;
+    node.shape = committed.shape;
+    node.frame = { ...node.frame, x: relX, y: relY, w: committed.frame.w, h: committed.frame.h };
     next.selection = new Set([state.nodeId]);
     commit(next);
     setPathEditState(null);
@@ -4584,7 +4883,7 @@ export default function AdvancedEditor() {
     const next = cloneDoc(docRef.current);
     next.selection = new Set([node.id]);
     replace(next);
-    setPathEditState({ nodeId: node.id, anchors: [{ x: snapPt.x, y: snapPt.y }], closed: false, addStart: { x: snapPt.x, y: snapPt.y } });
+    setPathEditState(createPathDrawState(node.id, snapPt));
     const capture = e.currentTarget as Element;
     capture.setPointerCapture(e.pointerId);
     dragRef.current = { mode: "pathAdd", pointerId: e.pointerId, startX: pt.x, startY: pt.y, nodeId: node.id, capture };
@@ -4592,13 +4891,13 @@ export default function AdvancedEditor() {
 
   function beginPathEditDrag(
     e: React.PointerEvent,
+    state: PathEditState,
     hit: { kind: "anchor" | "handle1" | "handle2"; index: number }
   ) {
-    if (!pathEditState) return;
     const pt = svgPoint(e);
     const capture = e.currentTarget as Element;
     capture.setPointerCapture(e.pointerId);
-    const originAnchors = pathEditState.anchors.map((a) => ({
+    const originAnchors = state.anchors.map((a) => ({
       x: a.x,
       y: a.y,
       handle1X: a.handle1X,
@@ -4611,7 +4910,7 @@ export default function AdvancedEditor() {
       pointerId: e.pointerId,
       startX: pt.x,
       startY: pt.y,
-      nodeId: pathEditState.nodeId,
+      nodeId: state.nodeId,
       anchorIndex: hit.index,
       kind: hit.kind,
       originAnchors,
@@ -4650,20 +4949,38 @@ export default function AdvancedEditor() {
 
     if (activeTool === "path") {
       if (pathEditState) {
-        if (pathEditState.anchors.length >= 2 && !pathEditState.closed) {
-          const first = pathEditState.anchors[0];
-          if (Math.hypot(pt.x - first.x, pt.y - first.y) <= PATH_HIT_RADIUS) {
-            commitPathEdit(true);
-            return;
-          }
+        if (shouldClosePathAtPoint(pathEditState, pt)) {
+          commitPathEdit(true);
+          return;
         }
         const hit = hitPathAnchorOrHandle(pt, pathEditState.anchors);
         if (hit) {
-          beginPathEditDrag(e, hit);
+          const selectedState = selectPathAnchor(pathEditState, hit.index);
+          setPathEditState(selectedState);
+          beginPathEditDrag(e, selectedState, hit);
+          return;
+        }
+        const segmentHit = hitPathSegment(pt, pathEditState.anchors, pathEditState.closed);
+        if (segmentHit) {
+          const inserted = insertPathAnchorAtHit({
+            state: pathEditState,
+            hit: segmentHit,
+          });
+          setPathEditState(inserted.state);
+          beginPathEditDrag(e, inserted.state, { kind: "anchor", index: inserted.anchorIndex });
           return;
         }
         setPathEditState((prev) =>
-          prev ? { ...prev, addStart: { x: snapValue(pt.x, gridSnapRef.current ?? false, "x"), y: snapValue(pt.y, gridSnapRef.current ?? false, "y") } } : null
+          prev
+            ? {
+                ...prev,
+                addStart: {
+                  x: snapValue(pt.x, gridSnapRef.current ?? false, "x"),
+                  y: snapValue(pt.y, gridSnapRef.current ?? false, "y"),
+                  attach: !prev.closed && prev.selectedAnchorIndex === 0 ? "start" : "end",
+                },
+              }
+            : null
         );
         const capture = e.currentTarget as Element;
         capture.setPointerCapture(e.pointerId);
@@ -4672,22 +4989,17 @@ export default function AdvancedEditor() {
       }
       if (hitId) {
         const node = docRef.current.nodes[hitId];
-        const pathD = node?.shape?.pathData?.trim();
-        if (node?.type === "path" && pathD) {
-          const abs = getAbsoluteFrame(docRef.current, hitId);
-          const { anchors, closed } = pathDataToAnchors(pathD);
-          const anchorsAbs: PathAnchor[] = abs
-            ? anchors.map((a) => ({
-                ...a,
-                x: a.x + abs.x,
-                y: a.y + abs.y,
-                handle1X: a.handle1X != null ? a.handle1X + abs.x : undefined,
-                handle1Y: a.handle1Y != null ? a.handle1Y + abs.y : undefined,
-                handle2X: a.handle2X != null ? a.handle2X + abs.x : undefined,
-                handle2Y: a.handle2Y != null ? a.handle2Y + abs.y : undefined,
-              }))
-            : anchors;
-          setPathEditState({ nodeId: hitId, anchors: anchorsAbs, closed });
+        const abs = getAbsoluteFrame(docRef.current, hitId);
+        const editablePath = node?.type === "path" && abs ? resolveEditablePathSourceAtPoint(node.shape, abs, pt) : null;
+        if (node?.type === "path" && editablePath?.pathData) {
+          setPathEditState(
+            createPathEditStateFromPathData({
+              nodeId: hitId,
+              pathData: editablePath.pathData,
+              source: editablePath.source,
+              absoluteOffset: abs ? { x: abs.x, y: abs.y } : undefined,
+            }),
+          );
           replace({ ...docRef.current, selection: new Set([hitId]) });
           return;
         }
@@ -5104,11 +5416,13 @@ export default function AdvancedEditor() {
       const pathNode = createNode("path", {
         name: node.name ?? "Path",
         frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
-        shape: { pathData: localD },
+        shape: withDerivedVectorNetwork({ pathData: localD }),
       });
       pathNode.style = { ...cloneStyle(node.style), radius: undefined };
       pathNode.layout = cloneLayout(node.layout);
       pathNode.layoutSizing = node.layoutSizing ? { ...node.layoutSizing } : undefined;
+      pathNode.layoutPositioning = node.layoutPositioning;
+      pathNode.gridChild = node.gridChild ? { ...node.gridChild } : undefined;
       pathNode.constraints = node.constraints ? { ...node.constraints } : undefined;
       pathNode.data = node.data ? { ...node.data } : undefined;
       pathNode.prototype = clonePrototype(node.prototype);
@@ -5173,13 +5487,15 @@ export default function AdvancedEditor() {
     const pathNode = createNode("path", {
       name: "Joined Path",
       frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
-      shape: { pathData: localD },
+      shape: withDerivedVectorNetwork({ pathData: localD }),
     });
     if (styleSource) {
       const source = styleSource as Node;
       pathNode.style = { ...cloneStyle(source.style), radius: undefined };
       pathNode.layout = cloneLayout(source.layout);
       pathNode.layoutSizing = source.layoutSizing ? { ...source.layoutSizing } : undefined;
+      pathNode.layoutPositioning = source.layoutPositioning;
+      pathNode.gridChild = source.gridChild ? { ...source.gridChild } : undefined;
       pathNode.constraints = source.constraints ? { ...source.constraints } : undefined;
       pathNode.data = source.data ? { ...source.data } : undefined;
       pathNode.prototype = clonePrototype(source.prototype);
@@ -5251,7 +5567,7 @@ export default function AdvancedEditor() {
       const pathNode = createNode("path", {
         name: `${node.name ?? "Outline"} (Stroke)`,
         frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
-        shape: { pathData: localD },
+        shape: withDerivedVectorNetwork({ pathData: localD }),
       });
       const fillColor = stroke?.color ?? resolveFillColor(draft, node);
       const style = cloneStyle(node.style);
@@ -5263,6 +5579,8 @@ export default function AdvancedEditor() {
       pathNode.style = style;
       pathNode.layout = cloneLayout(node.layout);
       pathNode.layoutSizing = node.layoutSizing ? { ...node.layoutSizing } : undefined;
+      pathNode.layoutPositioning = node.layoutPositioning;
+      pathNode.gridChild = node.gridChild ? { ...node.gridChild } : undefined;
       pathNode.constraints = node.constraints ? { ...node.constraints } : undefined;
       pathNode.data = node.data ? { ...node.data } : undefined;
       pathNode.prototype = clonePrototype(node.prototype);
@@ -5319,11 +5637,13 @@ export default function AdvancedEditor() {
         const pathNode = createNode("path", {
           name: `${node.name ?? "Offset"} (${offsetValue >= 0 ? "+" : ""}${offsetValue})`,
           frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
-          shape: { pathData: localD },
+          shape: withDerivedVectorNetwork({ pathData: localD }),
         });
         pathNode.style = { ...cloneStyle(node.style), radius: undefined };
         pathNode.layout = cloneLayout(node.layout);
         pathNode.layoutSizing = node.layoutSizing ? { ...node.layoutSizing } : undefined;
+        pathNode.layoutPositioning = node.layoutPositioning;
+        pathNode.gridChild = node.gridChild ? { ...node.gridChild } : undefined;
         pathNode.constraints = node.constraints ? { ...node.constraints } : undefined;
         pathNode.data = node.data ? { ...node.data } : undefined;
         pathNode.prototype = clonePrototype(node.prototype);
@@ -5378,7 +5698,7 @@ export default function AdvancedEditor() {
         if (node.type === "rect") d = rectToPath(abs);
         else if (node.type === "ellipse") d = ellipseToPath(abs);
         else {
-          const raw = (node.shape?.pathData ?? "").trim();
+          const raw = primaryPathDataFromShape(node.shape);
           d = raw ? translatePathD(raw, abs.x, abs.y) : rectToPath(abs);
         }
         const ring = pathDataToPolygon(d);
@@ -5398,10 +5718,30 @@ export default function AdvancedEditor() {
       const relX = parentRect ? bounds.x - parentRect.x : bounds.x;
       const relY = parentRect ? bounds.y - parentRect.y : bounds.y;
       const pathDataLocal = translatePathD(resultD, -bounds.x, -bounds.y);
+      const operandSnapshots = nodes.map((node) => {
+        const abs = getAbsoluteFrame(draft, node.id);
+        if (!abs) {
+          return { sourceId: node.id, name: node.name, type: node.type };
+        }
+        return (
+          buildBooleanOperandSnapshotFromNode(
+            node,
+            { x: abs.x, y: abs.y, w: abs.w, h: abs.h, rotation: abs.rotation ?? 0 },
+            bounds,
+          ) ?? { sourceId: node.id, name: node.name, type: node.type }
+        );
+      });
       const pathNode = createNode("path", {
         name: `Boolean ${op}`,
         frame: { x: relX, y: relY, w: bounds.w, h: bounds.h, rotation: 0 },
-        shape: { pathData: pathDataLocal },
+        shape: withDerivedVectorNetwork({
+          pathData: pathDataLocal,
+          booleanMeta: {
+            op,
+            source: "editor",
+            operands: operandSnapshots,
+          },
+        }),
       });
       const next = cloneDoc(draft);
       next.nodes[pathNode.id] = pathNode;
@@ -5500,13 +5840,42 @@ export default function AdvancedEditor() {
     (componentId: string, targetId: string, def: { kind: "text" | "boolean" | "instance"; name: string } | null) => {
       const component = docRef.current.nodes[componentId];
       if (!component || component.type !== "component") return;
-      const nextDefs = { ...(component.propertyDefinitions ?? {}) };
-      if (def) nextDefs[targetId] = def;
-      else delete nextDefs[targetId];
-      const hasDefs = Object.keys(nextDefs).length > 0;
-      updateNode(componentId, { propertyDefinitions: hasDefs ? nextDefs : undefined }, true);
+      const target = docRef.current.nodes[targetId];
+      if (def && !isComponentPropertyKindCompatible(target?.type, def.kind)) {
+        pushMessage("Component property kind does not match the target node type.");
+        return;
+      }
+      const nextDefs = upsertComponentPropertyDefinition(
+        component.propertyDefinitions,
+        targetId,
+        def,
+        target?.name ?? target?.type ?? "Property",
+      );
+      updateNode(componentId, { propertyDefinitions: nextDefs }, true);
     },
-    [updateNode],
+    [pushMessage, updateNode],
+  );
+
+  const normalizeComponentPropertyDefinitions = useCallback(
+    (componentId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.propertyDefinitions) return;
+      let nextDefs: NonNullable<Node["propertyDefinitions"]> | undefined;
+      Object.entries(component.propertyDefinitions).forEach(([targetId, definition]) => {
+        const target = draft.nodes[targetId];
+        nextDefs = upsertComponentPropertyDefinition(
+          nextDefs,
+          targetId,
+          definition,
+          target?.name ?? target?.type ?? "Property",
+        );
+      });
+      component.propertyDefinitions = nextDefs;
+      commit(draft);
+      pushMessage("Component property names normalized.");
+    },
+    [commit, pushMessage],
   );
 
   const updateSlotId = useCallback(
@@ -5641,7 +6010,15 @@ export default function AdvancedEditor() {
       newRoot.parentId = componentId;
       component.children = [...component.children, newRoot.id];
       const variants = component.variants ?? [];
-      component.variants = [...variants, { id: makeId("variant"), name: `Variant ${variants.length + 1}`, rootId: newRoot.id }];
+      component.variants = [
+        ...variants,
+        {
+          id: makeId("variant"),
+          name: `Variant ${variants.length + 1}`,
+          rootId: newRoot.id,
+          props: buildVariantPropsTemplate(variants),
+        },
+      ];
       commit(draft);
     },
     [commit],
@@ -5676,6 +6053,49 @@ export default function AdvancedEditor() {
     setVariantEditId(null);
     setVariantEditName("");
   }, []);
+
+  const setComponentVariantProp = useCallback(
+    (componentId: string, variantId: string, key: string, value: string) => {
+      const trimmedKey = key.trim();
+      if (!trimmedKey) return;
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      component.variants = component.variants.map((variant) =>
+        variant.id === variantId ? setVariantProp(variant, trimmedKey, value) : variant,
+      );
+      commit(draft);
+    },
+    [commit],
+  );
+
+  const addComponentVariantAxis = useCallback(
+    (componentId: string) => {
+      const axisKey = variantAxisDraft.trim();
+      if (!axisKey) {
+        pushMessage("Variant axis name is required.");
+        return;
+      }
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      component.variants = addVariantAxis(component.variants, axisKey);
+      commit(draft);
+      setVariantAxisDraft("");
+    },
+    [commit, pushMessage, variantAxisDraft],
+  );
+
+  const removeComponentVariantAxis = useCallback(
+    (componentId: string, key: string) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      component.variants = removeVariantAxis(component.variants, key);
+      commit(draft);
+    },
+    [commit],
+  );
 
   const setDefaultVariant = useCallback(
     (componentId: string, variantId: string) => {
@@ -5732,11 +6152,65 @@ export default function AdvancedEditor() {
       if (!newRootId) return;
       component.children = [...component.children, newRootId];
       const name = `${variant.name} Copy`;
-      const nextVariant = { id: makeId("variant"), name, rootId: newRootId };
+      const nextVariant = { id: makeId("variant"), name, rootId: newRootId, props: getVariantProps(variant) };
       component.variants = [...(component.variants ?? []), nextVariant];
       commit(draft);
     },
     [commit],
+  );
+
+  const fillMissingComponentVariants = useCallback(
+    (componentId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      const plans = planMissingVariantFill(component.variants);
+      if (!plans.length) {
+        pushMessage("Variant matrix is already complete.");
+        return;
+      }
+
+      let added = 0;
+      plans.forEach((plan, index) => {
+        const sourceVariant = component.variants?.find((variant) => variant.id === plan.sourceVariantId);
+        if (!sourceVariant || !draft.nodes[sourceVariant.rootId]) return;
+
+        const payload: ClipboardPayload = { rootIds: [sourceVariant.rootId], nodes: {}, rootParents: {} };
+        payload.rootParents[sourceVariant.rootId] = componentId;
+        snapshotSubtree(draft, sourceVariant.rootId, payload.nodes);
+
+        const sourceMap: Record<string, string> = {};
+        Object.entries(payload.nodes).forEach(([id, childNode]) => {
+          if (!childNode.sourceId) sourceMap[id] = id;
+        });
+
+        const offset = gridSizeRef.current * 2 * (index + 1);
+        const cloned = cloneClipboardPayload(payload, {
+          offset: { x: offset, y: offset },
+          parentOverride: componentId,
+          sourceMap,
+        });
+        Object.assign(draft.nodes, cloned.nodes);
+        const newRootId = cloned.rootIds[0];
+        if (!newRootId) return;
+        component.children = [...component.children, newRootId];
+        component.variants = [
+          ...(component.variants ?? []),
+          {
+            id: makeId("variant"),
+            name: plan.name,
+            rootId: newRootId,
+            props: { ...plan.props },
+          },
+        ];
+        added += 1;
+      });
+
+      if (!added) return;
+      commit(draft);
+      pushMessage(`Added ${added} missing variants.`);
+    },
+    [commit, pushMessage],
   );
 
   const deleteComponentVariant = useCallback(
@@ -5813,6 +6287,7 @@ export default function AdvancedEditor() {
     instance.name = `${component.name} Instance`;
     instance.instanceOf = componentId;
     instance.sourceId = componentId;
+    instance.instanceLibraryId = component.sourceLibraryId;
     instance.componentId = undefined;
     instance.variantId = variantId ?? undefined;
     delete instance.overrides;
@@ -5864,122 +6339,42 @@ export default function AdvancedEditor() {
     commit(draft);
   }, [commit]);
 
-  const setInstanceVariant = useCallback(
-    (instanceId: string, variantId: string) => {
-      const draft = cloneDoc(docRef.current);
-      const instance = draft.nodes[instanceId];
-      const component = instance?.instanceOf ? draft.nodes[instance.instanceOf] : null;
-      if (!instance || instance.type !== "instance" || !component?.variants?.length) return;
-      const variant = component.variants.find((v) => v.id === variantId);
-      if (!variant || !draft.nodes[variant.rootId]) return;
-
-      const payload: ClipboardPayload = { rootIds: [variant.rootId], nodes: {}, rootParents: {} };
-      payload.rootParents[variant.rootId] = component.id;
-      snapshotSubtree(draft, variant.rootId, payload.nodes);
-
-      const sourceMap: Record<string, string> = {};
-      Object.entries(payload.nodes).forEach(([id, node]) => {
-        if (!node.sourceId) sourceMap[id] = id;
-      });
-
-      const toRemove = flattenIds(draft, instanceId);
-      toRemove.forEach((id) => {
-        if (id !== instanceId) delete draft.nodes[id];
-      });
-
-      instance.children = [];
-      instance.variantId = variantId;
-      const srcRoot = draft.nodes[variant.rootId];
-      instance.frame = { ...instance.frame, w: srcRoot?.frame.w ?? instance.frame.w, h: srcRoot?.frame.h ?? instance.frame.h };
-
-      const cloned = cloneClipboardPayload(payload, { offset: 0, parentOverride: instance.id, sourceMap });
-      instance.children = cloned.rootIds;
-      Object.assign(draft.nodes, cloned.nodes);
-      commit(draft);
-    },
-    [commit],
-  );
-
-  const syncInstancesForComponent = useCallback(
-    (componentId: string, options?: { preserveOverrides?: boolean; instanceId?: string }) => {
-      const draft = cloneDoc(docRef.current);
+  const buildComponentClonePayload = useCallback(
+    (draft: Doc, componentId: string, variantId?: string) => {
       const component = draft.nodes[componentId];
-      if (!component) return;
-
-      const payload: ClipboardPayload = { rootIds: [...component.children], nodes: {}, rootParents: {} };
-      component.children.forEach((childId) => {
+      if (!component || component.type !== "component") return null;
+      const variant = variantId && component.variants?.length
+        ? component.variants.find((item) => item.id === variantId)
+        : component.variants?.[0];
+      const rootIds =
+        variant?.rootId && draft.nodes[variant.rootId]
+          ? [variant.rootId]
+          : [...component.children];
+      const payload: ClipboardPayload = { rootIds, nodes: {}, rootParents: {} };
+      rootIds.forEach((childId) => {
         payload.rootParents[childId] = componentId;
         snapshotSubtree(draft, childId, payload.nodes);
       });
-
       const sourceMap: Record<string, string> = {};
       Object.entries(payload.nodes).forEach(([id, node]) => {
         if (!node.sourceId) sourceMap[id] = id;
       });
-
-      const componentNodeIds = new Set([componentId, ...flattenIds(draft, componentId)]);
-
-      Object.values(draft.nodes)
-        .filter((node) => node.type === "instance" && node.instanceOf === componentId)
-        .filter((instance) => (options?.instanceId ? instance.id === options.instanceId : true))
-        .forEach((instance) => {
-          const overridesBySourceId =
-            options?.preserveOverrides === false ? {} : collectInstanceOverrides(draft, instance.id, componentNodeIds);
-          const toRemove = flattenIds(draft, instance.id);
-          toRemove.forEach((id) => {
-            delete draft.nodes[id];
-          });
-
-          instance.children = [];
-          instance.sourceId = componentId;
-          delete instance.overrides;
-          instance.frame = { ...component.frame, x: instance.frame.x, y: instance.frame.y };
-          instance.style = cloneStyle(component.style);
-          instance.layout = cloneLayout(component.layout);
-          instance.layoutSizing = component.layoutSizing ? { ...component.layoutSizing } : undefined;
-          instance.constraints = component.constraints ? { ...component.constraints } : undefined;
-          instance.prototype = clonePrototype(component.prototype);
-          instance.hidden = component.hidden;
-          instance.locked = component.locked;
-
-          const cloned = cloneClipboardPayload(payload, { offset: 0, parentOverride: instance.id, sourceMap });
-          instance.children = cloned.rootIds;
-          Object.assign(draft.nodes, cloned.nodes);
-
-          const rootOverride = overridesBySourceId[componentId];
-          if (rootOverride) {
-            applyNodeOverride(instance, rootOverride, { preservePosition: true });
-          }
-
-          Object.values(cloned.nodes).forEach((node) => {
-            if (!node.sourceId) return;
-            const override = overridesBySourceId[node.sourceId];
-            if (override) applyNodeOverride(node, override);
-          });
-        });
-
-      commit(draft);
+      return { component, variant, payload, sourceMap };
     },
-    [commit],
+    [],
   );
 
-  const swapInstanceComponent = useCallback(
-    (instanceId: string, componentId: string) => {
-      const draft = cloneDoc(docRef.current);
+  const replaceInstanceComponentInDraft = useCallback(
+    (
+      draft: Doc,
+      instanceId: string,
+      componentId: string,
+      options?: { preserveSourceId?: string; preserveName?: string; variantId?: string },
+    ) => {
       const instance = draft.nodes[instanceId];
-      const component = draft.nodes[componentId];
-      if (!instance || instance.type !== "instance" || !component || component.type !== "component") return;
-
-      const payload: ClipboardPayload = { rootIds: [...component.children], nodes: {}, rootParents: {} };
-      component.children.forEach((childId) => {
-        payload.rootParents[childId] = componentId;
-        snapshotSubtree(draft, childId, payload.nodes);
-      });
-
-      const sourceMap: Record<string, string> = {};
-      Object.entries(payload.nodes).forEach(([id, node]) => {
-        if (!node.sourceId) sourceMap[id] = id;
-      });
+      const prepared = buildComponentClonePayload(draft, componentId, options?.variantId);
+      if (!instance || instance.type !== "instance" || !prepared) return false;
+      const { component, variant, payload, sourceMap } = prepared;
 
       const toRemove = flattenIds(draft, instance.id);
       toRemove.forEach((id) => {
@@ -5989,13 +6384,23 @@ export default function AdvancedEditor() {
 
       instance.children = [];
       instance.instanceOf = componentId;
-      instance.sourceId = componentId;
-      instance.name = `${component.name} Instance`;
+      instance.sourceId = options?.preserveSourceId ?? componentId;
+      instance.instanceLibraryId = component.sourceLibraryId;
+      instance.variantId = variant?.id;
+      instance.name = options?.preserveName ?? `${component.name} Instance`;
       delete instance.overrides;
-      instance.frame = { ...component.frame, x: instance.frame.x, y: instance.frame.y };
+      instance.frame = {
+        ...component.frame,
+        x: instance.frame.x,
+        y: instance.frame.y,
+        w: variant?.rootId ? (draft.nodes[variant.rootId]?.frame.w ?? component.frame.w) : component.frame.w,
+        h: variant?.rootId ? (draft.nodes[variant.rootId]?.frame.h ?? component.frame.h) : component.frame.h,
+      };
       instance.style = cloneStyle(component.style);
       instance.layout = cloneLayout(component.layout);
       instance.layoutSizing = component.layoutSizing ? { ...component.layoutSizing } : undefined;
+      instance.layoutPositioning = component.layoutPositioning;
+      instance.gridChild = component.gridChild ? { ...component.gridChild } : undefined;
       instance.constraints = component.constraints ? { ...component.constraints } : undefined;
       instance.prototype = clonePrototype(component.prototype);
       instance.hidden = component.hidden;
@@ -6004,11 +6409,123 @@ export default function AdvancedEditor() {
       const cloned = cloneClipboardPayload(payload, { offset: 0, parentOverride: instance.id, sourceMap });
       instance.children = cloned.rootIds;
       Object.assign(draft.nodes, cloned.nodes);
+      return true;
+    },
+    [buildComponentClonePayload],
+  );
+
+  const setInstanceVariant = useCallback(
+    (instanceId: string, variantId: string) => {
+      const draft = cloneDoc(docRef.current);
+      const instance = draft.nodes[instanceId];
+      if (!instance || instance.type !== "instance" || !instance.instanceOf) return;
+      const preservedSourceId = instance.sourceId;
+      const preservedName = instance.name;
+      const replaced = replaceInstanceComponentInDraft(draft, instanceId, instance.instanceOf, {
+        preserveSourceId: preservedSourceId,
+        preserveName: preservedName,
+        variantId,
+      });
+      if (!replaced) return;
+      commit(draft);
+    },
+    [commit, replaceInstanceComponentInDraft],
+  );
+
+  const resolveVariantIdForComponent = useCallback(
+    (componentId: string, preferredProps?: Record<string, string>, fallbackVariantId?: string) => {
+      const component = docRef.current.nodes[componentId];
+      if (!component || component.type !== "component" || !component.variants?.length) return undefined;
+      if (preferredProps && Object.keys(preferredProps).length) {
+        return findVariantByProps(component.variants, preferredProps, fallbackVariantId)?.id ?? component.variants[0]?.id;
+      }
+      if (fallbackVariantId && component.variants.some((variant) => variant.id === fallbackVariantId)) {
+        return fallbackVariantId;
+      }
+      return component.variants[0]?.id;
+    },
+    [],
+  );
+
+  const setInstanceVariantAxis = useCallback(
+    (instanceId: string, key: string, value: string) => {
+      const draft = cloneDoc(docRef.current);
+      const instance = draft.nodes[instanceId];
+      if (!instance || instance.type !== "instance" || !instance.instanceOf) return;
+      const component = draft.nodes[instance.instanceOf];
+      if (!component || component.type !== "component" || !component.variants?.length) return;
+      const currentVariant =
+        component.variants.find((variant) => variant.id === (instance.variantId ?? component.variants?.[0]?.id)) ??
+        component.variants[0];
+      const nextProps = getVariantProps(currentVariant);
+      nextProps[key] = value;
+      const nextVariant = findVariantByProps(component.variants, nextProps, currentVariant?.id);
+      if (!nextVariant) return;
+      const replaced = replaceInstanceComponentInDraft(draft, instanceId, instance.instanceOf, {
+        preserveSourceId: instance.sourceId,
+        preserveName: instance.name,
+        variantId: nextVariant.id,
+      });
+      if (!replaced) return;
+      commit(draft);
+    },
+    [commit, replaceInstanceComponentInDraft],
+  );
+
+  const syncInstancesForComponent = useCallback(
+    (componentId: string, options?: { preserveOverrides?: boolean; instanceId?: string }) => {
+      const draft = cloneDoc(docRef.current);
+      const component = draft.nodes[componentId];
+      if (!component) return;
+
+      const componentNodeIds = new Set([componentId, ...flattenIds(draft, componentId)]);
+
+      Object.values(draft.nodes)
+        .filter((node) => node.type === "instance" && node.instanceOf === componentId)
+        .filter((instance) => (options?.instanceId ? instance.id === options.instanceId : true))
+        .forEach((instance) => {
+          const overridesBySourceId =
+            options?.preserveOverrides === false ? {} : collectInstanceOverrides(draft, instance.id, componentNodeIds);
+          const replaced = replaceInstanceComponentInDraft(draft, instance.id, componentId, {
+            preserveSourceId: componentId,
+            preserveName: instance.name,
+            variantId: instance.variantId,
+          });
+          if (!replaced) return;
+
+          const rootOverride = overridesBySourceId[componentId];
+          const refreshedInstance = draft.nodes[instance.id];
+          if (rootOverride && refreshedInstance) {
+            applyNodeOverride(refreshedInstance, rootOverride, { preservePosition: true });
+          }
+
+          flattenIds(draft, instance.id).forEach((childId) => {
+            const node = draft.nodes[childId];
+            if (!node.sourceId) return;
+            const override = overridesBySourceId[node.sourceId];
+            if (override) applyNodeOverride(node, override);
+          });
+        });
+
+      commit(draft);
+    },
+    [commit, replaceInstanceComponentInDraft],
+  );
+
+  const swapInstanceComponent = useCallback(
+    (instanceId: string, componentId: string, options?: { preserveSourceId?: string; preserveName?: string; variantId?: string }) => {
+      const draft = cloneDoc(docRef.current);
+      const instance = draft.nodes[instanceId];
+      const component = draft.nodes[componentId];
+      if (!instance || instance.type !== "instance" || !component || component.type !== "component") return;
+
+      const replaced = replaceInstanceComponentInDraft(draft, instanceId, componentId, options);
+      if (!replaced) return;
 
       draft.selection = new Set([instance.id]);
       commit(draft);
     },
-    [commit],
+    [commit, replaceInstanceComponentInDraft],
   );
 
   const pushInstanceOverridesToComponent = useCallback(
@@ -6043,6 +6560,17 @@ export default function AdvancedEditor() {
       if (!node?.sourceId) return;
       const master = docRef.current.nodes[node.sourceId];
       if (!master) return;
+      if (node.type === "instance" && master.type === "instance" && master.instanceOf) {
+        const draft = cloneDoc(docRef.current);
+        const replaced = replaceInstanceComponentInDraft(draft, nodeId, master.instanceOf, {
+          preserveSourceId: node.sourceId,
+          preserveName: master.name,
+          variantId: master.variantId,
+        });
+        if (!replaced) return;
+        commit(draft);
+        return;
+      }
       const patch: Partial<Node> = {};
       if (node.type === "text") {
         patch.text = master.text ? cloneText(master.text) : undefined;
@@ -6053,9 +6581,12 @@ export default function AdvancedEditor() {
       if (node.type === "video") {
         patch.video = master.video ? { ...master.video } : undefined;
       }
+      if (node.hidden !== master.hidden) {
+        patch.hidden = master.hidden;
+      }
       if (Object.keys(patch).length) updateNode(nodeId, patch, true);
     },
-    [updateNode],
+    [commit, replaceInstanceComponentInDraft, updateNode],
   );
 
   const clearInstanceSlotAssignments = useCallback(
@@ -6085,6 +6616,14 @@ export default function AdvancedEditor() {
         if (!node.sourceId) return;
         const master = draft.nodes[node.sourceId];
         if (!master) return;
+        if (node.type === "instance" && master.type === "instance" && master.instanceOf) {
+          replaceInstanceComponentInDraft(draft, id, master.instanceOf, {
+            preserveSourceId: node.sourceId,
+            preserveName: master.name,
+            variantId: master.variantId,
+          });
+          return;
+        }
         if (node.type === "text") {
           node.text = master.text ? cloneText(master.text) : undefined;
         }
@@ -6094,12 +6633,13 @@ export default function AdvancedEditor() {
         if (node.type === "video") {
           node.video = master.video ? { ...master.video } : undefined;
         }
+        node.hidden = master.hidden;
       });
       refreshOverridesForSubtree(draft, instanceId);
       commit(draft);
       pushMessage("Instance overrides cleared.");
     },
-    [commit, pushMessage],
+    [commit, pushMessage, replaceInstanceComponentInDraft],
   );
 
   const addStyleToken = useCallback((type: StyleToken["type"], value: StyleToken["value"]) => {
@@ -6263,6 +6803,85 @@ export default function AdvancedEditor() {
     [commit, pushMessage, styleImportText],
   );
 
+  const parseLibrarySnapshotText = useCallback(() => {
+    const raw = libraryJsonText.trim();
+    if (!raw) {
+      setLibraryError("가져올 library JSON이 비어 있습니다.");
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as PublishedLibrarySnapshot;
+      if (parsed?.schema !== "null_design_library_v1" || !parsed.library || !Array.isArray(parsed.components)) {
+        setLibraryError("NULL design library JSON 형식이 아닙니다.");
+        return null;
+      }
+      setLibraryError(null);
+      return parsed;
+    } catch {
+      setLibraryError("library JSON 파싱에 실패했습니다.");
+      return null;
+    }
+  }, [libraryJsonText]);
+
+  const buildLibraryExportPayload = useCallback(() => {
+    const payload = buildDesignLibrarySnapshot(docRef.current, { name: libraryName });
+    return JSON.stringify(payload, null, 2);
+  }, [libraryName]);
+
+  const copyLibraryExport = useCallback(() => {
+    const payload = buildLibraryExportPayload();
+    setLibraryJsonText(payload);
+    setLibraryError(null);
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(payload).catch(() => setLibraryError("클립보드 복사에 실패했습니다."));
+    } else {
+      setLibraryError("클립보드 API를 사용할 수 없습니다.");
+    }
+  }, [buildLibraryExportPayload]);
+
+  const downloadLibraryExport = useCallback(() => {
+    const payload = buildLibraryExportPayload();
+    setLibraryJsonText(payload);
+    setLibraryError(null);
+    if (typeof window === "undefined") return;
+    const blob = new Blob([payload], { type: "application/json" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(libraryName.trim() || "null-design-library").replace(/\s+/g, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }, [buildLibraryExportPayload, libraryName]);
+
+  const previewLibraryImport = useCallback(() => {
+    const snapshot = parseLibrarySnapshotText();
+    if (!snapshot) return;
+    const preview = buildDesignLibraryUpdatePreview(docRef.current, snapshot);
+    setLibraryPreview(preview);
+    const marked = markLibraryUpdateAvailable(docRef.current, preview);
+    commit(marked);
+    pushMessage(preview.hasChanges ? "library_update_available" : "library_up_to_date");
+  }, [commit, parseLibrarySnapshotText, pushMessage]);
+
+  const consumeLibraryImport = useCallback(() => {
+    const snapshot = parseLibrarySnapshotText();
+    if (!snapshot) return;
+    const next = consumeDesignLibrary(docRef.current, snapshot);
+    commit(next);
+    setLibraryPreview(buildDesignLibraryUpdatePreview(next, snapshot));
+    setLibraryError(null);
+    pushMessage("library_consumed");
+  }, [commit, parseLibrarySnapshotText, pushMessage]);
+
+  const consumedLibraries = useMemo(
+    () =>
+      (doc.libraries ?? []).map((library) => ({
+        ...library,
+        usage: computeDesignLibraryUsage(doc, library.id),
+      })),
+    [doc],
+  );
+
   const addVariable = useCallback(() => {
     const draft = cloneDoc(docRef.current);
     const name = newVariableName.trim() || `Variable ${draft.variables.length + 1}`;
@@ -6372,6 +6991,7 @@ export default function AdvancedEditor() {
     draft.variables = draft.variables.filter((variable) => variable.id !== id);
     Object.values(draft.nodes).forEach((node) => {
       if (node.style.fillRef === id) node.style.fillRef = undefined;
+      if (node.style.strokeRef === id) node.style.strokeRef = undefined;
     });
     commit(draft);
   }, [commit]);
@@ -7026,6 +7646,23 @@ export default function AdvancedEditor() {
     if (!node) return;
     const interactions = node.prototype?.interactions ?? [];
     node.prototype = { interactions: interactions.filter((interaction) => interaction.id !== interactionId) };
+    commit(draft);
+  }, [commit]);
+
+  const duplicatePrototypeInteraction = useCallback((nodeId: string, interactionId: string) => {
+    const draft = cloneDoc(docRef.current);
+    const node = draft.nodes[nodeId];
+    if (!node) return;
+    const interactions = node.prototype?.interactions ?? [];
+    const current = interactions.find((interaction) => interaction.id === interactionId);
+    if (!current) return;
+    const duplicate: PrototypeInteraction = {
+      ...current,
+      id: makeRuntimeId("proto"),
+      action: JSON.parse(JSON.stringify(current.action)) as PrototypeAction,
+      scrollTriggerConfig: current.scrollTriggerConfig ? { ...current.scrollTriggerConfig } : undefined,
+    };
+    node.prototype = { interactions: [...interactions, duplicate] };
     commit(draft);
   }, [commit]);
 
@@ -9288,6 +9925,72 @@ export default function AdvancedEditor() {
     }
   }, [ensureAnonId, pageId, router, status, title, isOwner]);
 
+  const openWebImportModal = useCallback(() => {
+    const lastImport = docRef.current.imports?.web;
+    setWebImportUrl(lastImport?.url ?? "");
+    setWebImportViewportId(lastImport?.viewportId ?? "desktop");
+    setWebImportError(null);
+    setWebImportOpen(true);
+    setToolbarOverflowOpen(false);
+  }, []);
+
+  const applyImportedDoc = useCallback((rawDoc: unknown) => {
+    const hydrated = hydrateDoc(rawDoc);
+    const laidOut = layoutDoc(hydrated);
+    replace(laidOut);
+    const firstPageId = laidOut.prototype?.startPageId ?? laidOut.pages[0]?.id ?? null;
+    setActivePageId(firstPageId);
+    if (firstPageId && !infiniteCanvasPages[firstPageId]) {
+      setInfiniteCanvasPages((prev) => ({ ...prev, [firstPageId]: true }));
+    }
+  }, [infiniteCanvasPages]);
+
+  const runWebImport = useCallback(async (reuseLast = false) => {
+    const currentImport = docRef.current.imports?.web;
+    const targetUrl = (reuseLast ? (currentImport?.url ?? "") : webImportUrl).trim();
+    const targetViewportId = reuseLast ? (currentImport?.viewportId ?? webImportViewportId) : webImportViewportId;
+    if (!targetUrl) {
+      setWebImportError("가져올 URL을 입력해 주세요.");
+      return;
+    }
+
+    setWebImportError(null);
+    setWebImportLoading(true);
+    try {
+      const anonId = await ensureAnonId();
+      const targetPageId = pageId ?? await saveDraft();
+      if (!targetPageId) {
+        setWebImportError("페이지를 먼저 만들지 못했습니다.");
+        return;
+      }
+      const res = await fetch(`/api/pages/${targetPageId}/web/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(anonId ? { "x-anon-user-id": anonId } : {}) },
+        body: JSON.stringify({
+          url: targetUrl,
+          viewportId: targetViewportId,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setWebImportError(data?.message ?? data?.error ?? "웹 가져오기에 실패했습니다.");
+        return;
+      }
+      if (!data?.doc) {
+        setWebImportError("서버가 문서를 반환하지 않았습니다.");
+        return;
+      }
+      applyImportedDoc(data.doc);
+      setWebImportUrl(data?.importSource?.url ?? targetUrl);
+      setWebImportViewportId(data?.importSource?.viewportId ?? targetViewportId);
+      setWebImportOpen(false);
+    } catch (error) {
+      setWebImportError(error instanceof Error ? error.message : "웹 가져오기에 실패했습니다.");
+    } finally {
+      setWebImportLoading(false);
+    }
+  }, [applyImportedDoc, ensureAnonId, pageId, saveDraft, webImportUrl, webImportViewportId]);
+
   const flushDraftOnExit = useCallback(() => {
     if (isE2E) return;
     if (pageId && !isOwner) return;
@@ -9405,22 +10108,13 @@ export default function AdvancedEditor() {
     const content = serializeDoc(layoutDoc(docRef.current));
     content.selection = [];
     const payload = JSON.stringify(content, null, 2);
-    const name = makeSafeFilename(title || "advanced_export");
+    const name = buildScopedExportBaseName({ doc: docRef.current, title, scope: "document" });
     downloadBlob(new Blob([payload], { type: "application/json;charset=utf-8" }), `${name}.json`);
   }, [title]);
 
   const exportTokensJson = useCallback(() => {
-    const payload = JSON.stringify(
-      {
-        styles: docRef.current.styles,
-        variables: docRef.current.variables,
-        variableModes: docRef.current.variableModes ?? [],
-        activeMode: docRef.current.variableMode ?? null,
-      },
-      null,
-      2,
-    );
-    const name = makeSafeFilename(title || "advanced_export");
+    const payload = JSON.stringify(exportTokenBundle(docRef.current), null, 2);
+    const name = buildScopedExportBaseName({ doc: docRef.current, title, scope: "document" });
     downloadBlob(new Blob([payload], { type: "application/json;charset=utf-8" }), `${name}-tokens.json`);
   }, [title]);
 
@@ -9428,46 +10122,8 @@ export default function AdvancedEditor() {
     async (file: File) => {
       try {
         const raw = await readFileAsText(file);
-        const parsed = JSON.parse(raw ?? "{}") as {
-          styles?: StyleToken[];
-          variables?: Variable[];
-          variableModes?: string[];
-          activeMode?: string | null;
-        };
-        const incomingStyles = Array.isArray(parsed.styles) ? parsed.styles : [];
-        const incomingVariables = Array.isArray(parsed.variables) ? parsed.variables : [];
-        const incomingModes = Array.isArray(parsed.variableModes) ? parsed.variableModes.filter(Boolean) : [];
-        const incomingActive = typeof parsed.activeMode === "string" ? parsed.activeMode : null;
-
-        const mergeById = <T extends { id: string }>(current: T[], next: T[]) => {
-          const map = new Map(current.map((item) => [item.id, item]));
-          next.forEach((item) => map.set(item.id, item));
-          return Array.from(map.values());
-        };
-
-        const draft = cloneDoc(docRef.current);
-        if (tokenImportMode === "replace") {
-          draft.styles = incomingStyles;
-          draft.variables = incomingVariables;
-          draft.variableModes = incomingModes.length ? incomingModes : draft.variableModes ?? ["Default"];
-          if (incomingActive) {
-            if (!draft.variableModes?.includes(incomingActive)) {
-              draft.variableModes = [...(draft.variableModes ?? []), incomingActive];
-            }
-            draft.variableMode = incomingActive;
-          } else {
-            draft.variableMode = draft.variableModes?.[0];
-          }
-        } else {
-          draft.styles = mergeById(draft.styles, incomingStyles);
-          draft.variables = mergeById(draft.variables, incomingVariables);
-          const baseModes = draft.variableModes?.length ? draft.variableModes : ["Default"];
-          const modeSet = new Set([...baseModes, ...incomingModes]);
-          if (incomingActive) modeSet.add(incomingActive);
-          draft.variableModes = Array.from(modeSet);
-          if (incomingActive) draft.variableMode = incomingActive;
-        }
-        commit(draft);
+        const parsed = JSON.parse(raw ?? "{}") as Partial<TokenBundle>;
+        commit(importTokenBundleIntoDoc(docRef.current, parsed as TokenBundle, tokenImportMode));
         pushMessage("Tokens imported.");
       } catch (e) {
         pushMessage("Token import failed.");
@@ -9486,19 +10142,34 @@ export default function AdvancedEditor() {
     return null;
   }, [exportContentOnly, exportPageId, exportScope]);
 
+  const getScopedExportBaseName = useCallback(
+    (scopeOverride?: "document" | "page" | "selection") => {
+      const doc = docRef.current;
+      const scope = scopeOverride ?? exportScope;
+      return buildScopedExportBaseName({
+        doc,
+        title,
+        scope,
+        pageId: exportPageId ?? doc.prototype?.startPageId ?? doc.pages[0]?.id ?? null,
+        selectionIds: Array.from(doc.selection),
+      });
+    },
+    [exportPageId, exportScope, title],
+  );
+
   const exportSvg = useCallback(() => {
     const svg = exportSvgRef.current;
     if (!svg) return;
-    const name = makeSafeFilename(title || "advanced_export");
+    const name = getScopedExportBaseName();
     const bounds = getExportBounds();
     const serialized = serializeSvgElementWithBounds(svg, bounds);
     downloadBlob(new Blob([serialized], { type: "image/svg+xml;charset=utf-8" }), `${name}.svg`);
-  }, [title, getExportBounds]);
+  }, [getExportBounds, getScopedExportBaseName]);
 
   const exportPng = useCallback(() => {
     const svg = exportSvgRef.current;
     if (!svg) return;
-    const name = makeSafeFilename(title || "advanced_export");
+    const name = getScopedExportBaseName();
     const bounds = getExportBounds();
     const serialized = serializeSvgElementWithBounds(svg, bounds);
     const svgBlob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
@@ -9528,12 +10199,12 @@ export default function AdvancedEditor() {
       URL.revokeObjectURL(url);
     };
     img.src = url;
-  }, [exportScale, title, getExportBounds]);
+  }, [exportScale, getExportBounds, getScopedExportBaseName]);
 
   const exportJpg = useCallback(() => {
     const svg = exportSvgRef.current;
     if (!svg) return;
-    const name = makeSafeFilename(title || "advanced_export");
+    const name = getScopedExportBaseName();
     const bounds = getExportBounds();
     const serialized = serializeSvgElementWithBounds(svg, bounds);
     const svgBlob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
@@ -9569,14 +10240,14 @@ export default function AdvancedEditor() {
       URL.revokeObjectURL(url);
     };
     img.src = url;
-  }, [exportScale, title, getExportBounds]);
+  }, [exportScale, getExportBounds, getScopedExportBaseName]);
 
   const exportSelectionPng = useCallback(() => {
     const svg = exportSvgRef.current;
     const doc = docRef.current;
     if (!svg || !doc.selection.size) return;
     const bounds = getSelectionBounds(doc, Array.from(doc.selection));
-    const name = makeSafeFilename(title || "advanced_export");
+    const name = getScopedExportBaseName("selection");
     const serialized = serializeSvgElementWithBounds(svg, bounds);
     const svgBlob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(svgBlob);
@@ -9603,17 +10274,17 @@ export default function AdvancedEditor() {
     };
     img.onerror = () => URL.revokeObjectURL(url);
     img.src = url;
-  }, [exportScale, title]);
+  }, [exportScale, getScopedExportBaseName]);
 
   const exportSelectionSvg = useCallback(() => {
     const svg = exportSvgRef.current;
     const doc = docRef.current;
     if (!svg || !doc.selection.size) return;
     const bounds = getSelectionBounds(doc, Array.from(doc.selection));
-    const name = makeSafeFilename(title || "advanced_export");
+    const name = getScopedExportBaseName("selection");
     const serialized = serializeSvgElementWithBounds(svg, bounds);
     downloadBlob(new Blob([serialized], { type: "image/svg+xml;charset=utf-8" }), `${name}.svg`);
-  }, [title]);
+  }, [getScopedExportBaseName]);
 
   const installPluginFromJson = useCallback(async () => {
     setPluginError(null);
@@ -9630,7 +10301,7 @@ export default function AdvancedEditor() {
           const permissions = Array.isArray(item.permissions)
             ? item.permissions.filter((p: unknown) => typeof p === "string")
             : [];
-          const permissionSet = new Set(permissions);
+          const permissionSet = new Set<string>(permissions);
           const actions = actionsRaw
             .map((a: unknown) => normalizePluginAction(a, 0, budget, permissionSet))
             .filter((a: PluginAction | null): a is PluginAction => Boolean(a));
@@ -9806,6 +10477,201 @@ export default function AdvancedEditor() {
     pushMessage("위젯이 캔버스에 추가되었습니다.");
   }, [widgetInput, widgetMode, activePageId, canvasSize, replace, pushMessage]);
 
+  const installStorePlugin = useCallback(
+    async (storeId: string) => {
+      if (!pageId) {
+        setPluginError("Store plugin install requires a saved page.");
+        return;
+      }
+      try {
+        const res = await fetch(`/api/app/${pageId}/plugins/store`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ storeId, consent: true }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          setPluginError(data?.error ?? "Failed to install store plugin.");
+          return;
+        }
+        const data = await res.json().catch(() => null);
+        if (Array.isArray(data?.plugins)) setInstalledPlugins(data.plugins);
+        pushMessage("store_plugin_installed");
+      } catch {
+        setPluginError("Failed to install store plugin.");
+      }
+    },
+    [pageId, pushMessage],
+  );
+
+  const syncGovernanceState = useCallback((governance: {
+    saved?: Array<{ type?: string; storeId?: string }>;
+    requests?: StoreApprovalRequest[];
+    audit?: StoreAuditEntry[];
+    policy?: StoreGovernancePolicy;
+  } | null | undefined) => {
+    if (!governance) return;
+    setSavedPluginStoreIds(
+      (governance.saved ?? [])
+        .filter((entry) => entry.type === "plugin" && typeof entry.storeId === "string")
+        .map((entry) => entry.storeId as string),
+    );
+    setSavedWidgetStoreIds(
+      (governance.saved ?? [])
+        .filter((entry) => entry.type === "widget" && typeof entry.storeId === "string")
+        .map((entry) => entry.storeId as string),
+    );
+    setStoreApprovalRequests(Array.isArray(governance.requests) ? governance.requests : []);
+    setStoreAuditEntries(Array.isArray(governance.audit) ? governance.audit : []);
+    if (governance.policy) setStoreGovernancePolicy(governance.policy);
+  }, []);
+
+  const toggleSavedPluginStore = useCallback(
+    async (storeId: string) => {
+      if (!pageId) {
+        setSavedPluginStoreIds((prev) => (prev.includes(storeId) ? prev.filter((id) => id !== storeId) : [...prev, storeId]));
+        return;
+      }
+      const res = await fetch(`/api/app/${pageId}/store-governance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ action: "toggle_saved", type: "plugin", storeId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setPluginError(data?.error ?? "Failed to save plugin.");
+        return;
+      }
+      syncGovernanceState(data?.governance);
+    },
+    [pageId, syncGovernanceState],
+  );
+
+  const toggleSavedWidgetStore = useCallback(
+    async (storeId: string) => {
+      if (!pageId) {
+        setSavedWidgetStoreIds((prev) => (prev.includes(storeId) ? prev.filter((id) => id !== storeId) : [...prev, storeId]));
+        return;
+      }
+      const res = await fetch(`/api/app/${pageId}/store-governance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ action: "toggle_saved", type: "widget", storeId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setWidgetError(data?.error ?? "Failed to save widget.");
+        return;
+      }
+      syncGovernanceState(data?.governance);
+    },
+    [pageId, syncGovernanceState],
+  );
+
+  const insertStoreWidget = useCallback(
+    (item: StoreWidget & { digest?: string }) => {
+      const draft = cloneDoc(docRef.current);
+      const root = ensurePageRoot(draft, activePageId);
+      const zoom = draft.view.zoom || 1;
+      const cx = draft.view.panX + (canvasSize.width / zoom) / 2;
+      const cy = draft.view.panY + (canvasSize.height / zoom) / 2;
+      const node = makeWidgetNode(
+        item.name,
+        {
+          x: cx - item.defaultFrame.w / 2,
+          y: cy - item.defaultFrame.h / 2,
+          w: item.defaultFrame.w,
+          h: item.defaultFrame.h,
+          rotation: 0,
+        },
+        createStoreWidgetPayload(item),
+      );
+      addNode(draft, node, root);
+      draft.selection = new Set([node.id]);
+      replace(draft);
+      pushMessage("store_widget_inserted");
+    },
+    [activePageId, canvasSize, pushMessage, replace],
+  );
+
+  const updateStoreWidgets = useCallback(
+    (storeId: string) => {
+      const target = storeWidgets.find((item) => item.storeId === storeId);
+      if (!target) return;
+      const result = applyStoreWidgetUpdate(docRef.current, target);
+      if (!result.updated) {
+        pushMessage("store_widget_no_updates");
+        return;
+      }
+      commit(result.doc);
+      pushMessage(`store_widget_updated:${result.updated}`);
+    },
+    [commit, pushMessage, storeWidgets],
+  );
+
+  const requestStoreApproval = useCallback(
+    async (type: "plugin" | "widget", storeId: string) => {
+      if (!pageId) return;
+      const res = await fetch(`/api/app/${pageId}/store-governance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ action: "request_approval", type, storeId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        if (type === "plugin") setPluginError(data?.error ?? "Failed to request plugin approval.");
+        else setWidgetError(data?.error ?? "Failed to request widget approval.");
+        return;
+      }
+      syncGovernanceState(data?.governance);
+      pushMessage(`${type}_approval_requested`);
+    },
+    [pageId, pushMessage, syncGovernanceState],
+  );
+
+  const decideStoreApproval = useCallback(
+    async (requestId: string, status: "approved" | "rejected") => {
+      if (!pageId) return;
+      const res = await fetch(`/api/app/${pageId}/store-governance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ action: "decide_approval", requestId, status }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setPluginError(data?.error ?? "Failed to update approval.");
+        return;
+      }
+      syncGovernanceState(data?.governance);
+      pushMessage(`store_request_${status}`);
+    },
+    [pageId, pushMessage, syncGovernanceState],
+  );
+
+  const updateStoreGovernancePolicy = useCallback(
+    async (patch: Partial<StoreGovernancePolicy>) => {
+      if (!pageId) return;
+      const res = await fetch(`/api/app/${pageId}/store-governance`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setPluginError(data?.error ?? "Failed to update store policy.");
+        return;
+      }
+      syncGovernanceState(data?.governance);
+    },
+    [pageId, syncGovernanceState],
+  );
+
   const removePlugin = useCallback(
     async (id: string) => {
       if (pageId) {
@@ -9948,32 +10814,118 @@ export default function AdvancedEditor() {
       pushMessage("Select a target version.");
       return;
     }
-    setBranches((prev) => ({ ...prev, [name]: targetId }));
+    const next = upsertBranchEntry(docRef.current, createBranchEntry(name, targetId));
+    commit(next);
     setBranchNameInput("");
     setBranchTargetVersionId("");
     pushMessage("Branch created.");
-  }, [branchNameInput, branchTargetVersionId, currentVersionId, pushMessage]);
+  }, [branchNameInput, branchTargetVersionId, commit, currentVersionId, pushMessage]);
 
   const removeBranch = useCallback((name: string) => {
-    setBranches((prev) => {
-      const next = { ...prev };
-      delete next[name];
-      return next;
+    const next = removeBranchEntry(docRef.current, name);
+    commit(next);
+    setSelectedBranchReviewId((prev) => {
+      const review = docRef.current.branchReviews?.find((item) => item.id === prev);
+      return review?.branchName === name ? null : prev;
     });
-  }, []);
+  }, [commit]);
 
   const checkoutBranch = useCallback((name: string) => {
-    const versionId = branches[name];
+    const versionId = docRef.current.branches?.[name]?.versionId;
     if (!versionId) return;
     restoreVersion(versionId);
-  }, [branches, restoreVersion]);
+  }, [restoreVersion]);
 
-  const mergeBranch = useCallback(async (name: string) => {
-    const versionId = branches[name];
-    if (!versionId) return;
-    await restoreVersion(versionId);
-    pushMessage("Label");
-  }, [branches, restoreVersion, pushMessage]);
+  const compareBranch = useCallback(
+    async (name: string) => {
+      const branch = docRef.current.branches?.[name];
+      if (!branch) return;
+      setBranchCompareLoading(name);
+      setBranchCompareError(null);
+      try {
+        const branchDoc = await fetchVersionContentDoc(branch.versionId);
+        if (!branchDoc) {
+          setBranchCompareError("branch_version_not_found");
+          return;
+        }
+        const summary = buildBranchDiffSummary(docRef.current, branchDoc);
+        const review = createBranchReview(name, branch.versionId, summary);
+        let next = upsertBranchReview(docRef.current, review);
+        next = upsertBranchEntry(next, {
+          ...branch,
+          updatedAt: new Date().toISOString(),
+          lastComparedAt: new Date().toISOString(),
+          lastReviewId: review.id,
+        });
+        commit(next);
+        setSelectedBranchReviewId(review.id);
+        pushMessage(summary.conflicts.length ? "branch_review_ready" : "branch_compare_ready");
+      } catch {
+        setBranchCompareError("branch_compare_failed");
+      } finally {
+        setBranchCompareLoading((prev) => (prev === name ? null : prev));
+      }
+    },
+    [buildBranchDiffSummary, commit, fetchVersionContentDoc, pushMessage],
+  );
+
+  const approveBranchReview = useCallback(
+    (reviewId: string) => {
+      const next = setBranchReviewStatus(docRef.current, reviewId, "approved");
+      commit(next);
+      pushMessage("branch_review_approved");
+    },
+    [commit, pushMessage],
+  );
+
+  const closeBranchReview = useCallback(
+    (reviewId: string) => {
+      const next = setBranchReviewStatus(docRef.current, reviewId, "closed");
+      commit(next);
+      setSelectedBranchReviewId((prev) => (prev === reviewId ? null : prev));
+      pushMessage("branch_review_closed");
+    },
+    [commit, pushMessage],
+  );
+
+  const resolveBranchReviewNode = useCallback(
+    (reviewId: string, nodeId: string, resolution: "current" | "branch") => {
+      const next = setBranchReviewResolution(docRef.current, reviewId, nodeId, resolution);
+      commit(next);
+    },
+    [commit],
+  );
+
+  const mergeBranch = useCallback(
+    async (name: string) => {
+      const branch = docRef.current.branches?.[name];
+      if (!branch) return;
+      const reviews = (docRef.current.branchReviews ?? []).filter((review) => review.branchName === name);
+      const review = selectedBranchReviewId
+        ? reviews.find((item) => item.id === selectedBranchReviewId) ?? reviews[0]
+        : reviews[0];
+      if (!review) {
+        await compareBranch(name);
+        return;
+      }
+      if (review.summary.conflicts.length && review.status !== "approved") {
+        setSelectedBranchReviewId(review.id);
+        pushMessage("branch_review_required");
+        return;
+      }
+      const branchDoc = await fetchVersionContentDoc(branch.versionId);
+      if (!branchDoc) {
+        pushMessage("branch_version_not_found");
+        return;
+      }
+      const merged = applyBranchMerge(docRef.current, branchDoc, review);
+      commit(merged);
+      setCurrentVersionId(branch.versionId);
+      setSelectedBranchReviewId(review.id);
+      pushMessage("branch_merged");
+    },
+    [applyBranchMerge, commit, compareBranch, fetchVersionContentDoc, pushMessage, selectedBranchReviewId],
+  );
 
   const exportByNodeSettings = useCallback(() => {
     const svg = exportSvgRef.current;
@@ -9984,15 +10936,11 @@ export default function AdvancedEditor() {
       return node?.exportSettings?.length;
     });
     if (!ids.length) return;
-    const queue: Array<{ nodeId: string; format: "png" | "svg" | "pdf"; scale: number }> = [];
-    ids.forEach((nodeId) => {
-      const node = doc.nodes[nodeId];
-      (node?.exportSettings ?? []).forEach((es) => queue.push({ nodeId, format: es.format, scale: es.scale }));
-    });
+    const queue = buildNodeBatchExportQueue(doc, ids, title);
     let index = 0;
     const runNext = () => {
       if (index >= queue.length) return;
-      const { nodeId, format, scale } = queue[index];
+      const { nodeId, format, scale, fileName } = queue[index];
       index += 1;
       const node = doc.nodes[nodeId];
       const bounds = getSelectionBounds(doc, [nodeId]);
@@ -10000,9 +10948,6 @@ export default function AdvancedEditor() {
         setTimeout(runNext, 200);
         return;
       }
-      const baseName = makeSafeFilename(node.name || node.id);
-      const ext = format === "svg" ? "svg" : format === "pdf" ? "pdf" : "png";
-      const fileName = `${baseName}-${scale}x.${ext}`;
       const serialized = serializeSvgElementWithBounds(svg, bounds);
       const svgBlob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
       const url = URL.createObjectURL(svgBlob);
@@ -10061,12 +11006,25 @@ export default function AdvancedEditor() {
       img.src = url;
     };
     runNext();
-  }, []);
+  }, [title]);
+
+  const exportBatchManifestJson = useCallback(() => {
+    const batchQueue = buildNodeBatchExportQueue(doc, Array.from(doc.selection), title);
+    if (!batchQueue.length) return;
+    const name = `${buildScopedExportBaseName({
+      doc,
+      title,
+      scope: "selection",
+      selectionIds: Array.from(doc.selection),
+    })}-manifest.json`;
+    const payload = JSON.stringify(batchQueue, null, 2);
+    downloadBlob(new Blob([payload], { type: "application/json;charset=utf-8" }), name);
+  }, [doc, title]);
 
   const exportPdf = useCallback(async () => {
     const svg = exportSvgRef.current;
     if (!svg) return;
-    const name = makeSafeFilename(title || "advanced_export");
+    const name = getScopedExportBaseName();
     const bounds = getExportBounds();
     const serialized = serializeSvgElementWithBounds(svg, bounds);
     const svgBlob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
@@ -10101,7 +11059,7 @@ export default function AdvancedEditor() {
     };
     img.onerror = () => URL.revokeObjectURL(url);
     img.src = url;
-  }, [exportScale, title, getExportBounds, pushMessage]);
+  }, [exportScale, getExportBounds, getScopedExportBaseName, pushMessage]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -10111,6 +11069,7 @@ export default function AdvancedEditor() {
         if (versionListOpen) { e.preventDefault(); setVersionListOpen(false); return; }
         if (shortcutHelpOpen) { e.preventDefault(); setShortcutHelpOpen(false); return; }
         if (figmaImportOpen) { e.preventDefault(); setFigmaImportOpen(false); return; }
+        if (webImportOpen) { e.preventDefault(); setWebImportOpen(false); return; }
       }
       if ((e.key === "?" || e.key === "/") && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -10137,9 +11096,60 @@ export default function AdvancedEditor() {
         return;
       }
       if (pathEditStateRef.current) {
+        const state = pathEditStateRef.current;
         if (e.key === "Escape" || e.key === "Enter") {
           e.preventDefault();
           commitPathEdit(false);
+          return;
+        }
+        if (e.key === "Backspace" || e.key === "Delete") {
+          e.preventDefault();
+          setPathEditState((prev) => (prev ? removeSelectedPathAnchor(prev) : prev));
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          setPathEditState((prev) => (prev ? cycleSelectedPathAnchor(prev, e.shiftKey ? -1 : 1) : prev));
+          return;
+        }
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+          const step = gridSnapRef.current ? Math.max(1, gridSizeRef.current) : 1;
+          const delta = e.shiftKey ? step * 5 : step;
+          if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            setPathEditState((prev) => (prev ? nudgeSelectedPathAnchor(prev, { x: -delta, y: 0 }) : prev));
+            return;
+          }
+          if (e.key === "ArrowRight") {
+            e.preventDefault();
+            setPathEditState((prev) => (prev ? nudgeSelectedPathAnchor(prev, { x: delta, y: 0 }) : prev));
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setPathEditState((prev) => (prev ? nudgeSelectedPathAnchor(prev, { x: 0, y: -delta }) : prev));
+            return;
+          }
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setPathEditState((prev) => (prev ? nudgeSelectedPathAnchor(prev, { x: 0, y: delta }) : prev));
+            return;
+          }
+          if (e.key.toLowerCase() === "o" && state.anchors.length >= 2) {
+            e.preventDefault();
+            setPathEditState((prev) => (prev ? togglePathClosed(prev) : prev));
+            return;
+          }
+          if (e.key.toLowerCase() === "s") {
+            e.preventDefault();
+            setPathEditState((prev) => (prev ? setSelectedPathAnchorMode(prev, "smooth") : prev));
+            return;
+          }
+          if (e.key.toLowerCase() === "c") {
+            e.preventDefault();
+            setPathEditState((prev) => (prev ? setSelectedPathAnchorMode(prev, "corner") : prev));
+            return;
+          }
         }
         return;
       }
@@ -10222,7 +11232,7 @@ export default function AdvancedEditor() {
             }
             if (nextText !== null) {
               e.preventDefault();
-              updateNode(node.id, { text: { ...(node.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), value: nextText } as NodeText }, true);
+              updateNode(node.id, { text: setNodeTextValue(node.text, nextText) }, true);
               return;
             }
           }
@@ -10380,7 +11390,7 @@ export default function AdvancedEditor() {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [versionListOpen, shortcutHelpOpen, figmaImportOpen, saveDraft]);
+  }, [versionListOpen, shortcutHelpOpen, figmaImportOpen, webImportOpen, saveDraft]);
 
   function handleCanvasWheel(e: React.WheelEvent) {
     if (contextMenu) { setContextMenuSubMenu(null); setContextMenu(null); }
@@ -10632,11 +11642,42 @@ export default function AdvancedEditor() {
   const selectedIsInstance = selectedNode?.type === "instance";
   const defaultVariantId = selectedIsComponent ? selectedNode?.variants?.[0]?.id ?? null : null;
   const instanceSource = selectedIsInstance && selectedNode?.instanceOf ? doc.nodes[selectedNode.instanceOf] : null;
+  const selectedComponentVariantAxes = useMemo(
+    () => getVariantAxes(selectedIsComponent ? selectedNode?.variants : undefined),
+    [selectedIsComponent, selectedNode?.variants],
+  );
+  const selectedComponentVariantReport = useMemo(
+    () => analyzeVariantMatrix(selectedIsComponent ? selectedNode?.variants : undefined),
+    [selectedIsComponent, selectedNode?.variants],
+  );
+  const selectedComponentMissingVariantPlan = useMemo(
+    () => planMissingVariantFill(selectedIsComponent ? selectedNode?.variants : undefined),
+    [selectedIsComponent, selectedNode?.variants],
+  );
+  const instanceSourceVariants = instanceSource?.type === "component" ? instanceSource.variants ?? [] : [];
+  const instanceVariantAxes = useMemo(
+    () => getVariantAxes(instanceSourceVariants),
+    [instanceSourceVariants],
+  );
+  const selectedInstanceVariant = useMemo(() => {
+    if (!selectedIsInstance || !selectedNode || instanceSource?.type !== "component") return null;
+    return instanceSource.variants?.find((variant) => variant.id === (selectedNode.variantId ?? instanceSource.variants?.[0]?.id))
+      ?? instanceSource.variants?.[0]
+      ?? null;
+  }, [instanceSource, selectedIsInstance, selectedNode]);
+  const selectedInstanceVariantProps = useMemo(
+    () => getVariantProps(selectedInstanceVariant),
+    [selectedInstanceVariant],
+  );
   const selectedComponentRoot = useMemo(
     () => (selectedNode ? findComponentRoot(doc, selectedNode.id) : null),
     [doc, selectedNode?.id],
   );
   const selectedComponentProperties = selectedComponentRoot?.propertyDefinitions ?? {};
+  const selectedComponentPropertyNameDuplicates = useMemo(
+    () => findDuplicateComponentPropertyNames(selectedComponentProperties),
+    [selectedComponentProperties],
+  );
   const selectedComponentProperty = selectedNode && selectedComponentRoot ? selectedComponentProperties[selectedNode.id] : undefined;
   const canAddComponentProperty = Boolean(selectedComponentRoot && selectedNode) &&
     (componentPropKind === "text"
@@ -10729,10 +11770,206 @@ export default function AdvancedEditor() {
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
   }, [doc, selectedIsInstance, selectedNode?.id, instanceSource?.propertyDefinitions]);
+  const selectedNodeDev = selectedNode?.dev;
+  const branchEntries = useMemo(
+    () =>
+      Object.values(doc.branches ?? {}).sort((left, right) =>
+        (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt),
+      ),
+    [doc.branches],
+  );
+  const branchReviews = useMemo(
+    () =>
+      [...(doc.branchReviews ?? [])].sort((left, right) =>
+        (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt),
+      ),
+    [doc.branchReviews],
+  );
+  const selectedBranchReview = useMemo(
+    () => branchReviews.find((review) => review.id === selectedBranchReviewId) ?? null,
+    [branchReviews, selectedBranchReviewId],
+  );
+  const playgroundPreview = useMemo(
+    () =>
+      selectedNode
+        ? buildComponentPlaygroundPreview(doc, selectedNode.id, {
+            variantId: playgroundVariantId || undefined,
+            textProps: playgroundTextProps,
+            booleanProps: playgroundBooleanProps,
+            instanceProps: playgroundInstanceProps,
+          })
+        : null,
+    [doc, playgroundBooleanProps, playgroundInstanceProps, playgroundTextProps, playgroundVariantId, selectedNode],
+  );
+  const playgroundSpecPayload = useMemo(() => {
+    if (!playgroundPreview) return null;
+    const previewNode = playgroundPreview.doc.nodes[playgroundPreview.previewNodeId];
+    return previewNode ? buildSpecPayload(playgroundPreview.doc, previewNode) : null;
+  }, [playgroundPreview]);
+  const playgroundLaidOutDoc = useMemo(
+    () => (playgroundPreview ? layoutDoc(playgroundPreview.doc) : null),
+    [playgroundPreview],
+  );
+  const playgroundCodegen = useMemo(
+    () => (playgroundSpecPayload ? buildDevCodegenBundle(playgroundSpecPayload) : null),
+    [playgroundSpecPayload],
+  );
+
+  const updateSelectedNodeDev = useCallback(
+    (transform: (node: Node) => Node) => {
+      if (!selectedNode) return;
+      const draft = cloneDoc(docRef.current);
+      const node = draft.nodes[selectedNode.id];
+      if (!node) return;
+      draft.nodes[selectedNode.id] = transform(node);
+      commit(draft);
+    },
+    [commit, selectedNode],
+  );
+
+  const addDevAnnotation = useCallback(() => {
+    const text = devAnnotationDraft.trim();
+    if (!selectedNode || !text) return;
+    updateSelectedNodeDev((node) => upsertDevAnnotation(node, createDevAnnotation(text, devAnnotationStatusDraft)));
+    setDevAnnotationDraft("");
+    setDevAnnotationStatusDraft("todo");
+  }, [devAnnotationDraft, devAnnotationStatusDraft, selectedNode, updateSelectedNodeDev]);
+
+  const deleteDevAnnotation = useCallback(
+    (annotationId: string) => {
+      updateSelectedNodeDev((node) => removeDevAnnotation(node, annotationId));
+    },
+    [updateSelectedNodeDev],
+  );
+
+  const addDevCodeLink = useCallback(() => {
+    const title = devCodeLinkTitle.trim();
+    if (!selectedNode || !title) return;
+    updateSelectedNodeDev((node) =>
+      upsertDevCodeLink(
+        node,
+        createDevCodeLink({
+          title,
+          kind: devCodeLinkKind,
+          url: devCodeLinkUrl,
+          snippet: devCodeLinkSnippet,
+          language: devCodeLinkLanguage,
+          exportKey: devCodeLinkExportKey,
+        }),
+      ),
+    );
+    setDevCodeLinkTitle("");
+    setDevCodeLinkUrl("");
+    setDevCodeLinkSnippet("");
+    setDevCodeLinkLanguage("");
+    setDevCodeLinkExportKey("");
+    setDevCodeLinkKind("docs");
+  }, [
+    devCodeLinkExportKey,
+    devCodeLinkKind,
+    devCodeLinkLanguage,
+    devCodeLinkSnippet,
+    devCodeLinkTitle,
+    devCodeLinkUrl,
+    selectedNode,
+    updateSelectedNodeDev,
+  ]);
+
+  const deleteDevCodeLink = useCallback(
+    (codeLinkId: string) => {
+      updateSelectedNodeDev((node) => removeDevCodeLink(node, codeLinkId));
+    },
+    [updateSelectedNodeDev],
+  );
+
+  const toggleSelectedReadyForDev = useCallback(
+    (readyForDev: boolean) => {
+      updateSelectedNodeDev((node) => setNodeReadyForDev(node, readyForDev));
+    },
+    [updateSelectedNodeDev],
+  );
+
+  const compareSelectedNodeAgainstVersion = useCallback(async () => {
+    if (!pageId) return;
+    const currentDoc = docRef.current;
+    const nodeId = selectedNode?.id;
+    const currentNode = nodeId ? currentDoc.nodes[nodeId] : null;
+    if (!currentNode) {
+      setDevCompareError("node_required");
+      return;
+    }
+    if (!devCompareVersionId) {
+      setDevCompareError("version_required");
+      return;
+    }
+    setDevCompareLoading(true);
+    setDevCompareError(null);
+    try {
+      const anonId = await ensureAnonId();
+      const res = await fetch(`/api/pages/${pageId}/versions/${devCompareVersionId}?include=content`, {
+        headers: anonId ? { "x-anon-user-id": anonId } : undefined,
+      });
+      const data = (await res.json().catch(() => null)) as { version?: { created_at?: string; content?: unknown } } | null;
+      if (!res.ok || !data?.version?.content) {
+        setDevCompareError("version_content_not_found");
+        return;
+      }
+      const versionDoc = hydrateDoc(data.version.content);
+      const versionNode = findComparableVersionNode(versionDoc, currentNode);
+      if (!versionNode) {
+        setDevCompareError("comparable_node_not_found");
+        setDevCompareSections([]);
+        return;
+      }
+      const previousSpec = buildSpecPayload(versionDoc, versionNode);
+      const currentSpec = buildSpecPayload(currentDoc, currentNode);
+      const diffSections = buildSpecDiffSections(previousSpec, currentSpec).filter((section) => section.changed);
+      setDevCompareSections(diffSections);
+      setDevCompareLabel(data.version.created_at ? new Date(data.version.created_at).toLocaleString("ko-KR") : devCompareVersionId);
+      pushMessage(diffSections.length ? "dev_compare_ready" : "dev_compare_no_changes");
+    } catch {
+      setDevCompareError("dev_compare_failed");
+    } finally {
+      setDevCompareLoading(false);
+    }
+  }, [devCompareVersionId, ensureAnonId, pageId, pushMessage, selectedNode]);
 
   useEffect(() => {
     if (exportScope === "selection" && !hasSelection) setExportScope("page");
   }, [exportScope, hasSelection]);
+
+  useEffect(() => {
+    if (!(selectedIsComponent || selectedIsInstance) || !selectedNode) {
+      setPlaygroundVariantId("");
+      setPlaygroundTextProps({});
+      setPlaygroundBooleanProps({});
+      setPlaygroundInstanceProps({});
+      return;
+    }
+    const preview = buildComponentPlaygroundPreview(docRef.current, selectedNode.id);
+    setPlaygroundVariantId(preview?.variantId ?? "");
+    setPlaygroundTextProps(
+      Object.fromEntries(
+        (preview?.properties ?? [])
+          .filter((property) => property.kind === "text")
+          .map((property) => [property.sourceId, property.textValue ?? ""]),
+      ),
+    );
+    setPlaygroundBooleanProps(
+      Object.fromEntries(
+        (preview?.properties ?? [])
+          .filter((property) => property.kind === "boolean")
+          .map((property) => [property.sourceId, property.booleanValue ?? true]),
+      ),
+    );
+    setPlaygroundInstanceProps(
+      Object.fromEntries(
+        (preview?.properties ?? [])
+          .filter((property) => property.kind === "instance")
+          .map((property) => [property.sourceId, property.instanceValue ?? ""]),
+      ),
+    );
+  }, [selectedIsComponent, selectedIsInstance, selectedNode?.id]);
 
   useEffect(() => {
     if (selectedIsInstance && selectedNode?.type === "instance") {
@@ -10742,6 +11979,9 @@ export default function AdvancedEditor() {
       setSwapComponentId("");
     }
   }, [componentName.length, selectedIsInstance, selectedNode?.id, selectedNode?.instanceOf]);
+  useEffect(() => {
+    if (!selectedIsComponent) setVariantAxisDraft("");
+  }, [selectedIsComponent, selectedNode?.id]);
   useEffect(() => {
     if (!selectedNode) return;
     setComponentPropName(selectedNode.name);
@@ -10811,18 +12051,45 @@ export default function AdvancedEditor() {
 
   const parentNode = selectedNode?.parentId ? doc.nodes[selectedNode.parentId] : null;
   const parentIsAutoLayout = parentNode?.layout?.mode === "auto";
+  const parentIsGridLayout = parentNode?.layout?.mode === "grid";
+  const layoutPositioning = selectedNode?.layoutPositioning ?? "auto";
+  const ignoreAutoLayout = parentIsAutoLayout && layoutPositioning === "absolute";
   const autoLayout = selectedNode?.layout?.mode === "auto" ? selectedNode.layout : null;
+  const gridLayout = selectedNode?.layout?.mode === "grid" ? selectedNode.layout : null;
   const resolvedAutoLayout = autoLayout ?? DEFAULT_AUTO_LAYOUT;
+  const resolvedGridLayout = gridLayout ?? ensureGridLayout(selectedNode?.layout);
+  const selectedGridChild = selectedNode ? ensureGridChildPlacement(selectedNode.gridChild) : null;
+  const layoutModeValue = selectedNode?.layout?.mode ?? "fixed";
   const sizing = selectedNode?.layoutSizing ?? { width: "fixed", height: "fixed" };
   const constraints = selectedNode?.constraints ?? {};
-  const canEditConstraints = Boolean(selectedNode?.parentId && !parentIsAutoLayout);
+  const parentLayoutMode = parentIsAutoLayout ? "auto" : parentIsGridLayout ? "grid" : "fixed";
+  const constraintEditingState = getConstraintEditingState(parentLayoutMode, layoutPositioning);
+  const canEditConstraints = Boolean(selectedNode?.parentId && constraintEditingState.editable);
+  const constraintEditingReason = selectedNode?.parentId ? constraintEditingState.reason : undefined;
+  const horizontalConstraintMode = getConstraintAxisMode(selectedNode?.constraints, "horizontal");
+  const verticalConstraintMode = getConstraintAxisMode(selectedNode?.constraints, "vertical");
+  const constraintPresetLabel = describeConstraintPreset(selectedNode?.constraints);
   const resolvedTextStyle = selectedNode ? resolveTextStyle(doc, selectedNode) : null;
   const textWrapEnabled = selectedNode?.type === "text" ? selectedNode.text?.wrap !== false : false;
   const textAutoSizeEnabled = selectedNode?.type === "text" ? Boolean(selectedNode.text?.autoSize) : false;
+  const selectedTextModel = selectedNode?.type === "text" ? ensureNodeText(selectedNode.text) : null;
+  const selectedTextRanges = selectedTextModel?.ranges ?? [];
+  const selectedTextPath = selectedTextModel?.textPath;
+  const textContentVariables = useMemo(
+    () => doc.variables.filter((variable) => variable.type === "string" || variable.type === "number" || variable.type === "boolean"),
+    [doc.variables],
+  );
+  const textStyleVariables = useMemo(
+    () => doc.variables.filter((variable) => variable.type === "string" || variable.type === "number"),
+    [doc.variables],
+  );
+  const selectedTextPathPreviewId = selectedNode?.type === "text" ? getTextPathId(selectedNode.id, "text-inspector-preview") : null;
+  const selectedTextPathPreviewText =
+    selectedNode?.type === "text" ? normalizeTextPathText(resolveBoundNodeTextValue(doc, selectedNode.text) || "Preview Text") : "Preview Text";
   const toggleTextWrap = useCallback(
     (enabled: boolean) => {
       if (!selectedNode || selectedNode.type !== "text") return;
-      const baseText = selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE };
+      const baseText = ensureNodeText(selectedNode.text);
       updateNode(
         selectedNode.id,
         {
@@ -10844,7 +12111,7 @@ export default function AdvancedEditor() {
         fitTextNodeToContent(selectedNode.id, true);
         return;
       }
-      const baseText = selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE };
+      const baseText = ensureNodeText(selectedNode.text);
       updateNode(
         selectedNode.id,
         {
@@ -10928,7 +12195,7 @@ export default function AdvancedEditor() {
         }
         if (type === "stroke") {
           const strokes = Array.isArray(value) ? (value as Stroke[]) : node.style.strokes;
-          node.style = { ...node.style, strokes, strokeStyleId: styleId };
+          node.style = { ...node.style, strokes, strokeStyleId: styleId, strokeRef: undefined };
           return;
         }
         if (type === "effect") {
@@ -11091,10 +12358,36 @@ export default function AdvancedEditor() {
   const devCss = selectedNode ? buildDevCss(doc, selectedNode, { roundPx: devRoundPx }) : "";
   const devSpecPayload = selectedNode ? buildSpecPayload(doc, selectedNode) : null;
   const devSpecText = devSpecPayload ? JSON.stringify(devSpecPayload, null, 2) : "";
+  const devCodegen = devSpecPayload ? buildDevCodegenBundle(devSpecPayload) : null;
   const selectedInteractions = selectedNode?.prototype?.interactions ?? [];
+  const selectedInteractionDiagnostics = useMemo(
+    () =>
+      selectedNode
+        ? Object.fromEntries(
+            selectedInteractions.map((interaction) => [
+              interaction.id,
+              diagnosePrototypeInteraction(doc, activePageId ?? prototypeStartPageId ?? doc.pages[0]?.id ?? "", selectedNode.id, interaction),
+            ]),
+          )
+        : {},
+    [activePageId, doc, prototypeStartPageId, selectedInteractions, selectedNode],
+  );
   const selectedAbs = selectedNode ? getAbsoluteFrame(doc, selectedNode.id) : null;
   const parentAbs = selectedNode?.parentId ? getAbsoluteFrame(doc, selectedNode.parentId) : null;
+  const selectedNodeId = selectedNode?.id ?? null;
+  const selectedRotation = selectedNode?.frame.rotation ?? 0;
+  useEffect(() => {
+    if (!selectedNodeId) {
+      setRotationDraft("0");
+      return;
+    }
+    setRotationDraft(formatRotationDegrees(selectedRotation));
+  }, [selectedNodeId, selectedRotation]);
   const devSpecLines = selectedNode ? buildSpecLines(doc, selectedNode) : [];
+  const exportBatchQueue = useMemo(
+    () => buildNodeBatchExportQueue(doc, Array.from(doc.selection), title),
+    [doc, title],
+  );
   const filteredEventLog = useMemo(
     () => (eventLogFilter === "all" ? eventLog : eventLog.filter((entry) => entry.kind === eventLogFilter)),
     [eventLog, eventLogFilter],
@@ -11113,8 +12406,10 @@ export default function AdvancedEditor() {
   }, [doc, selectedNode?.id]);
   const devFillStyle = selectedNode ? findStyleName(doc, selectedNode.style.fillStyleId, "fill") : null;
   const devStrokeStyle = selectedNode ? findStyleName(doc, selectedNode.style.strokeStyleId, "stroke") : null;
+  const devEffectStyle = selectedNode ? findStyleName(doc, selectedNode.style.effectStyleId, "effect") : null;
   const devTextStyle = selectedNode && selectedNode.type === "text" ? findStyleName(doc, selectedNode.text?.styleRef, "text") : null;
   const devFillVar = selectedNode ? findVariableName(doc, selectedNode.style.fillRef) : null;
+  const devStrokeVar = selectedNode ? findVariableName(doc, selectedNode.style.strokeRef) : null;
   const effectDefs = useMemo(() => buildEffectDefs(doc, "adv-effect", performanceMode), [doc, performanceMode]);
   const gradientDefs = useMemo(() => buildGradientDefs(doc, EDITOR_GRADIENT_PREFIX), [doc]);
   const imageFillPatternDefs = useMemo(() => buildImageFillPatternDefs(doc), [doc]);
@@ -11131,14 +12426,110 @@ export default function AdvancedEditor() {
   const selectedEffects = selectedNode ? resolveEffects(doc, selectedNode) : [];
   const applyConstraintPreset = useCallback(
     (preset: Constraints) => {
-      if (!selectedNode) return;
+      if (!selectedNode || !constraintEditingState.editable) return;
       updateNode(selectedNode.id, { constraints: { ...preset } }, true);
+    },
+    [constraintEditingState.editable, selectedNode, updateNode],
+  );
+  const updateLayoutMode = useCallback(
+    (mode: "fixed" | "auto" | "grid") => {
+      if (!selectedNode) return;
+      if (mode === "fixed") {
+        updateNode(selectedNode.id, { layout: { mode: "fixed" } }, true);
+        return;
+      }
+      if (mode === "auto") {
+        updateNode(selectedNode.id, { layout: { ...DEFAULT_AUTO_LAYOUT, dir: selectedNode.layout?.mode === "auto" ? selectedNode.layout.dir : DEFAULT_AUTO_LAYOUT.dir } }, true);
+        return;
+      }
+      updateNode(selectedNode.id, { layout: ensureGridLayout(selectedNode.layout ?? DEFAULT_GRID_LAYOUT) }, true);
     },
     [selectedNode, updateNode],
   );
+  const updateAutoLayout = useCallback(
+    (patch: Partial<AutoLayout>) => {
+      if (!selectedNode || selectedNode.layout?.mode !== "auto") return;
+      const nextLayout: AutoLayout = { ...resolvedAutoLayout, ...patch };
+      if ("justify" in patch && !("gapMode" in patch)) {
+        nextLayout.gapMode = patch.justify === "space-between" ? "space-between" : "fixed";
+      }
+      if ("gapMode" in patch && !("justify" in patch)) {
+        nextLayout.justify = patch.gapMode === "space-between"
+          ? "space-between"
+          : resolvedAutoLayout.justify === "space-between"
+            ? "start"
+            : resolvedAutoLayout.justify;
+      }
+      if ((patch.wrap ?? nextLayout.wrap) && !Number.isFinite(nextLayout.wrapGap)) {
+        nextLayout.wrapGap = nextLayout.gap;
+      }
+      updateNode(selectedNode.id, { layout: nextLayout }, true);
+    },
+    [resolvedAutoLayout, selectedNode, updateNode],
+  );
+  const updateGridLayout = useCallback(
+    (patch: Partial<typeof resolvedGridLayout>) => {
+      if (!selectedNode) return;
+      const base = ensureGridLayout(selectedNode.layout);
+      const nextLayout = {
+        ...base,
+        ...patch,
+        padding: {
+          ...base.padding,
+          ...("padding" in patch && patch.padding ? patch.padding : {}),
+        },
+      };
+      updateNode(selectedNode.id, { layout: nextLayout }, true);
+    },
+    [selectedNode, updateNode, resolvedGridLayout],
+  );
+  const updateGridPadding = useCallback(
+    (side: keyof typeof resolvedGridLayout.padding, value: number) => {
+      updateGridLayout({
+        padding: {
+          ...resolvedGridLayout.padding,
+          [side]: value,
+        },
+      });
+    },
+    [resolvedGridLayout.padding, updateGridLayout],
+  );
+  const updateGridChildPlacement = useCallback(
+    (patch: Partial<NonNullable<typeof selectedGridChild>>) => {
+      if (!selectedNode || !parentIsGridLayout || !selectedGridChild) return;
+      updateNode(
+        selectedNode.id,
+        {
+          gridChild: {
+            ...selectedGridChild,
+            ...patch,
+          },
+        },
+        true,
+      );
+    },
+    [parentIsGridLayout, selectedGridChild, selectedNode, updateNode],
+  );
+  const updateAutoLayoutPadding = useCallback(
+    (side: keyof AutoLayout["padding"], value: number) => {
+      updateAutoLayout({
+        padding: {
+          ...resolvedAutoLayout.padding,
+          [side]: value,
+        },
+      });
+    },
+    [resolvedAutoLayout.padding, updateAutoLayout],
+  );
+  const setConstraintModes = useCallback(
+    (horizontal: "min" | "center" | "max" | "stretch" | "scale", vertical: "min" | "center" | "max" | "stretch" | "scale") => {
+      applyConstraintPreset(buildConstraintPreset(horizontal, vertical));
+    },
+    [applyConstraintPreset],
+  );
   const updateConstraintFlag = useCallback(
     (key: keyof Constraints, checked: boolean) => {
-      if (!selectedNode) return;
+      if (!selectedNode || !constraintEditingState.editable) return;
       const next = { ...(selectedNode.constraints ?? {}) };
       if (checked) {
         next[key] = true;
@@ -11147,12 +12538,33 @@ export default function AdvancedEditor() {
       }
       updateNode(selectedNode.id, { constraints: Object.keys(next).length ? next : undefined }, true);
     },
-    [selectedNode, updateNode],
+    [constraintEditingState.editable, selectedNode, updateNode],
   );
   const clearConstraints = useCallback(() => {
-    if (!selectedNode) return;
+    if (!selectedNode || !constraintEditingState.editable) return;
     updateNode(selectedNode.id, { constraints: undefined }, true);
-  }, [selectedNode, updateNode]);
+  }, [constraintEditingState.editable, selectedNode, updateNode]);
+  const updateLayoutPositioning = useCallback(
+    (nextPositioning: "auto" | "absolute") => {
+      if (!selectedNode || !parentIsAutoLayout) return;
+      const nextSizing = selectedNode.layoutSizing
+        ? {
+            ...selectedNode.layoutSizing,
+            width: nextPositioning === "absolute" && selectedNode.layoutSizing.width === "fill" ? "fixed" : selectedNode.layoutSizing.width,
+            height: nextPositioning === "absolute" && selectedNode.layoutSizing.height === "fill" ? "fixed" : selectedNode.layoutSizing.height,
+          }
+        : selectedNode.layoutSizing;
+      updateNode(
+        selectedNode.id,
+        {
+          layoutPositioning: nextPositioning === "auto" ? undefined : nextPositioning,
+          layoutSizing: nextSizing,
+        },
+        true,
+      );
+    },
+    [parentIsAutoLayout, selectedNode, updateNode],
+  );
   const applyEffects = useCallback(
     (next: Effect[]) => {
       if (!selectedNode) return;
@@ -11604,7 +13016,25 @@ export default function AdvancedEditor() {
                 ) : null}
                 <label className="flex items-center justify-between gap-2">
                   <span className="text-neutral-500">회전</span>
-                  <input type="number" value={Math.round(selectedNode.frame.rotation)} onChange={(e) => updateNode(selectedNode.id, { frame: { ...selectedNode.frame, rotation: Number(e.target.value) } }, true)} className="w-20 rounded border border-neutral-200 px-2 py-1" />
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={rotationDraft}
+                    onChange={(e) => {
+                      setRotationDraft(e.target.value);
+                      const nextRotation = parseRotationInput(e.target.value);
+                      if (nextRotation == null) return;
+                      updateNode(selectedNode.id, { frame: { ...selectedNode.frame, rotation: nextRotation } }, true);
+                    }}
+                    onBlur={() => {
+                      const nextRotation = parseRotationInput(rotationDraft) ?? normalizeRotationDegrees(selectedNode.frame.rotation);
+                      setRotationDraft(formatRotationDegrees(nextRotation));
+                      if (nextRotation !== selectedNode.frame.rotation) {
+                        updateNode(selectedNode.id, { frame: { ...selectedNode.frame, rotation: nextRotation } }, true);
+                      }
+                    }}
+                    className="w-20 rounded border border-neutral-200 px-2 py-1"
+                  />
                 </label>
               </div>
               <div className="mt-2">
@@ -11628,6 +13058,318 @@ export default function AdvancedEditor() {
                   </div>
                   <div className="mt-2 text-[10px] text-neutral-400">
                     Offset/Outline uses polygon approximation for curves.
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Plugin Store</div>
+                    <div className="grid grid-cols-[1fr,120px] gap-2">
+                      <input
+                        type="text"
+                        value={storePluginQuery}
+                        onChange={(e) => setStorePluginQuery(e.target.value)}
+                        placeholder="Search plugins"
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                      />
+                      <select
+                        value={storePluginCategory}
+                        onChange={(e) => setStorePluginCategory(e.target.value as StorePlugin["category"] | "all")}
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <option value="all">All</option>
+                        <option value="editor">Editor</option>
+                        <option value="export">Export</option>
+                        <option value="runtime">Runtime</option>
+                        <option value="ops">Ops</option>
+                      </select>
+                    </div>
+                    <div className="max-h-48 space-y-2 overflow-y-auto rounded border border-neutral-200 bg-white p-2">
+                      {filteredStorePlugins.length ? (
+                        filteredStorePlugins.map((plugin) => {
+                          const request = storeApprovalRequests.find((item) => item.type === "plugin" && item.storeId === plugin.storeId && item.status === "requested");
+                          const approved = storeApprovalRequests.some((item) => item.type === "plugin" && item.storeId === plugin.storeId && item.status === "approved");
+                          const needsApproval = storeGovernancePolicy.pluginApprovalRequired || plugin.approvalRequired;
+                          return (
+                          <div key={plugin.storeId} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2 text-[11px]">
+                            <div className="flex items-center justify-between gap-2">
+                              <div>
+                                <div className="font-medium text-neutral-700">{plugin.name}</div>
+                                <div className="text-[10px] text-neutral-400">{plugin.category} · v{plugin.version ?? "-"}</div>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                  onClick={() => toggleSavedPluginStore(plugin.storeId)}
+                                >
+                                  {savedPluginStoreIds.includes(plugin.storeId) ? "saved" : "save"}
+                                </button>
+                                {needsApproval && !approved ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-700 disabled:opacity-50"
+                                    onClick={() => void requestStoreApproval("plugin", plugin.storeId)}
+                                    disabled={!pageId || Boolean(request)}
+                                  >
+                                    {request ? "requested" : "request"}
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-900 bg-neutral-900 px-2 py-1 text-[10px] text-white disabled:opacity-50"
+                                    onClick={() => void installStorePlugin(plugin.storeId)}
+                                    disabled={!pageId}
+                                  >
+                                    install
+                                  </button>
+                                )}
+                                {plugin.sharePath ? (
+                                  <a
+                                    href={plugin.sharePath}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] text-neutral-600"
+                                  >
+                                    detail
+                                  </a>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="mt-1 text-[10px] text-neutral-500">{plugin.description}</div>
+                            {plugin.detail ? <div className="mt-1 text-[10px] text-neutral-400">{plugin.detail}</div> : null}
+                            {needsApproval ? (
+                              <div className="mt-1 text-[10px] text-neutral-500">
+                                approval {approved ? "approved" : request ? "requested" : "required"}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                        })
+                      ) : (
+                        <div className="text-[11px] text-neutral-400">No store plugins</div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Widget Store</div>
+                    <div className="grid grid-cols-[1fr,120px] gap-2">
+                      <input
+                        type="text"
+                        value={storeWidgetQuery}
+                        onChange={(e) => setStoreWidgetQuery(e.target.value)}
+                        placeholder="Search widgets"
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                      />
+                      <select
+                        value={storeWidgetCategory}
+                        onChange={(e) => setStoreWidgetCategory(e.target.value as StoreWidget["category"] | "all")}
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <option value="all">All</option>
+                        <option value="embed">Embed</option>
+                        <option value="data">Data</option>
+                        <option value="ops">Ops</option>
+                      </select>
+                    </div>
+                    <div className="max-h-48 space-y-2 overflow-y-auto rounded border border-neutral-200 bg-white p-2">
+                      {filteredStoreWidgets.length ? (
+                        filteredStoreWidgets.map((widget) => {
+                          const request = storeApprovalRequests.find((item) => item.type === "widget" && item.storeId === widget.storeId && item.status === "requested");
+                          const approved = storeApprovalRequests.some((item) => item.type === "widget" && item.storeId === widget.storeId && item.status === "approved");
+                          const needsApproval = storeGovernancePolicy.widgetApprovalRequired || widget.approvalRequired;
+                          return (
+                          <div key={widget.storeId} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2 text-[11px]">
+                            <div className="flex items-center justify-between gap-2">
+                              <div>
+                                <div className="font-medium text-neutral-700">{widget.name}</div>
+                                <div className="text-[10px] text-neutral-400">{widget.category} · v{widget.version}</div>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                  onClick={() => toggleSavedWidgetStore(widget.storeId)}
+                                >
+                                  {savedWidgetStoreIds.includes(widget.storeId) ? "saved" : "save"}
+                                </button>
+                                {needsApproval && !approved ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-700 disabled:opacity-50"
+                                    onClick={() => void requestStoreApproval("widget", widget.storeId)}
+                                    disabled={!pageId || Boolean(request)}
+                                  >
+                                    {request ? "requested" : "request"}
+                                  </button>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                      onClick={() => updateStoreWidgets(widget.storeId)}
+                                    >
+                                      update
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-[10px] text-indigo-700"
+                                      onClick={() => insertStoreWidget(widget)}
+                                    >
+                                      insert
+                                    </button>
+                                  </>
+                                )}
+                                {widget.sharePath ? (
+                                  <a
+                                    href={widget.sharePath}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] text-neutral-600"
+                                  >
+                                    detail
+                                  </a>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="mt-1 text-[10px] text-neutral-500">{widget.description}</div>
+                            {widget.detail ? <div className="mt-1 text-[10px] text-neutral-400">{widget.detail}</div> : null}
+                            {needsApproval ? (
+                              <div className="mt-1 text-[10px] text-neutral-500">
+                                approval {approved ? "approved" : request ? "requested" : "required"}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                        })
+                      ) : (
+                        <div className="text-[11px] text-neutral-400">No store widgets</div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Resource Hub</div>
+                    <div className="grid grid-cols-[1fr,120px] gap-2">
+                      <input
+                        type="text"
+                        value={resourceHubQuery}
+                        onChange={(e) => setResourceHubQuery(e.target.value)}
+                        placeholder="Search resources"
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                      />
+                      <select
+                        value={resourceHubType}
+                        onChange={(e) => setResourceHubType(e.target.value as "all" | "library" | "installed-plugin" | "plugin-store" | "widget-store")}
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <option value="all">All</option>
+                        <option value="library">Library</option>
+                        <option value="installed-plugin">Installed</option>
+                        <option value="plugin-store">Plugin Store</option>
+                        <option value="widget-store">Widget Store</option>
+                      </select>
+                    </div>
+                    <div className="max-h-48 space-y-1 overflow-y-auto rounded border border-neutral-200 bg-white p-2">
+                      {resourceHubEntries.length ? (
+                        resourceHubEntries.map((entry) => (
+                          <div key={`${entry.type}:${entry.id}`} className="flex items-center justify-between gap-2 rounded border border-neutral-100 bg-neutral-50 px-2 py-1 text-[11px]">
+                            <div>
+                              <div className="font-medium text-neutral-700">{entry.title}</div>
+                              <div className="text-[10px] text-neutral-400">{entry.type} · {entry.subtitle}</div>
+                            </div>
+                            <div className="text-[10px] text-neutral-500">{entry.status ?? "-"}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-[11px] text-neutral-400">No matching resources</div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Store Governance</div>
+                    <div className="rounded border border-neutral-200 bg-white p-2 space-y-2 text-[11px]">
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">scope</span>
+                          <select
+                            value={storeGovernancePolicy.scope}
+                            onChange={(e) => void updateStoreGovernancePolicy({ scope: e.target.value as "page" | "org" })}
+                            disabled={storeGovernanceRole !== "owner" && storeGovernanceRole !== "admin"}
+                            className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                          >
+                            <option value="page">page</option>
+                            <option value="org">org</option>
+                          </select>
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">allow save</span>
+                          <input
+                            type="checkbox"
+                            checked={storeGovernancePolicy.allowSave}
+                            disabled={storeGovernanceRole !== "owner" && storeGovernanceRole !== "admin"}
+                            onChange={(e) => void updateStoreGovernancePolicy({ allowSave: e.target.checked })}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">plugin approval</span>
+                          <input
+                            type="checkbox"
+                            checked={storeGovernancePolicy.pluginApprovalRequired}
+                            disabled={storeGovernanceRole !== "owner" && storeGovernanceRole !== "admin"}
+                            onChange={(e) => void updateStoreGovernancePolicy({ pluginApprovalRequired: e.target.checked })}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">widget approval</span>
+                          <input
+                            type="checkbox"
+                            checked={storeGovernancePolicy.widgetApprovalRequired}
+                            disabled={storeGovernanceRole !== "owner" && storeGovernanceRole !== "admin"}
+                            onChange={(e) => void updateStoreGovernancePolicy({ widgetApprovalRequired: e.target.checked })}
+                          />
+                        </label>
+                      </div>
+                      <div className="text-[10px] text-neutral-500">
+                        allowed permissions: {storeGovernancePolicy.allowedPermissions.join(", ")}
+                      </div>
+                    </div>
+                    <div className="rounded border border-neutral-200 bg-white p-2">
+                      <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-neutral-400">Approval Requests</div>
+                      <div className="max-h-36 space-y-1 overflow-y-auto">
+                        {storeApprovalRequests.length ? (
+                          storeApprovalRequests.map((request) => (
+                            <div key={request.id} className="flex items-center justify-between gap-2 rounded border border-neutral-100 bg-neutral-50 px-2 py-1 text-[11px]">
+                              <div>
+                                <div className="font-medium text-neutral-700">{request.type} · {request.storeId}</div>
+                                <div className="text-[10px] text-neutral-400">{request.status} · {new Date(request.updatedAt).toLocaleString("ko-KR")}</div>
+                              </div>
+                              {(storeGovernanceRole === "owner" || storeGovernanceRole === "admin") && request.status === "requested" ? (
+                                <div className="flex items-center gap-1">
+                                  <button type="button" className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-700" onClick={() => void decideStoreApproval(request.id, "approved")}>approve</button>
+                                  <button type="button" className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] text-rose-700" onClick={() => void decideStoreApproval(request.id, "rejected")}>reject</button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-[11px] text-neutral-400">No requests</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="rounded border border-neutral-200 bg-white p-2">
+                      <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-neutral-400">Audit</div>
+                      <div className="max-h-36 space-y-1 overflow-y-auto">
+                        {storeAuditEntries.length ? (
+                          storeAuditEntries.map((entry) => (
+                            <div key={entry.id} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1 text-[11px]">
+                              <div className="font-medium text-neutral-700">{entry.action}</div>
+                              <div className="text-[10px] text-neutral-400">
+                                {(entry.type ? `${entry.type} · ` : "") + (entry.storeId ?? "-")} · {new Date(entry.createdAt).toLocaleString("ko-KR")}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-[11px] text-neutral-400">No audit entries</div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null}
@@ -11784,19 +13526,187 @@ export default function AdvancedEditor() {
               <div className="mt-2 space-y-2">
                 <label className="flex items-center justify-between gap-2">
                   <span className="text-neutral-500">자동</span>
-                  <input type="checkbox" checked={Boolean(autoLayout)} onChange={(e) => { if (e.target.checked) updateNode(selectedNode.id, { layout: { ...DEFAULT_AUTO_LAYOUT } }, true); else updateNode(selectedNode.id, { layout: { mode: "fixed" } }, true); }} />
+                  <select
+                    value={layoutModeValue}
+                    onChange={(e) => updateLayoutMode(e.target.value as "fixed" | "auto" | "grid")}
+                    className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                  >
+                    <option value="fixed">Fixed</option>
+                    <option value="auto">Auto</option>
+                    <option value="grid">Grid</option>
+                  </select>
                 </label>
                 {autoLayout && (
-                  <label className="flex items-center justify-between gap-2">
-                    <span className="text-neutral-500">첫 자식</span>
-                    <select value={resolvedAutoLayout.gapMode ?? "fixed"} onChange={(e) => updateNode(selectedNode.id, { layout: { ...resolvedAutoLayout, gapMode: e.target.value as "fixed" | "space-between" } }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
-                      <option value="fixed">고정 간격</option>
-                      <option value="space-between">간격 채움</option>
-                    </select>
-                  </label>
+                  <div className="space-y-2 rounded border border-neutral-100 bg-white px-2 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">오토 레이아웃</div>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">방향</span>
+                      <select
+                        value={resolvedAutoLayout.dir}
+                        onChange={(e) => updateAutoLayout({ dir: e.target.value as "row" | "column" })}
+                        className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                      >
+                        <option value="row">가로</option>
+                        <option value="column">세로</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">정렬</span>
+                      <select
+                        value={resolvedAutoLayout.align}
+                        onChange={(e) => updateAutoLayout({ align: e.target.value as AutoLayout["align"] })}
+                        className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                      >
+                        <option value="start">시작</option>
+                        <option value="center">중앙</option>
+                        <option value="end">끝</option>
+                        <option value="stretch">스트레치</option>
+                        {resolvedAutoLayout.dir === "row" ? <option value="baseline">베이스라인</option> : null}
+                      </select>
+                    </label>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">메인 정렬</span>
+                      <select
+                        value={resolvedAutoLayout.justify ?? "start"}
+                        onChange={(e) => updateAutoLayout({
+                          justify: e.target.value as NonNullable<AutoLayout["justify"]>,
+                          gapMode: e.target.value === "space-between" ? "space-between" : "fixed",
+                        })}
+                        className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                      >
+                        <option value="start">시작</option>
+                        <option value="center">중앙</option>
+                        <option value="end">끝</option>
+                        <option value="space-between">Space Between</option>
+                      </select>
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>간격</span>
+                        <input
+                          type="number"
+                          value={resolvedAutoLayout.gap}
+                          onChange={(e) => updateAutoLayout({ gap: Number(e.target.value) || 0 })}
+                          className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>간격 모드</span>
+                        <select
+                          value={resolvedAutoLayout.gapMode ?? "fixed"}
+                          onChange={(e) => updateAutoLayout({ gapMode: e.target.value as "fixed" | "space-between" })}
+                          className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        >
+                          <option value="fixed">고정</option>
+                          <option value="space-between">채움</option>
+                        </select>
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>줄 간격</span>
+                        <input
+                          type="number"
+                          value={resolvedAutoLayout.wrapGap ?? resolvedAutoLayout.gap}
+                          onChange={(e) => updateAutoLayout({ wrapGap: Number(e.target.value) || 0 })}
+                          className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>줄바꿈</span>
+                        <input
+                          type="checkbox"
+                          checked={resolvedAutoLayout.wrap}
+                          onChange={(e) => updateAutoLayout({ wrap: e.target.checked })}
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>줄 정렬</span>
+                        <select
+                          value={resolvedAutoLayout.wrapAlign ?? "start"}
+                          onChange={(e) => updateAutoLayout({ wrapAlign: e.target.value as NonNullable<AutoLayout["wrapAlign"]> })}
+                          className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        >
+                          <option value="start">시작</option>
+                          <option value="center">중앙</option>
+                          <option value="end">끝</option>
+                          <option value="space-between">Space Between</option>
+                        </select>
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>스트로크 포함</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(resolvedAutoLayout.includeStrokeInBounds)}
+                          onChange={(e) => updateAutoLayout({ includeStrokeInBounds: e.target.checked })}
+                        />
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">상</span><input type="number" value={resolvedAutoLayout.padding.t} onChange={(e) => updateAutoLayoutPadding("t", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">우</span><input type="number" value={resolvedAutoLayout.padding.r} onChange={(e) => updateAutoLayoutPadding("r", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">하</span><input type="number" value={resolvedAutoLayout.padding.b} onChange={(e) => updateAutoLayoutPadding("b", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">좌</span><input type="number" value={resolvedAutoLayout.padding.l} onChange={(e) => updateAutoLayoutPadding("l", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                    </div>
+                  </div>
+                )}
+                {gridLayout && (
+                  <div className="space-y-2 rounded border border-neutral-100 bg-white px-2 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Grid Flow</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Columns</span>
+                        <input type="number" min={1} value={resolvedGridLayout.columns} onChange={(e) => updateGridLayout({ columns: Math.max(1, Number(e.target.value) || 1) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Rows</span>
+                        <input type="number" min={1} value={resolvedGridLayout.rows} onChange={(e) => updateGridLayout({ rows: Math.max(1, Number(e.target.value) || 1) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Col Gap</span>
+                        <input type="number" value={resolvedGridLayout.columnGap} onChange={(e) => updateGridLayout({ columnGap: Math.max(0, Number(e.target.value) || 0) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Row Gap</span>
+                        <input type="number" value={resolvedGridLayout.rowGap} onChange={(e) => updateGridLayout({ rowGap: Math.max(0, Number(e.target.value) || 0) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                    </div>
+                    <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                      <span>Columns Sizing</span>
+                      <input type="text" value={describeGridTrackSizing(resolvedGridLayout, "columns")} onChange={(e) => updateGridLayout(updateGridTrackSizing(resolvedGridLayout, "columns", e.target.value))} className="w-40 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                      <span>Rows Sizing</span>
+                      <input type="text" value={describeGridTrackSizing(resolvedGridLayout, "rows")} onChange={(e) => updateGridLayout(updateGridTrackSizing(resolvedGridLayout, "rows", e.target.value))} className="w-40 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">T</span><input type="number" value={resolvedGridLayout.padding.t} onChange={(e) => updateGridPadding("t", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">R</span><input type="number" value={resolvedGridLayout.padding.r} onChange={(e) => updateGridPadding("r", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">B</span><input type="number" value={resolvedGridLayout.padding.b} onChange={(e) => updateGridPadding("b", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                      <label className="flex items-center gap-1"><span className="text-neutral-500">L</span><input type="number" value={resolvedGridLayout.padding.l} onChange={(e) => updateGridPadding("l", Number(e.target.value) || 0)} className="w-16 rounded border border-neutral-200 px-1 py-0.5" /></label>
+                    </div>
+                    <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1.5 text-[10px] text-neutral-500">
+                      Track sizing accepts values like `1fr 2fr 120px auto`.
+                    </div>
+                  </div>
                 )}
                 {parentIsAutoLayout && (
                   <>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Layout Position</div>
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">Positioning</span>
+                      <select
+                        value={layoutPositioning}
+                        onChange={(e) => updateLayoutPositioning(e.target.value as "auto" | "absolute")}
+                        className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                      >
+                        <option value="auto">Auto Layout</option>
+                        <option value="absolute">Ignore Auto Layout</option>
+                      </select>
+                    </label>
+                    <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1.5 text-[10px] text-neutral-500">
+                      {ignoreAutoLayout
+                        ? "This layer stays outside the auto-layout flow and keeps its own position."
+                        : "This layer participates in the parent auto-layout flow."}
+                    </div>
                     <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">자식 크기</div>
                     <label className="flex items-center justify-between gap-2">
                       <span className="text-neutral-500">너비</span>
@@ -11820,21 +13730,103 @@ export default function AdvancedEditor() {
                       <label className="flex items-center gap-1"><span className="text-neutral-500">minH</span><input type="number" placeholder="?" value={sizing.minHeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, minHeight: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
                       <label className="flex items-center gap-1"><span className="text-neutral-500">maxH</span><input type="number" placeholder="?" value={sizing.maxHeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { layoutSizing: { ...sizing, maxHeight: e.target.value === "" ? undefined : Number(e.target.value) } }, true)} className="w-14 rounded border border-neutral-200 px-1 py-0.5" /></label>
                     </div>
+                    <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1.5 text-[10px] text-neutral-500">
+                      부모가 오토 레이아웃이면 제약보다 자식 크기(Fixed/Fill/Hug)가 우선합니다.
+                    </div>
+                    {ignoreAutoLayout ? (
+                      <div className="rounded border border-sky-200 bg-sky-50 px-2 py-1.5 text-[10px] text-sky-700">
+                        Ignore Auto Layout converts fill sizing to fixed sizing and re-enables constraints.
+                      </div>
+                    ) : null}
                   </>
                 )}
+                {parentIsGridLayout && selectedGridChild ? (
+                  <div className="space-y-2 rounded border border-neutral-100 bg-white px-2 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Grid Child</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Column</span>
+                        <input type="number" min={1} value={selectedGridChild.column + 1} onChange={(e) => updateGridChildPlacement({ column: Math.max(0, (Number(e.target.value) || 1) - 1) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Row</span>
+                        <input type="number" min={1} value={selectedGridChild.row + 1} onChange={(e) => updateGridChildPlacement({ row: Math.max(0, (Number(e.target.value) || 1) - 1) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Col Span</span>
+                        <input type="number" min={1} value={selectedGridChild.columnSpan} onChange={(e) => updateGridChildPlacement({ columnSpan: Math.max(1, Number(e.target.value) || 1) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>Row Span</span>
+                        <input type="number" min={1} value={selectedGridChild.rowSpan} onChange={(e) => updateGridChildPlacement({ rowSpan: Math.max(1, Number(e.target.value) || 1) })} className="w-16 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                      </label>
+                    </div>
+                    <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                      <span>Horizontal Align</span>
+                      <select value={selectedGridChild.horizontalAlign} onChange={(e) => updateGridChildPlacement({ horizontalAlign: e.target.value as typeof selectedGridChild.horizontalAlign })} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
+                        <option value="auto">Auto</option>
+                        <option value="start">Start</option>
+                        <option value="center">Center</option>
+                        <option value="end">End</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                      <span>Vertical Align</span>
+                      <select value={selectedGridChild.verticalAlign} onChange={(e) => updateGridChildPlacement({ verticalAlign: e.target.value as typeof selectedGridChild.verticalAlign })} className="rounded border border-neutral-200 px-2 py-1 text-[11px]">
+                        <option value="auto">Auto</option>
+                        <option value="start">Start</option>
+                        <option value="center">Center</option>
+                        <option value="end">End</option>
+                      </select>
+                    </label>
+                  </div>
+                ) : null}
+                {constraintEditingReason === "auto-layout-parent" ? (
+                  <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-700">
+                    부모가 auto-layout이면 constraints는 비활성화되고 sizing 규칙으로 대체됩니다.
+                  </div>
+                ) : null}
+                {constraintEditingReason === "grid-parent" ? (
+                  <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-700">
+                    Grid children use row, column, span, and cell alignment instead of constraints.
+                  </div>
+                ) : null}
                 {canEditConstraints && (
                   <div className="border-t border-neutral-100 pt-2">
                     <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">제약</div>
-                    <div className="grid grid-cols-3 gap-1 text-[11px]">
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, top: true })}>좌상</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, top: true })}>중상</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, top: true })}>우상</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, vCenter: true })}>좌</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, vCenter: true })}>중앙</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, vCenter: true })}>우</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ left: true, bottom: true })}>좌하</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ hCenter: true, bottom: true })}>중하</button>
-                      <button type="button" className="rounded border border-neutral-200 px-2 py-1" onClick={() => applyConstraintPreset({ right: true, bottom: true })}>우하</button>
+                    <div className="rounded border border-neutral-100 bg-white p-2">
+                      <div className="mb-2 text-[10px] text-neutral-400">현재: {constraintPresetLabel}</div>
+                      <div className="grid gap-1 text-[10px]" style={{ gridTemplateColumns: `40px repeat(${HORIZONTAL_CONSTRAINT_OPTIONS.length}, minmax(0, 1fr))` }}>
+                        <div />
+                        {HORIZONTAL_CONSTRAINT_OPTIONS.map((option) => (
+                          <div key={option.mode} className="text-center text-neutral-400">
+                            {option.label}
+                          </div>
+                        ))}
+                        {VERTICAL_CONSTRAINT_OPTIONS.map((vertical) => (
+                          <React.Fragment key={vertical.mode}>
+                            <div className="flex items-center text-neutral-400">{vertical.label}</div>
+                            {HORIZONTAL_CONSTRAINT_OPTIONS.map((horizontal) => {
+                              const active = horizontalConstraintMode === horizontal.mode && verticalConstraintMode === vertical.mode;
+                              return (
+                                <button
+                                  key={`${horizontal.mode}-${vertical.mode}`}
+                                  type="button"
+                                  className={`h-8 rounded border text-[10px] ${
+                                    active
+                                      ? "border-neutral-900 bg-neutral-900 text-white"
+                                      : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50"
+                                  }`}
+                                  onClick={() => setConstraintModes(horizontal.mode, vertical.mode)}
+                                  title={`${horizontal.label} / ${vertical.label}`}
+                                >
+                                  {active ? "적용" : "선택"}
+                                </button>
+                              );
+                            })}
+                          </React.Fragment>
+                        ))}
+                      </div>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
                       <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.left)} onChange={(e) => updateConstraintFlag("left", e.target.checked)} />좌</label>
@@ -11843,6 +13835,8 @@ export default function AdvancedEditor() {
                       <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.bottom)} onChange={(e) => updateConstraintFlag("bottom", e.target.checked)} />하</label>
                       <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.hCenter)} onChange={(e) => updateConstraintFlag("hCenter", e.target.checked)} />가로 중앙</label>
                       <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.vCenter)} onChange={(e) => updateConstraintFlag("vCenter", e.target.checked)} />세로 중앙</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.scaleX)} onChange={(e) => updateConstraintFlag("scaleX", e.target.checked)} />가로 비율</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(constraints.scaleY)} onChange={(e) => updateConstraintFlag("scaleY", e.target.checked)} />세로 비율</label>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => applyConstraintPreset({ left: true, right: true })}>좌우 고정</button>
@@ -11962,6 +13956,18 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                   </div>
+                                  <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                                    <span>Alignment</span>
+                                    <select
+                                      value={item.alignment ?? "start"}
+                                      onChange={(e) => updateItem({ alignment: e.target.value as "start" | "center" | "stretch" })}
+                                      className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                                    >
+                                      <option value="start">Start</option>
+                                      <option value="center">Center</option>
+                                      <option value="stretch">Stretch</option>
+                                    </select>
+                                  </label>
                                 </>
                               )}
                               {item.type === "rows" && (
@@ -12010,6 +14016,18 @@ export default function AdvancedEditor() {
                                       />
                                     </label>
                                   </div>
+                                  <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                                    <span>Alignment</span>
+                                    <select
+                                      value={item.alignment ?? "start"}
+                                      onChange={(e) => updateItem({ alignment: e.target.value as "start" | "center" | "stretch" })}
+                                      className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                                    >
+                                      <option value="start">Start</option>
+                                      <option value="center">Center</option>
+                                      <option value="stretch">Stretch</option>
+                                    </select>
+                                  </label>
                                 </>
                               )}
                               {item.type === "grid" && (
@@ -12426,22 +14444,22 @@ export default function AdvancedEditor() {
                           {isLinear && (
                             <label className="flex items-center justify-between gap-2">
                               <span className="text-neutral-500">색상(정지)</span>
-                              <input type="number" value={gradientFill?.angle ?? 0} onChange={(e) => gradientFill && setFills([{ ...gradientFill, angle: Number(e.target.value) }])} className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                              <input type="number" value={(gradientFill as { angle?: number } | undefined)?.angle ?? 0} onChange={(e) => { if (gradientFill && gradientFill.type === "linear") setFills([{ ...gradientFill, angle: Number(e.target.value) }]); }} className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                             </label>
                           )}
                           {isRadial && (
                             <div className="grid grid-cols-3 gap-2">
                               <label className="flex flex-col gap-1">
                                 <span className="text-neutral-500">Center X</span>
-                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.cx ?? 0.5} onChange={(e) => gradientFill && setFills([{ ...gradientFill, cx: Number(e.target.value) }])} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.type === "radial" ? gradientFill.cx ?? 0.5 : 0.5} onChange={(e) => { if (gradientFill?.type === "radial") setFills([{ ...gradientFill, cx: Number(e.target.value) }]); }} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                               </label>
                               <label className="flex flex-col gap-1">
                                 <span className="text-neutral-500">Center Y</span>
-                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.cy ?? 0.5} onChange={(e) => gradientFill && setFills([{ ...gradientFill, cy: Number(e.target.value) }])} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.type === "radial" ? gradientFill.cy ?? 0.5 : 0.5} onChange={(e) => { if (gradientFill?.type === "radial") setFills([{ ...gradientFill, cy: Number(e.target.value) }]); }} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                               </label>
                               <label className="flex flex-col gap-1">
                                 <span className="text-neutral-500">Radius</span>
-                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.r ?? 0.5} onChange={(e) => gradientFill && setFills([{ ...gradientFill, r: Number(e.target.value) }])} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
+                                <input type="number" min={0} max={1} step={0.05} value={gradientFill?.type === "radial" ? gradientFill.r ?? 0.5 : 0.5} onChange={(e) => { if (gradientFill?.type === "radial") setFills([{ ...gradientFill, r: Number(e.target.value) }]); }} className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]" />
                               </label>
                             </div>
                           )}
@@ -12457,6 +14475,19 @@ export default function AdvancedEditor() {
                                   const next = gradientStops.map((s, i) => (i === idx ? { ...s, color: e.target.value } : s));
                                   gradientFill && setFills([{ ...gradientFill, stops: next }]);
                                 }} className="h-6 w-10 rounded border border-neutral-200" />
+                                <select
+                                  value={stop.colorRef ?? ""}
+                                  onChange={(e) => {
+                                    const next = gradientStops.map((s, i) => (i === idx ? { ...s, colorRef: e.target.value || undefined } : s));
+                                    gradientFill && setFills([{ ...gradientFill, stops: next }]);
+                                  }}
+                                  className="min-w-0 flex-1 rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]"
+                                >
+                                  <option value="">No Var</option>
+                                  {colorVariables.map((variable) => (
+                                    <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                  ))}
+                                </select>
                                 <button type="button" className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px]" onClick={() => {
                                   const next = gradientStops.filter((_, i) => i !== idx);
                                   gradientFill && setFills([{ ...gradientFill, stops: next.length >= 2 ? next : undefined }]);
@@ -12485,6 +14516,7 @@ export default function AdvancedEditor() {
                           strokeStyleId: undefined,
                           effectStyleId: undefined,
                           fillRef: undefined,
+                          strokeRef: undefined,
                         },
                       }, true)
                     }
@@ -12585,8 +14617,8 @@ export default function AdvancedEditor() {
                   {(() => {
                     const segments = selectedNode.shape?.segments ?? [];
                     const defaultD = `M 0 ${selectedNode.frame.h * 0.8} C ${selectedNode.frame.w * 0.2} ${selectedNode.frame.h * 0.1}, ${selectedNode.frame.w * 0.8} ${selectedNode.frame.h * 0.9}, ${selectedNode.frame.w} ${selectedNode.frame.h * 0.2}`;
-                    const pathData = (selectedNode.shape?.pathData ?? "").trim() || defaultD;
-                    const setShape = (next: NonNullable<Node["shape"]>) => updateNode(selectedNode.id, { shape: next }, true);
+                    const pathData = primaryPathDataFromShape(selectedNode.shape) || defaultD;
+                    const setShape = (next: NonNullable<Node["shape"]>) => updateNode(selectedNode.id, { shape: withDerivedVectorNetwork(next) }, true);
                     if (segments.length === 0) {
                       return (
                         <>
@@ -12683,7 +14715,20 @@ export default function AdvancedEditor() {
                 <div className="mt-2 space-y-2">
                   <label className="flex items-center justify-between gap-2">
                     <span className="text-neutral-500">비율</span>
-                    <input type="text" value={selectedNode.text?.value ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), value: e.target.value } as NodeText }, true)} className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
+                    <input type="text" value={selectedTextModel?.value ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextValue(selectedNode.text, e.target.value) }, true)} className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">Content Var</span>
+                    <select
+                      value={selectedTextModel?.valueRef ?? ""}
+                      onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextValueRef(selectedNode.text, e.target.value || undefined) }, true)}
+                      className="min-w-0 flex-1 rounded border border-neutral-200 px-2 py-1 text-xs"
+                    >
+                      <option value="">None</option>
+                      {textContentVariables.map((variable) => (
+                        <option key={variable.id} value={variable.id}>{variable.name}</option>
+                      ))}
+                    </select>
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2">
@@ -12742,6 +14787,69 @@ export default function AdvancedEditor() {
                       <input type="number" step={0.1} value={resolvedTextStyle?.letterSpacing ?? 0} onChange={(e) => applyTextStyle({ letterSpacing: Number(e.target.value) || 0 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
                     </label>
                   </div>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">Paragraph</span>
+                    <input type="number" min={0} step={1} value={resolvedTextStyle?.paragraphSpacing ?? 0} onChange={(e) => applyTextStyle({ paragraphSpacing: Number(e.target.value) || 0 })} className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs" />
+                  </label>
+                  <div className="rounded border border-neutral-100 bg-neutral-50/60 p-2 space-y-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Text Variable Bindings</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Font Size</span>
+                        <select value={selectedTextModel?.styleBindings?.fontSize ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextStyleBinding(selectedNode.text, "fontSize", e.target.value || undefined) }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
+                          <option value="">None</option>
+                          {textStyleVariables.map((variable) => (
+                            <option key={variable.id} value={variable.id}>{variable.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Font Weight</span>
+                        <select value={selectedTextModel?.styleBindings?.fontWeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextStyleBinding(selectedNode.text, "fontWeight", e.target.value || undefined) }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
+                          <option value="">None</option>
+                          {textStyleVariables.map((variable) => (
+                            <option key={variable.id} value={variable.id}>{variable.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Line Height</span>
+                        <select value={selectedTextModel?.styleBindings?.lineHeight ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextStyleBinding(selectedNode.text, "lineHeight", e.target.value || undefined) }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
+                          <option value="">None</option>
+                          {textStyleVariables.map((variable) => (
+                            <option key={variable.id} value={variable.id}>{variable.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Letter Spacing</span>
+                        <select value={selectedTextModel?.styleBindings?.letterSpacing ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextStyleBinding(selectedNode.text, "letterSpacing", e.target.value || undefined) }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
+                          <option value="">None</option>
+                          {textStyleVariables.map((variable) => (
+                            <option key={variable.id} value={variable.id}>{variable.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Paragraph</span>
+                        <select value={selectedTextModel?.styleBindings?.paragraphSpacing ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextStyleBinding(selectedNode.text, "paragraphSpacing", e.target.value || undefined) }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
+                          <option value="">None</option>
+                          {textStyleVariables.map((variable) => (
+                            <option key={variable.id} value={variable.id}>{variable.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Family</span>
+                        <select value={selectedTextModel?.styleBindings?.fontFamily ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: setNodeTextStyleBinding(selectedNode.text, "fontFamily", e.target.value || undefined) }, true)} className="rounded border border-neutral-200 px-2 py-1 text-xs">
+                          <option value="">None</option>
+                          {textStyleVariables.map((variable) => (
+                            <option key={variable.id} value={variable.id}>{variable.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="flex items-center gap-1.5 text-xs text-neutral-600">
                       <input type="checkbox" checked={textWrapEnabled} onChange={(e) => toggleTextWrap(e.target.checked)} />
@@ -12761,10 +14869,11 @@ export default function AdvancedEditor() {
                   </button>
                   <label className="flex items-center justify-between gap-2">
                     <span className="text-neutral-500">비율</span>
-                    <select value={resolvedTextStyle?.align ?? "left"} onChange={(e) => applyTextStyle({ align: e.target.value as "left" | "center" | "right" })} className="rounded border border-neutral-200 px-2 py-1 text-xs">
+                    <select value={resolvedTextStyle?.align ?? "left"} onChange={(e) => applyTextStyle({ align: e.target.value as "left" | "center" | "right" | "justify" })} className="rounded border border-neutral-200 px-2 py-1 text-xs">
                       <option value="left">왼쪽</option>
                       <option value="center">가운데</option>
                       <option value="right">오른쪽</option>
+                      <option value="justify">양쪽</option>
                     </select>
                   </label>
                   <label className="flex items-center justify-between gap-2">
@@ -12823,6 +14932,381 @@ export default function AdvancedEditor() {
                         </div>
                       );
                     })()}
+                  </div>
+                  <div className="rounded border border-neutral-100 bg-neutral-50/60 p-2 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Rich Ranges</div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
+                          onClick={() => updateNode(selectedNode.id, { text: addTextRange(selectedNode.text) }, true)}
+                          disabled={!selectedTextModel?.value.length}
+                        >
+                          Add
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
+                          onClick={() => updateNode(selectedNode.id, { text: buildWordTextRanges(selectedNode.text) }, true)}
+                          disabled={!selectedTextModel?.value.length}
+                        >
+                          Words
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
+                          onClick={() => updateNode(selectedNode.id, { text: buildParagraphTextRanges(selectedNode.text) }, true)}
+                          disabled={!selectedTextModel?.value.length}
+                        >
+                          Paragraphs
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
+                          onClick={() => updateNode(selectedNode.id, { text: clearTextRanges(selectedNode.text) }, true)}
+                          disabled={!selectedTextRanges.length}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    {selectedTextRanges.length ? (
+                      <div className="space-y-2">
+                        {selectedTextRanges.map((range, index) => (
+                          <div key={`${range.start}-${range.end}-${index}`} className="rounded border border-neutral-200 bg-white p-2 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-[10px] uppercase tracking-[0.16em] text-neutral-400">Range {index + 1}</div>
+                                <div className="truncate text-[11px] text-neutral-500">{getTextRangePreview(selectedNode.text, index) || "(empty)"}</div>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                                  onClick={() => updateNode(selectedNode.id, { text: duplicateTextRange(selectedNode.text, index) }, true)}
+                                >
+                                  Duplicate
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                                  onClick={() => updateNode(selectedNode.id, { text: clearTextRangeStyling(selectedNode.text, index) }, true)}
+                                >
+                                  Reset Style
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                                  onClick={() => updateNode(selectedNode.id, { text: removeTextRange(selectedNode.text, index) }, true)}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Start</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={selectedTextModel?.value.length ?? 0}
+                                  value={range.start}
+                                  onChange={(e) => updateNode(selectedNode.id, { text: patchTextRange(selectedNode.text, index, { start: Number(e.target.value) || 0 }) }, true)}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">End</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={selectedTextModel?.value.length ?? 0}
+                                  value={range.end}
+                                  onChange={(e) => updateNode(selectedNode.id, { text: patchTextRange(selectedNode.text, index, { end: Number(e.target.value) || 0 }) }, true)}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              </label>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Weight</span>
+                                <input
+                                  type="number"
+                                  min={100}
+                                  max={900}
+                                  step={100}
+                                  value={range.style?.fontWeight ?? ""}
+                                  onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { fontWeight: e.target.value === "" ? undefined : Number(e.target.value) }) }, true)}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Size</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={range.style?.fontSize ?? ""}
+                                  onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { fontSize: e.target.value === "" ? undefined : Number(e.target.value) }) }, true)}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              </label>
+                            </div>
+                            <label className="flex flex-col gap-1">
+                              <span className="text-neutral-500">Family</span>
+                              <input
+                                type="text"
+                                list="font-picker-list"
+                                value={range.style?.fontFamily ?? ""}
+                                onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { fontFamily: e.target.value || undefined }) }, true)}
+                                className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                placeholder="inherit"
+                              />
+                            </label>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Line Height</span>
+                                <input
+                                  type="number"
+                                  min={0.5}
+                                  step={0.1}
+                                  value={range.style?.lineHeight ?? ""}
+                                  onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { lineHeight: e.target.value === "" ? undefined : Number(e.target.value) }) }, true)}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Spacing</span>
+                                <input
+                                  type="number"
+                                  step={0.1}
+                                  value={range.style?.letterSpacing ?? ""}
+                                  onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { letterSpacing: e.target.value === "" ? undefined : Number(e.target.value) }) }, true)}
+                                  className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                                />
+                              </label>
+                            </div>
+                            <label className="flex flex-col gap-1">
+                              <span className="text-neutral-500">Paragraph Spacing</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={range.style?.paragraphSpacing ?? ""}
+                                onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { paragraphSpacing: e.target.value === "" ? undefined : Number(e.target.value) }) }, true)}
+                                className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                              />
+                            </label>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Fill</span>
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="color"
+                                    value={range.fill ?? "#111111"}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeFill(selectedNode.text, index, e.target.value) }, true)}
+                                    className="h-8 w-12 rounded border border-neutral-200"
+                                  />
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 px-2 py-1 text-[10px]"
+                                    onClick={() => updateNode(selectedNode.id, { text: setTextRangeFill(selectedNode.text, index, undefined) }, true)}
+                                  >
+                                    Reset
+                                  </button>
+                                </div>
+                                <select
+                                  value={range.fillRef ?? ""}
+                                  onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeFillRef(selectedNode.text, index, e.target.value || undefined) }, true)}
+                                  className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                >
+                                  <option value="">No Fill Var</option>
+                                  {colorVariables.map((variable) => (
+                                    <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                  ))}
+                                </select>
+                              </label>
+                              <div className="flex flex-col gap-1">
+                                <span className="text-neutral-500">Flags</span>
+                                <label className="flex items-center gap-1.5 text-xs text-neutral-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(range.style?.italic)}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { italic: e.target.checked || undefined }) }, true)}
+                                  />
+                                  Italic
+                                </label>
+                                <label className="flex items-center gap-1.5 text-xs text-neutral-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(range.style?.underline)}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { underline: e.target.checked || undefined }) }, true)}
+                                  />
+                                  Underline
+                                </label>
+                                <label className="flex items-center gap-1.5 text-xs text-neutral-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(range.style?.lineThrough)}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { lineThrough: e.target.checked || undefined }) }, true)}
+                                  />
+                                  Strike
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-neutral-500">
+                        Add ranges to keep Figma-style text overrides inside one text layer.
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded border border-neutral-100 bg-neutral-50/60 p-2 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Text On Path</div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                          onClick={() => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: selectedTextPath?.pathData ?? DEFAULT_TEXT_PATH_DATA }) }, true)}
+                        >
+                          Default Path
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
+                          onClick={() => updateNode(selectedNode.id, { text: clearTextPath(selectedNode.text) }, true)}
+                          disabled={!selectedTextPath}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-neutral-500">Path Data</span>
+                      <textarea
+                        value={selectedTextPath?.pathData ?? ""}
+                        onChange={(e) => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: e.target.value }) }, true)}
+                        placeholder={DEFAULT_TEXT_PATH_DATA}
+                        rows={3}
+                        className="w-full rounded border border-neutral-200 px-2 py-1 text-xs font-mono"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-1">
+                      <button
+                        type="button"
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                        onClick={() => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: TEXT_PATH_PRESETS.arc }) }, true)}
+                      >
+                        Arc
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                        onClick={() => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: TEXT_PATH_PRESETS.wave }) }, true)}
+                      >
+                        Wave
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                        onClick={() => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: TEXT_PATH_PRESETS.line }) }, true)}
+                      >
+                        Line
+                      </button>
+                    </div>
+                    {selectedTextPath ? (
+                      <div className="rounded border border-neutral-200 bg-white p-2">
+                        <svg viewBox="0 0 220 80" className="h-24 w-full overflow-visible">
+                          <defs>
+                            <path id={selectedTextPathPreviewId ?? undefined} d={selectedTextPath.pathData} />
+                          </defs>
+                          <path d={selectedTextPath.pathData} fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeDasharray="4 3" />
+                          <text
+                            fontFamily={resolvedTextStyle?.fontFamily ?? DEFAULT_FONT_FAMILY}
+                            fontSize={12}
+                            fontWeight={resolvedTextStyle?.fontWeight ?? 500}
+                            fill="#111827"
+                          >
+                            <textPath href={`#${selectedTextPathPreviewId}`} startOffset={normalizeTextPathStartOffset(selectedTextPath.startOffset)}>
+                              {selectedTextPathPreviewText || "Preview Text"}
+                            </textPath>
+                          </text>
+                          <text fill="#2563eb" fontSize={16}>
+                            <textPath href={`#${selectedTextPathPreviewId}`} startOffset={normalizeTextPathStartOffset(selectedTextPath.startOffset)}>
+                              ●
+                            </textPath>
+                          </text>
+                        </svg>
+                      </div>
+                    ) : null}
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Start Offset</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={selectedTextPath?.startOffset ?? 0}
+                          onChange={(e) => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { startOffset: Number(e.target.value) || 0 }) }, true)}
+                          className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-neutral-500">Side</span>
+                        <select
+                          value={selectedTextPath?.side ?? "left"}
+                          onChange={(e) => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { side: e.target.value as "left" | "right" }) }, true)}
+                          className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                        >
+                          <option value="left">Left</option>
+                          <option value="right">Right</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="space-y-1">
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={selectedTextPath?.startOffset ?? 0}
+                        onChange={(e) => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { startOffset: Number(e.target.value) || 0 }) }, true)}
+                        className="w-full"
+                      />
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                          onClick={() => updateNode(selectedNode.id, { text: nudgeTextPathOffset(selectedNode.text, -10) }, true)}
+                        >
+                          -10
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                          onClick={() => updateNode(selectedNode.id, { text: nudgeTextPathOffset(selectedNode.text, 10) }, true)}
+                        >
+                          +10
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                          onClick={() => updateNode(selectedNode.id, { text: flipTextPathSide(selectedNode.text) }, true)}
+                        >
+                          Flip Side
+                        </button>
+                      </div>
+                    </div>
+                    {!selectedTextPath ? (
+                      <div className="text-[11px] text-neutral-500">
+                        Create a local path to bend text without changing the existing panel layout.
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -13334,6 +15818,7 @@ export default function AdvancedEditor() {
                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length !== 1} onClick={() => { applyMaskSelection(); setToolbarOverflowOpen(false); }}>마스크로 사용</button>
                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 disabled:opacity-50" disabled={selectedIds.length !== 1 || !selectedNode?.isMask} onClick={() => { releaseMaskSelection(); setToolbarOverflowOpen(false); }}>마스크 해제</button>
                       <div className="my-1 h-px bg-neutral-200" />
+                      <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={openWebImportModal}>웹에서 가져오기</button>
                       <button type="button" className="flex w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50" onClick={() => { setFigmaImportOpen(true); setToolbarOverflowOpen(false); }}>Figma에서 가져오기</button>
                         </div>
                       </>,
@@ -13627,19 +16112,25 @@ export default function AdvancedEditor() {
                     </button>
                   </div>
                 </div>
-                {Object.keys(branches).length ? (
+                {branchEntries.length ? (
                   <div className="space-y-2">
-                    {Object.entries(branches).map(([name, versionId]) => {
+                    {branchEntries.map((branch) => {
+                      const name = branch.name;
+                      const versionId = branch.versionId;
+                      const review = branch.lastReviewId
+                        ? branchReviews.find((item) => item.id === branch.lastReviewId) ??
+                          branchReviews.find((item) => item.branchName === branch.name)
+                        : branchReviews.find((item) => item.branchName === branch.name);
                       const branchCount = versionPreviewNodeCount[versionId];
                       const draftCount = Object.keys(doc.nodes).length;
                       const diff = branchCount != null ? branchCount - draftCount : null;
                       const nodeDiff = getVersionNodeDiff(versionId);
                       const isCurrent = versionId === currentVersionId;
                       return (
-                        <div key={name} className="rounded border border-neutral-100 bg-neutral-50/70 px-2 py-2">
+                        <div key={branch.name} className="rounded border border-neutral-100 bg-neutral-50/70 px-2 py-2">
                           <div className="flex items-center justify-between gap-2">
                             <div>
-                              <div className="text-[11px] text-neutral-700">{name}</div>
+                              <div className="text-[11px] text-neutral-700">{branch.name}</div>
                               <div className="text-[10px] text-neutral-400">{versionId.slice(0, 8)}{isCurrent ? " (현재)" : ""}</div>
                             </div>
                             <div className="flex items-center gap-1">
@@ -13648,6 +16139,36 @@ export default function AdvancedEditor() {
                               <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]" onClick={() => mergeBranch(name)}>병합</button>
                               <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]" onClick={() => removeBranch(name)}>삭제</button>
                             </div>
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-neutral-500">
+                            <span>{new Date(branch.updatedAt ?? branch.createdAt).toLocaleString("ko-KR")}</span>
+                            <button
+                              type="button"
+                              className="rounded border border-neutral-200 bg-white px-2 py-1 disabled:opacity-50"
+                              onClick={() => void compareBranch(name)}
+                              disabled={branchCompareLoading === name}
+                            >
+                              {branchCompareLoading === name ? "비교 중.." : "비교"}
+                            </button>
+                            {review ? (
+                              <button
+                                type="button"
+                                className={`rounded-full px-2 py-0.5 ${
+                                  review.status === "approved"
+                                    ? "bg-emerald-50 text-emerald-700"
+                                    : review.status === "merged"
+                                      ? "bg-sky-50 text-sky-700"
+                                      : review.status === "closed"
+                                        ? "bg-neutral-100 text-neutral-500"
+                                        : "bg-amber-50 text-amber-700"
+                                }`}
+                                onClick={() => setSelectedBranchReviewId(review.id)}
+                              >
+                                {review.status} {summarizeBranchReview(review)}
+                              </button>
+                            ) : (
+                              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-neutral-500">review 없음</span>
+                            )}
                           </div>
                           {branchCount != null ? (
                             <div className="mt-1 text-[10px] text-neutral-500">
@@ -13663,9 +16184,124 @@ export default function AdvancedEditor() {
                               ) : null}
                             </div>
                           ) : null}
+                          {review ? (
+                            <div className="mt-2 rounded border border-neutral-200 bg-white/80 px-2 py-2 text-[10px] text-neutral-600">
+                              <div className="flex items-center justify-between gap-2">
+                                <span>{summarizeBranchReview(review)}</span>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 bg-white px-2 py-1"
+                                    onClick={() => setSelectedBranchReviewId(review.id)}
+                                  >
+                                    review
+                                  </button>
+                                  {review.status !== "approved" && review.status !== "merged" ? (
+                                    <button
+                                      type="button"
+                                      className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700"
+                                      onClick={() => approveBranchReview(review.id)}
+                                    >
+                                      approve
+                                    </button>
+                                  ) : null}
+                                  {review.status !== "merged" ? (
+                                    <button
+                                      type="button"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-1"
+                                      onClick={() => closeBranchReview(review.id)}
+                                    >
+                                      close
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })}
+                    {branchCompareError ? (
+                      <div className="rounded border border-rose-200 bg-rose-50 px-2 py-2 text-[10px] text-rose-700">
+                        {branchCompareError}
+                      </div>
+                    ) : null}
+                    {selectedBranchReview ? (
+                      <div className="rounded border border-neutral-200 bg-white px-3 py-3 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="font-medium text-neutral-700">{selectedBranchReview.branchName}</div>
+                            <div className="text-[10px] text-neutral-400">
+                              {selectedBranchReview.status} · {summarizeBranchReview(selectedBranchReview)}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {selectedBranchReview.status !== "approved" && selectedBranchReview.status !== "merged" ? (
+                              <button
+                                type="button"
+                                className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-700"
+                                onClick={() => approveBranchReview(selectedBranchReview.id)}
+                              >
+                                approve
+                              </button>
+                            ) : null}
+                            {selectedBranchReview.status !== "merged" ? (
+                              <button
+                                type="button"
+                                className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                onClick={() => closeBranchReview(selectedBranchReview.id)}
+                              >
+                                close
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                        {selectedBranchReview.summary.conflicts.length ? (
+                          <div className="mt-3 space-y-2">
+                            {selectedBranchReview.summary.conflicts.map((nodeId) => {
+                              const node = doc.nodes[nodeId];
+                              const resolution = selectedBranchReview.resolutions?.[nodeId] ?? "branch";
+                              return (
+                                <div key={nodeId} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div>
+                                      <div className="text-[11px] text-neutral-700">{node?.name ?? nodeId}</div>
+                                      <div className="text-[10px] text-neutral-400">{nodeId}</div>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        className={`rounded border px-2 py-1 text-[10px] ${
+                                          resolution === "branch"
+                                            ? "border-neutral-900 bg-neutral-900 text-white"
+                                            : "border-neutral-200 bg-white"
+                                        }`}
+                                        onClick={() => resolveBranchReviewNode(selectedBranchReview.id, nodeId, "branch")}
+                                      >
+                                        branch
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`rounded border px-2 py-1 text-[10px] ${
+                                          resolution === "current"
+                                            ? "border-neutral-900 bg-neutral-900 text-white"
+                                            : "border-neutral-200 bg-white"
+                                        }`}
+                                        onClick={() => resolveBranchReviewNode(selectedBranchReview.id, nodeId, "current")}
+                                      >
+                                        current
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-[11px] text-emerald-700">conflict 없음. 바로 merge 가능.</p>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="text-[11px] text-neutral-400">브랜치 없음</div>
@@ -13767,7 +16403,7 @@ export default function AdvancedEditor() {
               </div>
               <div className="overflow-y-auto p-4 text-xs space-y-3">
                 <div><span className="font-medium text-neutral-600">도구</span><ul className="mt-1 space-y-0.5 text-neutral-700"><li>V 선택</li><li>F 프레임</li><li>R 사각형</li><li>O 타원</li><li>L 선</li><li>T 텍스트</li><li>P 펜</li><li>H 손</li></ul></div>
-                <div><span className="font-medium text-neutral-600">편집</span><ul className="mt-1 space-y-0.5 text-neutral-700"><li>Ctrl+C 복사 / X 잘라내기 / V 붙여넣기</li><li>Del, Backspace 삭제</li><li>Ctrl+Z 실행 취소 / Shift+Z 다시 실행</li><li>Ctrl+S 저장(버전 스냅샷)</li><li>Ctrl+G 그룹 / Shift+G 그룹 해제</li><li>Ctrl+A 전체 선택 / Shift+A 선택 해제</li></ul></div>
+                <div><span className="font-medium text-neutral-600">편집</span><ul className="mt-1 space-y-0.5 text-neutral-700"><li>Ctrl+C 복사 / X 잘라내기 / V 붙여넣기</li><li>Del, Backspace 삭제</li><li>Ctrl+Z 실행 취소 / Shift+Z 다시 실행</li><li>Ctrl+S 저장(버전 스냅샷)</li><li>Ctrl+G 그룹 / Shift+G 그룹 해제</li><li>Ctrl+A 전체 선택 / Shift+A 선택 해제</li><li>Path 편집: Tab 포인트 순환 / 화살표 포인트 이동 / O 열기·닫기 / S 부드럽게 / C 코너</li></ul></div>
                 <div><span className="font-medium text-neutral-600">줌</span><ul className="mt-1 space-y-0.5 text-neutral-700"><li>Ctrl+0 100% / 1 맞춤 / + - 확대·축소</li></ul></div>
                 <div><span className="font-medium text-neutral-600">기타</span><ul className="mt-1 space-y-0.5 text-neutral-700"><li>Esc 취소·모달 닫기</li><li>? 또는 Ctrl+/ 단축키 도움말</li></ul></div>
               </div>
@@ -13775,6 +16411,77 @@ export default function AdvancedEditor() {
           </div>
         )}
 
+        {webImportOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" role="dialog" aria-modal="true" aria-label="웹에서 가져오기" onClick={() => { setWebImportOpen(false); setWebImportError(null); }}>
+            <div className="w-full max-w-lg rounded-xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-sm font-medium text-neutral-900">웹에서 가져오기</h2>
+                <button type="button" className="rounded p-1 text-neutral-500 hover:bg-neutral-100" onClick={() => { setWebImportOpen(false); setWebImportError(null); }} aria-label="닫기">×</button>
+              </div>
+              <div className="space-y-3">
+                <p className="text-xs text-neutral-500">
+                  공개 URL을 읽어 제목, 본문, 버튼, 링크, 이미지를 편집 가능한 프레임으로 가져옵니다.
+                  {!pageId ? " 페이지가 없으면 가져오기 전에 새 작품을 자동으로 만듭니다." : ""}
+                </p>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-neutral-600">웹 페이지 URL</label>
+                  <input
+                    type="url"
+                    value={webImportUrl}
+                    onChange={(e) => setWebImportUrl(e.target.value)}
+                    placeholder="https://example.com"
+                    className="w-full rounded border border-neutral-200 px-2 py-1.5 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-neutral-600">Viewport</label>
+                  <select
+                    value={webImportViewportId}
+                    onChange={(e) => setWebImportViewportId(e.target.value as WebImportViewportId)}
+                    className="w-full rounded border border-neutral-200 px-2 py-1.5 text-sm"
+                  >
+                    {WEB_IMPORT_VIEWPORT_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label} · {option.width}px
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {doc.imports?.web ? (
+                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-xs text-neutral-600">
+                    <div className="font-medium text-neutral-800">마지막 가져오기</div>
+                    <div className="mt-1 break-all">{doc.imports.web.url}</div>
+                    <div className="mt-1">{getWebImportViewport(doc.imports.web.viewportId).label}</div>
+                  </div>
+                ) : null}
+                {webImportError ? <p className="text-xs text-red-600">{webImportError}</p> : null}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="rounded border border-neutral-200 px-3 py-1.5 text-xs" onClick={() => { setWebImportOpen(false); setWebImportError(null); }}>
+                    취소
+                  </button>
+                  {doc.imports?.web ? (
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                      disabled={webImportLoading}
+                      onClick={() => { void runWebImport(true); }}
+                    >
+                      {webImportLoading ? "다시 가져오는 중…" : "마지막 URL 다시 가져오기"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="rounded bg-neutral-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                    disabled={webImportLoading || !webImportUrl.trim()}
+                    onClick={() => { void runWebImport(false); }}
+                  >
+                    {webImportLoading ? "가져오는 중…" : "가져오기"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {figmaImportOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" role="dialog" aria-modal="true" aria-label="Figma에서 가져오기" onClick={() => { setFigmaImportOpen(false); setFigmaImportError(null); }}>
             <div className="w-full max-w-md rounded-lg border border-neutral-200 bg-white shadow-xl p-4" onClick={(e) => e.stopPropagation()}>
@@ -14192,300 +16899,98 @@ export default function AdvancedEditor() {
                         <rect x={doc.view.panX - 500} y={gy - hit} width={viewW + 1000} height={hit * 2} fill="transparent" pointerEvents="all" />
                         <line x1={doc.view.panX - 500} y1={gy} x2={doc.view.panX + viewW + 500} y2={gy} stroke="#0EA5E9" strokeWidth={1} strokeDasharray="4 4" pointerEvents="none" />
                       </g>
-                    );
-                  })}
-                </g>
-                <g data-layer="overlay" style={{ willChange: "transform" }}>
-                {marquee ? (
-                  <rect
-                    x={marquee.x}
-                    y={marquee.y}
-                    width={marquee.w}
-                    height={marquee.h}
-                    fill="rgba(37,99,235,0.1)"
-                    stroke="#2563EB"
-                    strokeDasharray="4 2"
-                  />
-                ) : null}
-
-                {pathEditState ? (
-                  <g pointerEvents="none">
-                    <path
-                      d={anchorsToPathData(pathEditState.anchors, pathEditState.closed)}
-                      fill="none"
-                      stroke="#2563EB"
-                      strokeWidth={2}
-                    />
-                    {pathEditState.anchors.map((a, i) => (
-                      <g key={i}>
-                        {a.handle1X != null && a.handle1Y != null ? (
-                          <>
-                            <line x1={a.x} y1={a.y} x2={a.handle1X} y2={a.handle1Y} stroke="#94A3B8" strokeWidth={1} />
-                            <circle cx={a.handle1X} cy={a.handle1Y} r={4} fill="#64748B" />
-                          </>
-                        ) : null}
-                        {a.handle2X != null && a.handle2Y != null ? (
-                          <>
-                            <line x1={a.x} y1={a.y} x2={a.handle2X} y2={a.handle2Y} stroke="#94A3B8" strokeWidth={1} />
-                            <circle cx={a.handle2X} cy={a.handle2Y} r={4} fill="#64748B" />
-                          </>
-                        ) : null}
-                        <circle cx={a.x} cy={a.y} r={i === 0 && pathEditState.anchors.length >= 2 && !pathEditState.closed ? 6 : 5} fill="#2563EB" stroke="#fff" strokeWidth={1.5} />
-                      </g>
-                    ))}
-                  </g>
-                ) : null}
-
-                {auditMode && filteredAuditIssues.length
-                  ? (
+                      );
+                    })}
+                  {activeSmartGuides?.guideX !== undefined || activeSmartGuides?.guideY !== undefined ? (
                     <g pointerEvents="none">
-                      {filteredAuditIssues.map((issue) => {
-                        const stroke = issue.severity === "error" ? "#DC2626" : "#F59E0B";
-                        const labelWidth = Math.max(60, issue.message.length * 6);
-                        return (
-                          <g key={`audit-${issue.id}`}>
-                            <rect x={issue.frame.x} y={issue.frame.y} width={issue.frame.w} height={issue.frame.h} fill="none" stroke={stroke} strokeWidth={1} strokeDasharray="4 2" />
-                            <rect x={issue.frame.x} y={issue.frame.y - 14} width={labelWidth} height={14} rx={4} fill={stroke} />
-                            <text x={issue.frame.x + 4} y={issue.frame.y - 4} fill="#fff" fontSize={10}>
-                              {issue.message}
-                            </text>
-                          </g>
-                        );
-                      })}
-                    </g>
-                  )
-                  : null}
-
-                {collabEnabled && collabCursors.length
-                  ? (
-                    <g pointerEvents="none">
-                      {collabCursors.map((peer) => {
-                        const label = peer.name || "User";
-                        const labelWidth = Math.max(40, label.length * 6);
-                        return (
-                          <g key={`collab-${peer.id}`}>
-                            {peer.selectionRect ? (
-                              <rect
-                                x={peer.selectionRect.x}
-                                y={peer.selectionRect.y}
-                                width={peer.selectionRect.w}
-                                height={peer.selectionRect.h}
-                                fill="none"
-                                stroke={peer.color}
-                                strokeWidth={1}
-                                strokeDasharray="4 2"
-                              />
-                            ) : null}
-                            <circle cx={peer.x} cy={peer.y} r={4} fill={peer.color} />
-                            <rect x={peer.x + 6} y={peer.y - 16} width={labelWidth} height={14} rx={4} fill={peer.color} />
-                            <text x={peer.x + 10} y={peer.y - 6} fill="#fff" fontSize={10}>
-                              {label}
-                            </text>
-                          </g>
-                        );
-                      })}
-                    </g>
-                  )
-                  : null}
-
-                {comments.length > 0
-                  ? comments.map((c) => (
-                      <g
-                        key={c.id}
-                        data-comment-pin
-                        style={{ cursor: "pointer" }}
-                        pointerEvents="all"
-                        onPointerDown={(ev) => {
-                          ev.stopPropagation();
-                          ev.preventDefault();
-                          setSelectedCommentId(c.id);
-                        }}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          ev.preventDefault();
-                          setSelectedCommentId(c.id);
-                        }}
-                      >
-                        <path
-                          d={`M ${c.x} ${c.y - 12} L ${c.x - 6} ${c.y + 4} L ${c.x} ${c.y} L ${c.x + 6} ${c.y + 4} Z`}
-                          fill={c.resolved ? "#94A3B8" : "#2563EB"}
-                          stroke="#fff"
-                          strokeWidth={1.5}
+                      {activeSmartGuides.guideX !== undefined ? (
+                        <line
+                          x1={activeSmartGuides.guideX}
+                          y1={doc.view.panY - 500}
+                          x2={activeSmartGuides.guideX}
+                          y2={doc.view.panY + canvasSize.height / doc.view.zoom + 500}
+                          stroke="#F97316"
+                          strokeWidth={1}
                         />
-                        {!c.resolved && c.replies.length > 0 ? (
-                          <circle cx={c.x + 8} cy={c.y - 10} r={6} fill="#EF4444" stroke="#fff" strokeWidth={1} />
-                        ) : null}
-                      </g>
-                    ))
-                  : null}
-
-                {renderLayoutGrid
-                  ? visibleNodeIds.map((id) => {
-                      const node = doc.nodes[id];
-                      if (!node?.layoutGrid?.length || !["frame", "section", "component"].includes(node.type)) return null;
-                      const abs = getAbsoluteFrame(doc, id);
-                      if (!abs) return null;
-                      const drag = dragRef.current;
-                      const isDragging = Boolean(drag?.mode === "move" && drag.ids.includes(id) && dragDelta);
-                      const displayX = isDragging && dragDelta ? abs.x + dragDelta.dx : abs.x;
-                      const displayY = isDragging && dragDelta ? abs.y + dragDelta.dy : abs.y;
-                      return (
-                        <g key={`layout-grid-${id}`} transform={`translate(${displayX} ${displayY})`} pointerEvents="none">
-                          {renderLayoutGridLines(node.layoutGrid!, node.frame.w, node.frame.h)}
-                        </g>
-                      );
-                    })
-                  : null}
-
-                {panelMode === "dev" && devMeasure && selectedAbs && parentAbs
-                  ? (() => {
-                      const left = Math.round(selectedAbs.x - parentAbs.x);
-                      const right = Math.round(parentAbs.x + parentAbs.w - (selectedAbs.x + selectedAbs.w));
-                      const top = Math.round(selectedAbs.y - parentAbs.y);
-                      const bottom = Math.round(parentAbs.y + parentAbs.h - (selectedAbs.y + selectedAbs.h));
-                      const midX = selectedAbs.x + selectedAbs.w / 2;
-                      const midY = selectedAbs.y + selectedAbs.h / 2;
-                      const labelColor = "#F97316";
-                      return (
-                        <g pointerEvents="none">
-                          <line x1={parentAbs.x} y1={midY} x2={selectedAbs.x} y2={midY} stroke={labelColor} strokeWidth={1} />
+                      ) : null}
+                      {activeSmartGuides.guideY !== undefined ? (
+                        <line
+                          x1={doc.view.panX - 500}
+                          y1={activeSmartGuides.guideY}
+                          x2={doc.view.panX + canvasSize.width / doc.view.zoom + 500}
+                          y2={activeSmartGuides.guideY}
+                          stroke="#F97316"
+                          strokeWidth={1}
+                        />
+                      ) : null}
+                      {activeSmartGuides.distances.map((distance, index) => (
+                        <g key={`distance-${distance.axis}-${distance.side}-${index}`}>
                           <line
-                            x1={selectedAbs.x + selectedAbs.w}
-                            y1={midY}
-                            x2={parentAbs.x + parentAbs.w}
-                            y2={midY}
-                            stroke={labelColor}
+                            x1={distance.x1}
+                            y1={distance.y1}
+                            x2={distance.x2}
+                            y2={distance.y2}
+                            stroke="#F97316"
                             strokeWidth={1}
+                            strokeDasharray="3 2"
                           />
-                          <line x1={midX} y1={parentAbs.y} x2={midX} y2={selectedAbs.y} stroke={labelColor} strokeWidth={1} />
-                          <line
-                            x1={midX}
-                            y1={selectedAbs.y + selectedAbs.h}
-                            x2={midX}
-                            y2={parentAbs.y + parentAbs.h}
-                            stroke={labelColor}
-                            strokeWidth={1}
-                          />
-                          <text x={(parentAbs.x + selectedAbs.x) / 2} y={midY - 4} fill={labelColor} fontSize={10} textAnchor="middle">
-                            {left}px
-                          </text>
                           <text
-                            x={(selectedAbs.x + selectedAbs.w + parentAbs.x + parentAbs.w) / 2}
-                            y={midY - 4}
-                            fill={labelColor}
+                            x={distance.labelX}
+                            y={distance.labelY}
+                            fill="#F97316"
                             fontSize={10}
-                            textAnchor="middle"
+                            textAnchor={distance.axis === "x" ? "middle" : "start"}
                           >
-                            {right}px
-                          </text>
-                          <text x={midX + 4} y={(parentAbs.y + selectedAbs.y) / 2} fill={labelColor} fontSize={10}>
-                            {top}px
-                          </text>
-                          <text x={midX + 4} y={(selectedAbs.y + selectedAbs.h + parentAbs.y + parentAbs.h) / 2} fill={labelColor} fontSize={10}>
-                            {bottom}px
-                          </text>
-                          <text x={selectedAbs.x} y={selectedAbs.y - 6} fill={labelColor} fontSize={10}>
-                            {Math.round(selectedAbs.w)}x{Math.round(selectedAbs.h)}
+                            {formatMeasurementLabel(distance.value)}px
                           </text>
                         </g>
-                      );
-                    })()
-                  : null}
-                {panelMode === "dev" && devGuides && selectedAbs && parentAbs && selectedNode
-                  ? (() => {
-                      const parent = selectedNode.parentId ? doc.nodes[selectedNode.parentId] : null;
-                      if (!parent) return null;
-                      const siblings = parent.children
-                        .filter((id) => id !== selectedNode.id)
-                        .map((id) => ({ id, frame: getAbsoluteFrame(doc, id) }))
-                        .filter((item): item is { id: string; frame: Rect } => Boolean(item.frame));
-                      if (!siblings.length) return null;
-                      const left = siblings.reduce<Rect | null>((acc, item) => {
-                        if (item.frame.x + item.frame.w > selectedAbs.x) return acc;
-                        if (!acc || item.frame.x + item.frame.w > acc.x + acc.w) return item.frame;
-                        return acc;
-                      }, null);
-                      const right = siblings.reduce<Rect | null>((acc, item) => {
-                        if (item.frame.x < selectedAbs.x + selectedAbs.w) return acc;
-                        if (!acc || item.frame.x < acc.x) return item.frame;
-                        return acc;
-                      }, null);
-                      const top = siblings.reduce<Rect | null>((acc, item) => {
-                        if (item.frame.y + item.frame.h > selectedAbs.y) return acc;
-                        if (!acc || item.frame.y + item.frame.h > acc.y + acc.h) return item.frame;
-                        return acc;
-                      }, null);
-                      const bottom = siblings.reduce<Rect | null>((acc, item) => {
-                        if (item.frame.y < selectedAbs.y + selectedAbs.h) return acc;
-                        if (!acc || item.frame.y < acc.y) return item.frame;
-                        return acc;
-                      }, null);
-                      const midX = selectedAbs.x + selectedAbs.w / 2;
-                      const midY = selectedAbs.y + selectedAbs.h / 2;
-                      const labelColor = "#0EA5E9";
-                      const guides: React.ReactElement[] = [];
-                      const addGapLine = (x1: number, y1: number, x2: number, y2: number, label: string) => {
-                        guides.push(<line key={`line-${label}-${x1}-${y1}`} x1={x1} y1={y1} x2={x2} y2={y2} stroke={labelColor} strokeWidth={1} />);
-                        guides.push(
-                          <text key={`text-${label}-${x1}-${y1}`} x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 4} fill={labelColor} fontSize={10} textAnchor="middle">
-                            {label}
-                          </text>,
-                        );
-                      };
-                      if (left) {
-                        const gap = Math.round(selectedAbs.x - (left.x + left.w));
-                        addGapLine(left.x + left.w, midY, selectedAbs.x, midY, `${gap}px`);
-                      }
-                      if (right) {
-                        const gap = Math.round(right.x - (selectedAbs.x + selectedAbs.w));
-                        addGapLine(selectedAbs.x + selectedAbs.w, midY, right.x, midY, `${gap}px`);
-                      }
-                      if (top) {
-                        const gap = Math.round(selectedAbs.y - (top.y + top.h));
-                        addGapLine(midX, top.y + top.h, midX, selectedAbs.y, `${gap}px`);
-                      }
-                      if (bottom) {
-                        const gap = Math.round(bottom.y - (selectedAbs.y + selectedAbs.h));
-                        addGapLine(midX, selectedAbs.y + selectedAbs.h, midX, bottom.y, `${gap}px`);
-                      }
-                      const parentCenterX = parentAbs.x + parentAbs.w / 2;
-                      const parentCenterY = parentAbs.y + parentAbs.h / 2;
-                      if (Math.abs(parentCenterX - midX) <= 1) {
-                        guides.push(
-                          <line key="center-x" x1={parentCenterX} y1={parentAbs.y} x2={parentCenterX} y2={parentAbs.y + parentAbs.h} stroke={labelColor} strokeDasharray="4 4" />,
-                        );
-                      }
-                      if (Math.abs(parentCenterY - midY) <= 1) {
-                        guides.push(
-                          <line key="center-y" x1={parentAbs.x} y1={parentCenterY} x2={parentAbs.x + parentAbs.w} y2={parentCenterY} stroke={labelColor} strokeDasharray="4 4" />,
-                        );
-                      }
-                      return <g pointerEvents="none">{guides}</g>;
-                    })()
-                  : null}
-                {panelMode === "dev" && devSpecOverlay && selectedAbs && devSpecLines.length
-                  ? (() => {
-                      const lineHeight = 12;
-                      const padding = 6;
-                      const height = devSpecLines.length * lineHeight + padding * 2;
-                      const width = Math.max(...devSpecLines.map((line) => line.length), 12) * 6 + padding * 2;
-                      const x = selectedAbs.x;
-                      let y = selectedAbs.y - height - 8;
-                      const minY = parentAbs?.y ?? 0;
-                      if (y < minY) y = selectedAbs.y + selectedAbs.h + 8;
-                      return (
-                        <g pointerEvents="none">
-                          <rect x={x} y={y} width={width} height={height} fill="white" stroke="#F97316" strokeWidth={1} rx={6} />
-                          {devSpecLines.map((line, index) => (
-                            <text key={line} x={x + padding} y={y + padding + lineHeight * (index + 1) - 2} fill="#F97316" fontSize={10}>
-                              {line}
-                            </text>
-                          ))}
-                        </g>
-                      );
-                    })()
-                  : null}
+                      ))}
+                    </g>
+                  ) : null}
                 </g>
+                <AdvancedEditorCanvasOverlay
+                  doc={doc}
+                  marquee={marquee}
+                  selectedNode={selectedNode ?? null}
+                  selectedAbs={selectedAbs}
+                  parentAbs={parentAbs}
+                  resizingSelectionId={dragRef.current?.mode === "resize" ? dragRef.current.id : null}
+                  pathEditState={pathEditState}
+                  serializePathEditState={serializePathEditState}
+                  auditMode={auditMode}
+                  auditIssues={filteredAuditIssues}
+                  collabEnabled={collabEnabled}
+                  collabCursors={collabCursors}
+                  comments={comments}
+                  onSelectComment={setSelectedCommentId}
+                  layoutGridOverlay={
+                    renderLayoutGrid
+                      ? visibleNodeIds.map((id) => {
+                          const node = doc.nodes[id];
+                          if (!node?.layoutGrid?.length || !["frame", "section", "component"].includes(node.type)) return null;
+                          const abs = getAbsoluteFrame(doc, id);
+                          if (!abs) return null;
+                          const drag = dragRef.current;
+                          const isDragging = Boolean(drag?.mode === "move" && drag.ids.includes(id) && dragDelta);
+                          const displayX = isDragging && dragDelta ? abs.x + dragDelta.dx : abs.x;
+                          const displayY = isDragging && dragDelta ? abs.y + dragDelta.dy : abs.y;
+                          return (
+                            <g key={`layout-grid-${id}`} transform={`translate(${displayX} ${displayY})`} pointerEvents="none">
+                              {renderLayoutGridLines(node.layoutGrid!, node.frame.w, node.frame.h)}
+                            </g>
+                          );
+                        })
+                      : null
+                  }
+                  panelMode={panelMode}
+                  devMeasure={devMeasure}
+                  devGuides={devGuides}
+                  devSpecOverlay={devSpecOverlay}
+                  devSpecLines={devSpecLines}
+                  computeDistanceGuideLines={computeDistanceGuideLines}
+                  formatMeasurementLabel={formatMeasurementLabel}
+                  getAbsoluteFrame={getAbsoluteFrame}
+                />
               </svg>
               )}
             </div>
@@ -14710,12 +17215,53 @@ export default function AdvancedEditor() {
                     <div className="space-y-2">
                       <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">변형 (Variants)</div>
                       <div className="space-y-2 rounded-md border border-neutral-200 bg-white p-2">
+                        <div className="space-y-2 rounded border border-neutral-100 bg-neutral-50 px-2 py-2">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">변형 축</div>
+                          {selectedComponentVariantAxes.length ? (
+                            <div className="space-y-1">
+                              {selectedComponentVariantAxes.map((axis) => (
+                                <div key={axis.key} className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                                  <span>{axis.key}</span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-neutral-400">{axis.values.join(" / ") || "값 없음"}</span>
+                                    <button
+                                      type="button"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px] text-red-600"
+                                      onClick={() => removeComponentVariantAxis(selectedNode.id, axis.key)}
+                                    >
+                                      축 삭제
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-neutral-400">아직 변형 축이 없습니다.</div>
+                          )}
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={variantAxisDraft}
+                              onChange={(e) => setVariantAxisDraft(e.target.value)}
+                              className="flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              placeholder="새 축 이름 (예: State)"
+                            />
+                            <button
+                              type="button"
+                              className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                              onClick={() => addComponentVariantAxis(selectedNode.id)}
+                            >
+                              축 추가
+                            </button>
+                          </div>
+                        </div>
                         {(selectedNode.variants ?? []).length > 0 ? (
                           <div className="space-y-2">
                             {selectedNode.variants?.map((v, index) => {
                               const isDefault = defaultVariantId === v.id;
                               const isEditing = variantEditId === v.id;
                               const rootName = doc.nodes[v.rootId]?.name ?? v.rootId.slice(0, 8);
+                              const variantPropsLabel = formatVariantProps(v.props);
                               return (
                                 <div key={v.id} className="rounded border border-neutral-200 bg-neutral-50 px-2 py-2">
                                   <div className="flex items-center justify-between gap-2">
@@ -14727,6 +17273,9 @@ export default function AdvancedEditor() {
                                     </div>
                                     <span className="text-[10px] text-neutral-400">{rootName}</span>
                                   </div>
+                                  {variantPropsLabel ? (
+                                    <div className="mt-1 text-[10px] text-neutral-500">{variantPropsLabel}</div>
+                                  ) : null}
                                   {isEditing ? (
                                     <div className="mt-2 flex items-center gap-2">
                                       <input
@@ -14804,6 +17353,22 @@ export default function AdvancedEditor() {
                                       </button>
                                     </div>
                                   )}
+                                  {selectedComponentVariantAxes.length ? (
+                                    <div className="mt-2 grid gap-1">
+                                      {selectedComponentVariantAxes.map((axis) => (
+                                        <label key={`${v.id}:${axis.key}`} className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                                          <span>{axis.key}</span>
+                                          <input
+                                            type="text"
+                                            value={(v.props ?? {})[axis.key] ?? ""}
+                                            onChange={(e) => setComponentVariantProp(selectedNode.id, v.id, axis.key, e.target.value)}
+                                            className="w-32 rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                                            placeholder="값"
+                                          />
+                                        </label>
+                                      ))}
+                                    </div>
+                                  ) : null}
                                 </div>
                               );
                             })}
@@ -14811,6 +17376,27 @@ export default function AdvancedEditor() {
                         ) : (
                           <div className="text-[11px] text-neutral-400">아직 변형이 없습니다.</div>
                         )}
+                        <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2 text-[10px] text-neutral-500">
+                          <div>Expected combinations {selectedComponentVariantReport.totalExpected}</div>
+                          <div>Missing {selectedComponentVariantReport.missing.length}</div>
+                          <div>Duplicate combinations {selectedComponentVariantReport.duplicates.length}</div>
+                          {selectedComponentVariantReport.duplicates.length ? (
+                            <div className="mt-1 text-amber-600">
+                              {selectedComponentVariantReport.duplicates
+                                .map((duplicate) => formatVariantProps(duplicate.props) || duplicate.variantIds.join(", "))
+                                .join(" / ")}
+                            </div>
+                          ) : null}
+                        </div>
+                        {selectedComponentMissingVariantPlan.length ? (
+                          <button
+                            type="button"
+                            className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
+                            onClick={() => fillMissingComponentVariants(selectedNode.id)}
+                          >
+                            누락된 변형 자동 생성
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
@@ -14933,6 +17519,18 @@ export default function AdvancedEditor() {
                         {selectedComponentProperty ? (
                           <div className="text-[11px] text-amber-600">이미 등록된 속성입니다. 아래 목록에서 편집/삭제하세요.</div>
                         ) : null}
+                        {selectedComponentPropertyNameDuplicates.length ? (
+                          <div className="space-y-2 rounded border border-amber-200 bg-amber-50 px-2 py-2 text-[11px] text-amber-700">
+                            <div>중복된 컴포넌트 속성 이름이 있습니다.</div>
+                            <button
+                              type="button"
+                              className="rounded border border-amber-300 bg-white px-2 py-1 text-[10px]"
+                              onClick={() => selectedComponentRoot && normalizeComponentPropertyDefinitions(selectedComponentRoot.id)}
+                            >
+                              속성 이름 정규화
+                            </button>
+                          </div>
+                        ) : null}
                         {Object.keys(selectedComponentProperties).length ? (
                           <div className="border-t border-neutral-100 pt-2 space-y-2">
                             {Object.entries(selectedComponentProperties).map(([targetId, def]) => {
@@ -15025,9 +17623,35 @@ export default function AdvancedEditor() {
                       <div className="rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px] text-neutral-500">
                         원본: {instanceSource?.name ?? "알 수 없음"}
                       </div>
+                      {instanceVariantAxes.length ? (
+                        <div className="space-y-2 rounded-md border border-neutral-200 bg-white p-2">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">변형 축</div>
+                          {instanceVariantAxes.map((axis) => (
+                            <label key={axis.key} className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                              <span>{axis.key}</span>
+                              <select
+                                value={selectedInstanceVariantProps[axis.key] ?? axis.values[0] ?? ""}
+                                onChange={(e) => setInstanceVariantAxis(selectedNode.id, axis.key, e.target.value)}
+                                className="w-28 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              >
+                                {axis.values.map((value) => (
+                                  <option key={value} value={value}>
+                                    {value}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ))}
+                          {selectedInstanceVariant ? (
+                            <div className="text-[10px] text-neutral-400">
+                              현재 조합: {formatVariantProps(selectedInstanceVariant.props) || selectedInstanceVariant.name}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {instanceSource?.variants?.length ? (
                         <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                          <span>변형</span>
+                          <span>{instanceVariantAxes.length ? "직접 변형 선택" : "변형"}</span>
                           <select
                             value={selectedNode.variantId ?? instanceSource.variants[0]?.id ?? ""}
                             onChange={(e) => setInstanceVariant(selectedNode.id, e.target.value)}
@@ -15036,6 +17660,7 @@ export default function AdvancedEditor() {
                             {instanceSource.variants.map((v) => (
                               <option key={v.id} value={v.id}>
                                 {v.name}
+                                {formatVariantProps(v.props) ? ` (${formatVariantProps(v.props)})` : ""}
                               </option>
                             ))}
                           </select>
@@ -15100,7 +17725,13 @@ export default function AdvancedEditor() {
                           <button
                             type="button"
                             className="w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
-                            onClick={() => swapInstanceComponent(selectedNode.id, swapComponentId)}
+                            onClick={() => swapInstanceComponent(selectedNode.id, swapComponentId, {
+                              variantId: resolveVariantIdForComponent(
+                                swapComponentId,
+                                selectedInstanceVariantProps,
+                                selectedNode.variantId,
+                              ),
+                            })}
                             disabled={!swapComponentId || swapComponentId === selectedNode.instanceOf}
                           >
                             인스턴스 스왑
@@ -15128,7 +17759,7 @@ export default function AdvancedEditor() {
                                       value={node.type === "text" ? node.text?.value ?? "" : ""}
                                       onChange={(e) => {
                                         if (node.type !== "text") return;
-                                        updateNode(node.id, { text: { ...(node.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), value: e.target.value } as NodeText }, true);
+                                        updateNode(node.id, { text: setNodeTextValue(node.text, e.target.value) }, true);
                                       }}
                                       className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
                                     />
@@ -15144,7 +17775,27 @@ export default function AdvancedEditor() {
                                   <div className="flex items-center gap-2">
                                     <select
                                       value={node.type === "instance" ? node.instanceOf ?? "" : ""}
-                                      onChange={(e) => swapInstanceComponent(node.id, e.target.value)}
+                                      onChange={(e) => {
+                                        if (node.type !== "instance") return;
+                                        const sourceComponent = node.instanceOf ? doc.nodes[node.instanceOf] : null;
+                                        const currentVariant =
+                                          sourceComponent?.type === "component"
+                                            ? (
+                                              sourceComponent.variants?.find((variant) => variant.id === (node.variantId ?? sourceComponent.variants?.[0]?.id))
+                                              ?? sourceComponent.variants?.[0]
+                                              ?? null
+                                            )
+                                            : null;
+                                        swapInstanceComponent(node.id, e.target.value, {
+                                          preserveSourceId: prop.sourceId,
+                                          preserveName: node.name,
+                                          variantId: resolveVariantIdForComponent(
+                                            e.target.value,
+                                            getVariantProps(currentVariant),
+                                            node.variantId,
+                                          ),
+                                        });
+                                      }}
                                       className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
                                       disabled={node.type !== "instance" || componentName.length === 0}
                                     >
@@ -15209,7 +17860,7 @@ export default function AdvancedEditor() {
                                   onChange={(e) => {
                                     const node = doc.nodes[item.id];
                                     if (!node || node.type !== "text") return;
-                                    updateNode(node.id, { text: { ...(node.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), value: e.target.value } as NodeText }, true);
+                                    updateNode(node.id, { text: setNodeTextValue(node.text, e.target.value) }, true);
                                   }}
                                   className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
                                 />
@@ -15420,6 +18071,84 @@ export default function AdvancedEditor() {
                         <div className="text-[10px] text-neutral-400">
                           대체 가져오기는 기존 스타일을 이름/타입 기준으로 매핑합니다.
                         </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="rounded-md border border-neutral-200 bg-white px-2 py-2">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between text-[11px] text-neutral-600"
+                      onClick={() => setLibraryIoOpen((prev) => !prev)}
+                    >
+                      <span>Design Library Publish / Consume / Update</span>
+                      <span className={`transition-transform ${libraryIoOpen ? "rotate-180" : ""}`} aria-hidden>▾</span>
+                    </button>
+                    {libraryIoOpen ? (
+                      <div className="mt-2 space-y-2">
+                        <label className="flex flex-col gap-1 text-[11px] text-neutral-500">
+                          <span>Library Name</span>
+                          <input
+                            type="text"
+                            value={libraryName}
+                            onChange={(e) => setLibraryName(e.target.value)}
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            placeholder="NULL Design Library"
+                          />
+                        </label>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => setLibraryJsonText(buildLibraryExportPayload())}>
+                            Publish JSON
+                          </button>
+                          <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={copyLibraryExport}>
+                            Copy
+                          </button>
+                          <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={downloadLibraryExport}>
+                            Download
+                          </button>
+                        </div>
+                        <textarea
+                          value={libraryJsonText}
+                          onChange={(e) => setLibraryJsonText(e.target.value)}
+                          placeholder="NULL design library JSON"
+                          className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px] font-mono"
+                          rows={8}
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={previewLibraryImport}>
+                            Update Preview
+                          </button>
+                          <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={consumeLibraryImport}>
+                            Consume / Apply Update
+                          </button>
+                        </div>
+                        {libraryError ? <div className="text-[11px] text-red-600">{libraryError}</div> : null}
+                        {libraryPreview ? (
+                          <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2 text-[10px] text-neutral-600">
+                            <div className="font-medium text-neutral-700">
+                              {libraryPreview.name} {libraryPreview.currentVersionId ? `${libraryPreview.currentVersionId} → ${libraryPreview.nextVersionId}` : `(new → ${libraryPreview.nextVersionId})`}
+                            </div>
+                            <div className="mt-1">Components +{libraryPreview.components.added.length} / ~{libraryPreview.components.updated.length} / -{libraryPreview.components.removed.length}</div>
+                            <div>Styles +{libraryPreview.styles.added.length} / ~{libraryPreview.styles.updated.length} / -{libraryPreview.styles.removed.length}</div>
+                            <div>Variables +{libraryPreview.variables.added.length} / ~{libraryPreview.variables.updated.length} / -{libraryPreview.variables.removed.length}</div>
+                            <div className="mt-1">Usage defs {libraryPreview.usage.componentDefinitions}, instances {libraryPreview.usage.componentInstances}, style refs {libraryPreview.usage.styleRefs}, var refs {libraryPreview.usage.variableRefs}</div>
+                          </div>
+                        ) : null}
+                        {consumedLibraries.length ? (
+                          <div className="space-y-1">
+                            {consumedLibraries.map((library) => (
+                              <div key={library.id} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1 text-[10px] text-neutral-600">
+                                <div className="font-medium text-neutral-700">{library.name}</div>
+                                <div>
+                                  {library.status ?? "up-to-date"} · {library.currentVersionId ?? "-"}
+                                  {library.latestVersionId && library.latestVersionId !== library.currentVersionId ? ` → ${library.latestVersionId}` : ""}
+                                </div>
+                                <div>
+                                  defs {library.usage.componentDefinitions}, instances {library.usage.componentInstances}, style refs {library.usage.styleRefs}, var refs {library.usage.variableRefs}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -16452,18 +19181,52 @@ export default function AdvancedEditor() {
                               ? findNativeCommand(interaction.action.name ?? "")
                               : undefined;
                             const nativeArgsExample = nativeCommand ? formatNativeArgsExample(nativeCommand) : "";
+                            const interactionSummary = summarizePrototypeAction(
+                              doc,
+                              activePageId ?? prototypeStartPageId ?? doc.pages[0]?.id ?? "",
+                              interaction.action,
+                            );
+                            const interactionDiagnostics = selectedInteractionDiagnostics[interaction.id] ?? [];
                             return (
                             <div key={interaction.id} className="space-y-2 rounded-md border border-neutral-200 bg-white p-2">
                               <div className="flex items-center justify-between">
                                 <span className="text-[11px] text-neutral-500">인터랙션</span>
-                                <button
-                                  type="button"
-                                  className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]"
-                                  onClick={() => removePrototypeInteraction(selectedNode.id, interaction.id)}
-                                >
-                                  삭제
-                                </button>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]"
+                                    onClick={() => duplicatePrototypeInteraction(selectedNode.id, interaction.id)}
+                                  >
+                                    복제
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 px-2 py-0.5 text-[11px]"
+                                    onClick={() => removePrototypeInteraction(selectedNode.id, interaction.id)}
+                                  >
+                                    삭제
+                                  </button>
+                                </div>
                               </div>
+                              <div className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1 text-[11px] text-neutral-600">
+                                {interaction.trigger} {" -> "} {interactionSummary}
+                              </div>
+                              {interactionDiagnostics.length ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {interactionDiagnostics.map((issue) => (
+                                    <span
+                                      key={`${interaction.id}-${issue.message}`}
+                                      className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                                        issue.severity === "warn"
+                                          ? "border-amber-300 bg-amber-50 text-amber-700"
+                                          : "border-sky-300 bg-sky-50 text-sky-700"
+                                      }`}
+                                    >
+                                      {issue.message}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null}
                               <label className="flex items-center justify-between gap-2">
                                 <span className="text-neutral-500">트리거</span>
                                 <select
@@ -16710,6 +19473,93 @@ export default function AdvancedEditor() {
                                     ))}
                                   </select>
                                 </label>
+                              ) : null}
+                              {actionType === "overlay" ? (
+                                <>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">Position</span>
+                                    <select
+                                      value={interaction.action.type === "overlay" ? interaction.action.position ?? "center" : "center"}
+                                      onChange={(e) =>
+                                        updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                          action: {
+                                            ...(interaction.action as PrototypeAction),
+                                            position: e.target.value as Extract<PrototypeAction, { type: "overlay" }>["position"],
+                                          } as PrototypeAction,
+                                        })
+                                      }
+                                      className="w-32 rounded border border-neutral-200 px-2 py-1"
+                                    >
+                                      <option value="center">center</option>
+                                      <option value="top">top</option>
+                                      <option value="bottom">bottom</option>
+                                      <option value="left">left</option>
+                                      <option value="right">right</option>
+                                      <option value="top-left">top-left</option>
+                                      <option value="top-right">top-right</option>
+                                      <option value="bottom-left">bottom-left</option>
+                                      <option value="bottom-right">bottom-right</option>
+                                    </select>
+                                  </label>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">Width</span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      value={interaction.action.type === "overlay" && interaction.action.overlayWidth ? interaction.action.overlayWidth : ""}
+                                      onChange={(e) =>
+                                        updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                          action: {
+                                            ...(interaction.action as PrototypeAction),
+                                            overlayWidth: e.target.value ? Number(e.target.value) : undefined,
+                                          } as PrototypeAction,
+                                        })
+                                      }
+                                      className="w-24 rounded border border-neutral-200 px-2 py-1"
+                                      placeholder="auto"
+                                    />
+                                  </label>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">Height</span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      value={interaction.action.type === "overlay" && interaction.action.overlayHeight ? interaction.action.overlayHeight : ""}
+                                      onChange={(e) =>
+                                        updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                          action: {
+                                            ...(interaction.action as PrototypeAction),
+                                            overlayHeight: e.target.value ? Number(e.target.value) : undefined,
+                                          } as PrototypeAction,
+                                        })
+                                      }
+                                      className="w-24 rounded border border-neutral-200 px-2 py-1"
+                                      placeholder="auto"
+                                    />
+                                  </label>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">Dim</span>
+                                    <span className="flex items-center gap-2">
+                                      <input
+                                        type="range"
+                                        min={0}
+                                        max={90}
+                                        value={interaction.action.type === "overlay" ? Math.round((interaction.action.dim ?? 0.12) * 100) : 12}
+                                        onChange={(e) =>
+                                          updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                            action: {
+                                              ...(interaction.action as PrototypeAction),
+                                              dim: Number(e.target.value) / 100,
+                                            } as PrototypeAction,
+                                          })
+                                        }
+                                      />
+                                      <span className="w-10 text-right text-[10px] text-neutral-400">
+                                        {interaction.action.type === "overlay" ? Math.round((interaction.action.dim ?? 0.12) * 100) : 12}%
+                                      </span>
+                                    </span>
+                                  </label>
+                                </>
                               ) : null}
                               {actionType === "setVariant" ? (() => {
                                 const setVariantTargetId = (interaction.action.type === "setVariant" ? interaction.action.targetNodeId : null) ?? (selectedNode?.type === "instance" ? selectedNode.id : null) ?? scrollTargetNodeIds.find((id) => doc.nodes[id]?.type === "instance") ?? "";
@@ -17368,13 +20218,36 @@ export default function AdvancedEditor() {
                     <div className="mt-2 space-y-2">
                       {interactionTree.map((page) => (
                         <div key={page.pageId} className="rounded-md border border-neutral-200 bg-white px-2 py-2">
-                          <div className="text-[11px] font-medium text-neutral-700">{page.pageName}</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-[11px] font-medium text-neutral-700">{page.pageName}</div>
+                            {page.issueCount ? (
+                              <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">
+                                {page.issueCount} issues
+                              </span>
+                            ) : null}
+                          </div>
                           <div className="mt-1 space-y-1">
                             {page.items.map((item) => (
                               <div key={item.id} className="flex items-start justify-between gap-2 text-[11px] text-neutral-600">
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate">{item.nodeName}</div>
                                   <div className="text-[10px] text-neutral-400">{item.trigger} → {item.actionLabel}</div>
+                                  {item.diagnostics.length ? (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      {item.diagnostics.map((issue) => (
+                                        <span
+                                          key={`${item.id}-${issue.message}`}
+                                          className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                                            issue.severity === "warn"
+                                              ? "border-amber-300 bg-amber-50 text-amber-700"
+                                              : "border-sky-300 bg-sky-50 text-sky-700"
+                                          }`}
+                                        >
+                                          {issue.message}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : null}
                                 </div>
                                 <button
                                   type="button"
@@ -17401,7 +20274,14 @@ export default function AdvancedEditor() {
                         const maxMs = Math.max(1, page.maxMs);
                         return (
                           <div key={page.pageId} className="rounded-md border border-neutral-200 bg-white px-2 py-2">
-                            <div className="text-[11px] font-medium text-neutral-700">{page.pageName}</div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-[11px] font-medium text-neutral-700">{page.pageName}</div>
+                              {page.issueCount ? (
+                                <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">
+                                  {page.issueCount} issues
+                                </span>
+                              ) : null}
+                            </div>
                             <div className="mt-2 space-y-2">
                               {page.items.map((item) => {
                                 const delayPct = Math.min(100, (item.delayMs / maxMs) * 100);
@@ -17423,6 +20303,22 @@ export default function AdvancedEditor() {
                                     <div className="mt-1 text-[10px] text-neutral-400">
                                       {item.trigger} · {item.actionLabel} · delay {item.delayMs}ms · dur {item.durationMs}ms
                                     </div>
+                                    {item.diagnostics.length ? (
+                                      <div className="mt-1 flex flex-wrap gap-1">
+                                        {item.diagnostics.map((issue) => (
+                                          <span
+                                            key={`${item.id}-${issue.message}`}
+                                            className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                                              issue.severity === "warn"
+                                                ? "border-amber-300 bg-amber-50 text-amber-700"
+                                                : "border-sky-300 bg-sky-50 text-sky-700"
+                                            }`}
+                                          >
+                                            {issue.message}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    ) : null}
                                   </div>
                                 );
                               })}
@@ -17433,6 +20329,44 @@ export default function AdvancedEditor() {
                     </div>
                   ) : (
                     <div className="mt-2 text-[11px] text-neutral-500">타임라인 항목이 없습니다.</div>
+                  )}
+                </div>
+                <div className="mt-4">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Flow Diagnostics</div>
+                  {interactionIssuePages.length ? (
+                    <div className="mt-2 space-y-2">
+                      {interactionIssuePages.map((page) => (
+                        <div key={`${page.pageId}-issues`} className="rounded-md border border-neutral-200 bg-white px-2 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-[11px] font-medium text-neutral-700">{page.pageName}</div>
+                            <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">
+                              {page.issueCount} issues
+                            </span>
+                          </div>
+                          <div className="mt-2 space-y-2">
+                            {page.items
+                              .filter((item) => item.diagnostics.some((issue) => issue.severity === "warn"))
+                              .map((item) => (
+                                <div key={`${item.id}-warn`} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1">
+                                  <div className="text-[11px] text-neutral-700">{item.nodeName}</div>
+                                  <div className="text-[10px] text-neutral-400">{item.trigger} · {item.actionLabel}</div>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {item.diagnostics
+                                      .filter((issue) => issue.severity === "warn")
+                                      .map((issue) => (
+                                        <span key={`${item.id}-${issue.message}-warn`} className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">
+                                          {issue.message}
+                                        </span>
+                                      ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-[11px] text-neutral-500">No flow issues.</div>
                   )}
                 </div>
               </div>
@@ -17735,9 +20669,312 @@ export default function AdvancedEditor() {
                       <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">토큰</div>
                       <div>채우기 스타일: {devFillStyle ?? "없음"}</div>
                       <div>테두리 스타일: {devStrokeStyle ?? "없음"}</div>
+                      <div>효과 스타일: {devEffectStyle ?? "없음"}</div>
                       <div>텍스트 스타일: {devTextStyle ?? "없음"}</div>
                       <div>채우기 변수: {devFillVar ?? "없음"}</div>
+                      <div>테두리 변수: {devStrokeVar ?? "없음"}</div>
                     </div>
+                    <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 text-[11px] text-neutral-600 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Ready / Review</div>
+                        <label className="flex items-center gap-2 text-[11px] text-neutral-500">
+                          <span>Ready</span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedNodeDev?.readyForDev)}
+                            onChange={(e) => toggleSelectedReadyForDev(e.target.checked)}
+                          />
+                        </label>
+                      </div>
+                      <div className="text-[11px] text-neutral-500">
+                        Status {selectedNodeDev?.status ?? "draft"} · Annotations {selectedNodeDev?.annotations?.length ?? 0} · Links {selectedNodeDev?.codeLinks?.length ?? 0}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={devAnnotationStatusDraft}
+                          onChange={(e) => setDevAnnotationStatusDraft(e.target.value as DevAnnotationStatus)}
+                          className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        >
+                          <option value="todo">todo</option>
+                          <option value="ready">ready</option>
+                          <option value="blocked">blocked</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={devAnnotationDraft}
+                          onChange={(e) => setDevAnnotationDraft(e.target.value)}
+                          placeholder="Add annotation"
+                          className="min-w-0 flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                          onClick={addDevAnnotation}
+                          disabled={!devAnnotationDraft.trim()}
+                        >
+                          Add
+                        </button>
+                      </div>
+                      {selectedNodeDev?.annotations?.length ? (
+                        <div className="space-y-1">
+                          {selectedNodeDev.annotations.map((annotation) => (
+                            <div key={annotation.id} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] uppercase tracking-[0.16em] text-neutral-400">{annotation.status ?? "todo"}</span>
+                                <button
+                                  type="button"
+                                  className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px]"
+                                  onClick={() => deleteDevAnnotation(annotation.id)}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <div className="mt-1 text-[11px] text-neutral-700">{annotation.text}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-neutral-400">No annotations yet.</div>
+                      )}
+                    </div>
+                    <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 text-[11px] text-neutral-600 space-y-2">
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Code-linked handoff</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={devCodeLinkTitle}
+                          onChange={(e) => setDevCodeLinkTitle(e.target.value)}
+                          placeholder="Title"
+                          className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                        <select
+                          value={devCodeLinkKind}
+                          onChange={(e) => setDevCodeLinkKind(e.target.value as DevCodeLinkKind)}
+                          className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        >
+                          <option value="docs">docs</option>
+                          <option value="repo">repo</option>
+                          <option value="storybook">storybook</option>
+                          <option value="react">react</option>
+                          <option value="tailwind">tailwind</option>
+                          <option value="api">api</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={devCodeLinkUrl}
+                          onChange={(e) => setDevCodeLinkUrl(e.target.value)}
+                          placeholder="URL"
+                          className="col-span-2 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                        <input
+                          type="text"
+                          value={devCodeLinkExportKey}
+                          onChange={(e) => setDevCodeLinkExportKey(e.target.value)}
+                          placeholder="Export key / symbol"
+                          className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                        <input
+                          type="text"
+                          value={devCodeLinkLanguage}
+                          onChange={(e) => setDevCodeLinkLanguage(e.target.value)}
+                          placeholder="Language"
+                          className="rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        />
+                      </div>
+                      <textarea
+                        value={devCodeLinkSnippet}
+                        onChange={(e) => setDevCodeLinkSnippet(e.target.value)}
+                        placeholder="Optional snippet"
+                        className="h-24 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        className="w-full rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                        onClick={addDevCodeLink}
+                        disabled={!devCodeLinkTitle.trim()}
+                      >
+                        Add code link
+                      </button>
+                      {selectedNodeDev?.codeLinks?.length ? (
+                        <div className="space-y-1">
+                          {selectedNodeDev.codeLinks.map((link) => (
+                            <div key={link.id} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <div className="text-[11px] font-medium text-neutral-700">{link.title}</div>
+                                  <div className="text-[10px] text-neutral-400">{link.kind}{link.exportKey ? ` · ${link.exportKey}` : ""}</div>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  {link.url ? (
+                                    <button
+                                      type="button"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px]"
+                                      onClick={() => window.open(link.url, "_blank", "noopener,noreferrer")}
+                                    >
+                                      Open
+                                    </button>
+                                  ) : null}
+                                  {link.snippet ? (
+                                    <button
+                                      type="button"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px]"
+                                      onClick={() => link.snippet && navigator.clipboard?.writeText(link.snippet)}
+                                    >
+                                      Copy
+                                    </button>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px]"
+                                    onClick={() => deleteDevCodeLink(link.id)}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                              {link.url ? <div className="mt-1 truncate text-[10px] text-neutral-500">{link.url}</div> : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-neutral-400">No code links yet.</div>
+                      )}
+                    </div>
+                    <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 text-[11px] text-neutral-600 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Compare changes</div>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px]"
+                          onClick={() => void loadVersionList()}
+                        >
+                          Reload versions
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={devCompareVersionId}
+                          onChange={(e) => setDevCompareVersionId(e.target.value)}
+                          className="min-w-0 flex-1 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                        >
+                          <option value="">Select version</option>
+                          {versionList.map((version) => (
+                            <option key={version.id} value={version.id}>
+                              {new Date(version.created_at).toLocaleString("ko-KR")}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px]"
+                          onClick={() => void compareSelectedNodeAgainstVersion()}
+                          disabled={!devCompareVersionId || devCompareLoading}
+                        >
+                          {devCompareLoading ? "Comparing..." : "Compare"}
+                        </button>
+                      </div>
+                      {devCompareError ? <div className="text-[11px] text-rose-600">{devCompareError}</div> : null}
+                      {devCompareLabel ? <div className="text-[11px] text-neutral-500">Baseline {devCompareLabel}</div> : null}
+                      {devCompareSections.length ? (
+                        <div className="space-y-1">
+                          {devCompareSections.map((section) => (
+                            <details key={section.key} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-1">
+                              <summary className="cursor-pointer text-[11px] font-medium text-neutral-700">{section.label}</summary>
+                              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                <textarea value={section.before} readOnly className="h-24 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[10px]" />
+                                <textarea value={section.after} readOnly className="h-24 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[10px]" />
+                              </div>
+                            </details>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-neutral-400">No compare result yet.</div>
+                      )}
+                    </div>
+                    {playgroundPreview ? (
+                      <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 text-[11px] text-neutral-600 space-y-2">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Component playground</div>
+                        {playgroundPreview.variants.length ? (
+                          <select
+                            value={playgroundVariantId}
+                            onChange={(e) => setPlaygroundVariantId(e.target.value)}
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                          >
+                            {playgroundPreview.variants.map((variant) => (
+                              <option key={variant.id} value={variant.id}>
+                                {variant.name}{variant.props ? ` · ${formatVariantProps(variant.props)}` : ""}
+                              </option>
+                            ))}
+                          </select>
+                        ) : null}
+                        {playgroundPreview.properties.length ? (
+                          <div className="space-y-2">
+                            {playgroundPreview.properties.map((property) => (
+                              <div key={property.sourceId} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2">
+                                <div className="mb-1 flex items-center justify-between gap-2">
+                                  <div className="text-[11px] font-medium text-neutral-700">{property.name}</div>
+                                  <div className="text-[10px] uppercase tracking-[0.16em] text-neutral-400">{property.kind}</div>
+                                </div>
+                                {property.kind === "text" ? (
+                                  <input
+                                    type="text"
+                                    value={playgroundTextProps[property.sourceId] ?? ""}
+                                    onChange={(e) => setPlaygroundTextProps((prev) => ({ ...prev, [property.sourceId]: e.target.value }))}
+                                    className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                                  />
+                                ) : property.kind === "boolean" ? (
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span>Visible</span>
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(playgroundBooleanProps[property.sourceId])}
+                                      onChange={(e) => setPlaygroundBooleanProps((prev) => ({ ...prev, [property.sourceId]: e.target.checked }))}
+                                    />
+                                  </label>
+                                ) : (
+                                  <select
+                                    value={playgroundInstanceProps[property.sourceId] ?? ""}
+                                    onChange={(e) => setPlaygroundInstanceProps((prev) => ({ ...prev, [property.sourceId]: e.target.value }))}
+                                    className="w-full rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                                  >
+                                    <option value="">Keep current</option>
+                                    {(property.instanceOptions ?? []).map((option) => (
+                                      <option key={option.id} value={option.id}>
+                                        {option.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-neutral-400">No component properties.</div>
+                        )}
+                        {playgroundLaidOutDoc ? (
+                          <div className="overflow-hidden rounded border border-neutral-200 bg-neutral-50">
+                            <div className="pointer-events-none origin-top-left scale-[0.5]">
+                              <AdvancedRuntimeRenderer
+                                doc={playgroundLaidOutDoc}
+                                activePageId={playgroundLaidOutDoc.pages[0]?.id}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <textarea
+                            value={playgroundCodegen?.jsx ?? ""}
+                            readOnly
+                            className="h-28 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[10px]"
+                          />
+                          <textarea
+                            value={playgroundCodegen?.tailwind ?? ""}
+                            readOnly
+                            className="h-28 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[10px]"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
                     <div>
                       <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">CSS</div>
                       <textarea
@@ -17752,6 +20989,70 @@ export default function AdvancedEditor() {
                         disabled={!devCss}
                       >
                         CSS 복사
+                      </button>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Quick Spec</div>
+                      <textarea
+                        value={devSpecLines.join("\n")}
+                        readOnly
+                        className="mt-2 h-32 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        className="mt-2 w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
+                        onClick={() => devSpecLines.length && navigator.clipboard?.writeText(devSpecLines.join("\n"))}
+                        disabled={!devSpecLines.length}
+                      >
+                        Quick Spec 복사
+                      </button>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">React Style</div>
+                      <textarea
+                        value={devCodegen?.reactStyle ?? ""}
+                        readOnly
+                        className="mt-2 h-40 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        className="mt-2 w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
+                        onClick={() => devCodegen?.reactStyle && navigator.clipboard?.writeText(devCodegen.reactStyle)}
+                        disabled={!devCodegen?.reactStyle}
+                      >
+                        React Style 복사
+                      </button>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">JSX</div>
+                      <textarea
+                        value={devCodegen?.jsx ?? ""}
+                        readOnly
+                        className="mt-2 h-32 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        className="mt-2 w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
+                        onClick={() => devCodegen?.jsx && navigator.clipboard?.writeText(devCodegen.jsx)}
+                        disabled={!devCodegen?.jsx}
+                      >
+                        JSX 복사
+                      </button>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Tailwind</div>
+                      <textarea
+                        value={devCodegen?.tailwind ?? ""}
+                        readOnly
+                        className="mt-2 h-32 w-full rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        className="mt-2 w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs"
+                        onClick={() => devCodegen?.tailwind && navigator.clipboard?.writeText(devCodegen.tailwind)}
+                        disabled={!devCodegen?.tailwind}
+                      >
+                        Tailwind 복사
                       </button>
                     </div>
                     <div>
@@ -18197,6 +21498,14 @@ export default function AdvancedEditor() {
                       onClick={exportTokensJson}
                     >
                       Tokens
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                      onClick={exportBatchManifestJson}
+                      disabled={!exportBatchQueue.length}
+                    >
+                      Manifest
                     </button>
                     <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-xs" onClick={exportSvg}>
                       SVG

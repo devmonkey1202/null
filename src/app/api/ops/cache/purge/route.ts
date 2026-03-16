@@ -10,7 +10,7 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => null);
   const rawTags = Array.isArray(body?.tags) ? body?.tags : [];
-  const tags = normalizeCacheTags(rawTags.map((tag) => String(tag)));
+  const tags = normalizeCacheTags(rawTags.map((tag: unknown) => String(tag)));
   if (tags.length === 0) {
     return NextResponse.json({ ok: false, error: "tags_required" }, { status: 400 });
   }

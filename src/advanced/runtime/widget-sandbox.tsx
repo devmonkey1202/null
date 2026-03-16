@@ -391,7 +391,7 @@ export function WidgetSandbox({
       src={src ?? undefined}
       srcDoc={!src ? srcDoc : undefined}
       allow={widget.allow}
-      referrerPolicy={widget.referrerPolicy}
+      referrerPolicy={widget.referrerPolicy as React.HTMLAttributeReferrerPolicy | undefined}
       onError={() => setError("iframe_load_failed")}
       style={{
         width,

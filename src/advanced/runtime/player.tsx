@@ -10,6 +10,17 @@ import type { Doc, Node, PrototypeAction, PrototypeCondition, PrototypeInteracti
 import { cloneDoc, hydrateDoc } from "../doc/scene";
 
 import { applyConstraintsOnResize, layoutDoc } from "../layout/engine";
+import {
+  buildOverlayBackdropStyle,
+  buildOverlayCardStyle,
+  buildOverlayShellStyle,
+  buildOverlayTransitionAnimationStyle,
+  buildPageTransitionAnimationStyle,
+  deriveSmartAnimatePlan,
+  normalizeOverlayPresentation,
+  type OverlayPresentation,
+  type SmartAnimatePlan,
+} from "../prototype/prototypeMotion";
 
 import { subscribeStorageKey } from "@/lib/synced-storage";
 
@@ -293,6 +304,8 @@ type PageTransitionState = {
 
   easing?: string;
 
+  smartPlan?: SmartAnimatePlan | null;
+
 };
 
 
@@ -303,6 +316,8 @@ type OverlayTransitionState = {
 
   overlayId: string;
 
+  presentation: OverlayPresentation;
+
   mode: "enter" | "exit";
 
   phase: "start" | "active";
@@ -311,6 +326,15 @@ type OverlayTransitionState = {
 
   easing?: string;
 
+  smartPlan?: SmartAnimatePlan | null;
+
+};
+
+type OverlayEntry = {
+  id: string;
+  pageId: string;
+  presentation: OverlayPresentation;
+  smartPlan?: SmartAnimatePlan | null;
 };
 
 
@@ -3998,56 +4022,7 @@ function transitionStyles(state: PageTransitionState, role: "from" | "to"): CSSP
   const duration = state.duration ?? TRANSITION_DURATION[state.type];
 
   const easing = state.easing ?? "ease";
-
-  if (state.type === "fade" || state.type === "smart") {
-
-    return {
-
-      opacity: role === "from" ? (isActive ? 0 : 1) : isActive ? 1 : 0,
-
-      transition: `opacity ${duration}ms ${easing}`,
-
-    };
-
-  }
-
-  if (state.type === "slide-left") {
-
-    return {
-
-      transform:
-
-        role === "from"
-
-          ? `translateX(${isActive ? "-20%" : "0%"})`
-
-          : `translateX(${isActive ? "0%" : "100%"})`,
-
-      transition: `transform ${duration}ms ${easing}`,
-
-    };
-
-  }
-
-  if (state.type === "slide-right") {
-
-    return {
-
-      transform:
-
-        role === "from"
-
-          ? `translateX(${isActive ? "20%" : "0%"})`
-
-          : `translateX(${isActive ? "0%" : "-100%"})`,
-
-      transition: `transform ${duration}ms ${easing}`,
-
-    };
-
-  }
-
-  return {};
+  return buildPageTransitionAnimationStyle(state.type, role, isActive, duration, easing, state.smartPlan);
 
 }
 
@@ -4060,56 +4035,15 @@ function overlayStyles(state: OverlayTransitionState): CSSProperties {
   const duration = state.duration ?? TRANSITION_DURATION[state.type];
 
   const easing = state.easing ?? "ease";
-
-  if (state.type === "fade" || state.type === "smart") {
-
-    return {
-
-      opacity: state.mode === "enter" ? (isActive ? 1 : 0) : isActive ? 0 : 1,
-
-      transition: `opacity ${duration}ms ${easing}`,
-
-    };
-
-  }
-
-  if (state.type === "slide-left") {
-
-    return {
-
-      transform:
-
-        state.mode === "enter"
-
-          ? `translateX(${isActive ? "0%" : "100%"})`
-
-          : `translateX(${isActive ? "100%" : "0%"})`,
-
-      transition: `transform ${duration}ms ${easing}`,
-
-    };
-
-  }
-
-  if (state.type === "slide-right") {
-
-    return {
-
-      transform:
-
-        state.mode === "enter"
-
-          ? `translateX(${isActive ? "0%" : "-100%"})`
-
-          : `translateX(${isActive ? "-100%" : "0%"})`,
-
-      transition: `transform ${duration}ms ${easing}`,
-
-    };
-
-  }
-
-  return {};
+  return buildOverlayTransitionAnimationStyle({
+    type: state.type,
+    mode: state.mode,
+    isActive,
+    duration,
+    easing,
+    presentation: state.presentation,
+    smartPlan: state.smartPlan,
+  });
 
 }
 
@@ -4299,7 +4233,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
   const [history, setHistory] = useState<string[]>([]);
 
-  const [overlayStack, setOverlayStack] = useState<string[]>([]);
+  const [overlayStack, setOverlayStack] = useState<OverlayEntry[]>([]);
 
   const [pageTransition, setPageTransition] = useState<PageTransitionState | null>(null);
 
@@ -12119,7 +12053,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           setOverlayStack((prev) => {
 
-            const index = prev.lastIndexOf(overlayTransition.overlayId);
+            const index = prev.findLastIndex((entry) => entry.id === overlayTransition.overlayId);
 
             if (index === -1) return prev;
 
@@ -12149,7 +12083,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         setOverlayStack((prev) => {
 
-          const index = prev.lastIndexOf(overlayTransition.overlayId);
+          const index = prev.findLastIndex((entry) => entry.id === overlayTransition.overlayId);
 
           if (index === -1) return prev;
 
@@ -12187,7 +12121,15 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
       }
 
-      setPageTransition({ type, fromId, toId, phase: "start", duration: options?.duration, easing: options?.easing });
+      setPageTransition({
+        type,
+        fromId,
+        toId,
+        phase: "start",
+        duration: options?.duration,
+        easing: options?.easing,
+        smartPlan: type === "smart" ? deriveSmartAnimatePlan(docRef.current, fromId, toId) : undefined,
+      });
 
     },
 
@@ -12199,11 +12141,25 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
   const openOverlay = useCallback(
 
-    (targetId: string, type: PrototypeTransitionType, options?: { duration?: number; easing?: string }) => {
+    (
+      targetId: string,
+      type: PrototypeTransitionType,
+      options?: { duration?: number; easing?: string },
+      presentation?: OverlayPresentation,
+    ) => {
 
       if (!targetId) return;
 
-      setOverlayStack((prev) => [...prev, targetId]);
+      const entry: OverlayEntry = {
+        id: `overlay_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        pageId: targetId,
+        presentation: presentation ?? normalizeOverlayPresentation(),
+        smartPlan: type === "smart"
+          ? deriveSmartAnimatePlan(docRef.current, basePageRef.current ?? targetId, targetId)
+          : undefined,
+      };
+
+      setOverlayStack((prev) => [...prev, entry]);
 
       if (type !== "instant") {
 
@@ -12211,7 +12167,9 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           type,
 
-          overlayId: targetId,
+          overlayId: entry.id,
+
+          presentation: entry.presentation,
 
           mode: "enter",
 
@@ -12220,6 +12178,8 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
           duration: options?.duration,
 
           easing: options?.easing,
+
+          smartPlan: entry.smartPlan,
 
         });
 
@@ -12251,7 +12211,16 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
       }
 
-      setOverlayTransition({ type, overlayId: top, mode: "exit", phase: "start", duration: options?.duration, easing: options?.easing });
+      setOverlayTransition({
+        type,
+        overlayId: top.id,
+        presentation: top.presentation,
+        mode: "exit",
+        phase: "start",
+        duration: options?.duration,
+        easing: options?.easing,
+        smartPlan: top.smartPlan,
+      });
 
     },
 
@@ -17233,7 +17202,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         if (!currentDoc.pages.some((page) => page.id === action.targetPageId)) return;
 
-        openOverlay(action.targetPageId, transitionType, transitionOpts);
+        openOverlay(action.targetPageId, transitionType, transitionOpts, normalizeOverlayPresentation(action));
 
         return;
 
@@ -17383,7 +17352,8 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
 
 
-  const topOverlayId = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
+  const topOverlayEntry = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
+  const topOverlayId = topOverlayEntry?.id ?? null;
 
   const allowInteraction = !pageTransition && !overlayTransition;
 
@@ -18977,25 +18947,26 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
 
 
-      {topOverlayId ? (
+      {topOverlayEntry ? (
 
-        <div className="absolute inset-0 bg-black/10" style={{ pointerEvents: "none" }} />
+        <div className="absolute inset-0" style={{ ...buildOverlayBackdropStyle(topOverlayEntry.presentation), pointerEvents: "none" }} />
 
       ) : null}
 
 
 
-      {overlayStack.map((overlayId, index) => {
+      {overlayStack.map((overlayEntry, index) => {
 
-        const isTop = overlayId === topOverlayId;
+        const isTop = overlayEntry.id === topOverlayId;
 
-        const hasTransition = overlayTransition && overlayTransition.overlayId === overlayId;
+        const hasTransition = overlayTransition && overlayTransition.overlayId === overlayEntry.id;
+        const overlayRoot = doc.nodes[overlayEntry.pageId];
 
         return (
 
           <div
 
-            key={`${overlayId}-${index}`}
+            key={`${overlayEntry.id}-${index}`}
 
             className="absolute inset-0"
 
@@ -19017,51 +18988,58 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           >
 
-            <RuntimeRenderer
+            <div className="absolute inset-0" style={buildOverlayShellStyle(overlayEntry.presentation)}>
+              <div
+                style={buildOverlayCardStyle(overlayEntry.presentation, overlayRoot?.frame)}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <RuntimeRenderer
 
-              doc={doc}
+                  doc={doc}
 
-              activePageId={overlayId}
+                  activePageId={overlayEntry.pageId}
 
-              interactive={allowInteraction && isTop}
+                  interactive={allowInteraction && isTop}
 
-              onNavigate={handleNavigate}
+                  onNavigate={handleNavigate}
 
-              fitToContent={fitToContent}
+                  fitToContent={fitToContent}
 
-              activeSubmitButtonIds={activeSubmitButtonIdsByPage.get(overlayId)}
+                  activeSubmitButtonIds={activeSubmitButtonIdsByPage.get(overlayEntry.pageId)}
 
-              controlState={controlState}
+                  controlState={controlState}
 
-              onToggleControl={handleToggleControl}
+                  onToggleControl={handleToggleControl}
 
-              controlTextState={controlTextState}
+                  controlTextState={controlTextState}
 
-              controlFileState={controlFileState}
+                  controlFileState={controlFileState}
 
-              onChangeControlText={handleControlTextChange}
+                  onChangeControlText={handleControlTextChange}
 
-              onChangeControlFile={handleControlFileChange}
+                  onChangeControlFile={handleControlFileChange}
 
-              invalidControlIds={invalidInputIds}
+                  invalidControlIds={invalidInputIds}
 
-              disabledControlIds={disabledChoiceIds}
+                  disabledControlIds={disabledChoiceIds}
 
-              hiddenNodeIds={combinedHiddenNodeIds}
+                  hiddenNodeIds={combinedHiddenNodeIds}
 
-              childOrderOverrides={combinedOrderOverrides}
+                  childOrderOverrides={combinedOrderOverrides}
 
-              textOverrides={textOverrides}
+                  textOverrides={textOverrides}
 
-              headerCompact={headerCompact}
+                  headerCompact={headerCompact}
 
-              variableRuntime={{ mode: variableMode, variableOverrides, globalState }}
+                  variableRuntime={{ mode: variableMode, variableOverrides, globalState }}
 
-              instanceVariantOverrides={instanceVariantOverrides}
+                  instanceVariantOverrides={instanceVariantOverrides}
 
-              appPageId={appPageId}
+                  appPageId={appPageId}
 
-            />
+                />
+              </div>
+            </div>
 
           </div>
 

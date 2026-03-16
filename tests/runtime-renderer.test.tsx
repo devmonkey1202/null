@@ -14,7 +14,7 @@ describe("runtime renderer accessibility + media", () => {
     const rect = createNode("rect", { frame: { x: 0, y: 0, w: 100, h: 60, rotation: 0 } });
     rect.prototype = {
       interactions: [
-        { trigger: "click", action: { type: "navigate", targetPageId: rootId } },
+        { id: "interaction_click", trigger: "click", action: { type: "navigate", targetPageId: rootId } },
       ],
     };
     addNode(doc, rect, rootId);

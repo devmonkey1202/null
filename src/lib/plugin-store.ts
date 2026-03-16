@@ -4,6 +4,17 @@ import { createHash } from "crypto";
 export type StorePlugin = PluginManifest & {
   storeId: string;
   category: "editor" | "export" | "runtime" | "ops";
+  tags?: string[];
+  featured?: boolean;
+  approvalRequired?: boolean;
+  detail?: string;
+  sharePath?: string;
+};
+
+export type StorePluginFilters = {
+  q?: string;
+  category?: StorePlugin["category"] | "all";
+  storeId?: string;
 };
 
 const STORE_VERSION = "2026.03.08";
@@ -41,10 +52,14 @@ const CATALOG: StorePlugin[] = [
     id: "align-kit",
     name: "Align Kit",
     description: "Alignment + distribution helpers.",
+    detail: "Fast alignment, spacing, and stack cleanup actions for dense Figma-like editor sessions.",
     version: "1.0.0",
     minAppVersion: "0.1.0",
     permissions: ["editor", "ui"],
     category: "editor",
+    tags: ["align", "layout", "selection"],
+    featured: true,
+    sharePath: "/plugins/store/store-align-kit",
     actions: [
       { id: "align-left", label: "Align Left", type: "align" },
       { id: "align-right", label: "Align Right", type: "align" },
@@ -56,10 +71,14 @@ const CATALOG: StorePlugin[] = [
     id: "export-pack",
     name: "Export Pack",
     description: "Token + asset export shortcuts.",
+    detail: "One-click exports for tokens, SVG, and PNG batches when handing designs over to dev and marketing.",
     version: "1.1.0",
     minAppVersion: "0.1.0",
     permissions: ["export", "ui"],
     category: "export",
+    tags: ["export", "tokens", "handoff"],
+    featured: true,
+    sharePath: "/plugins/store/store-export-pack",
     actions: [
       { id: "export-tokens", label: "Export Tokens", type: "exportTokens" },
       { id: "export-png", label: "Export PNG", type: "exportSelectionPng" },
@@ -71,18 +90,32 @@ const CATALOG: StorePlugin[] = [
     id: "performance-toggle",
     name: "Performance Toggle",
     description: "Runtime performance overlay toggles.",
+    detail: "Quickly enable grid, audit, and performance overlays for large-document editing and review.",
     version: "1.0.0",
     minAppVersion: "0.1.0",
     permissions: ["ui"],
     category: "runtime",
+    tags: ["performance", "overlay", "runtime"],
+    approvalRequired: true,
+    sharePath: "/plugins/store/store-performance",
     actions: [
       { id: "toggle-perf", label: "Toggle Performance Overlay", type: "togglePerformance" },
     ],
   },
 ];
 
-export function listStorePlugins() {
-  const plugins = CATALOG.map((plugin) => {
+function matchesPluginFilters(plugin: StorePlugin, filters: StorePluginFilters) {
+  if (filters.storeId && plugin.storeId !== filters.storeId) return false;
+  if (filters.category && filters.category !== "all" && plugin.category !== filters.category) return false;
+  const q = filters.q?.trim().toLowerCase();
+  if (!q) return true;
+  return [plugin.name, plugin.description, plugin.detail, ...(plugin.tags ?? [])]
+    .filter((value): value is string => Boolean(value))
+    .some((value) => value.toLowerCase().includes(q));
+}
+
+export function listStorePlugins(filters: StorePluginFilters = {}) {
+  const plugins = CATALOG.filter((plugin) => matchesPluginFilters(plugin, filters)).map((plugin) => {
     const digest = computeDigest(plugin);
     return { ...plugin, digest, storeVersion: STORE_VERSION, frozen: true };
   });

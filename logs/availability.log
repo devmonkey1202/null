@@ -24,3 +24,10 @@
 {"ts":"2026-03-06T12:07:52.950Z","ok":true,"db_ok":true,"latency_ms":1,"source":"ops","meta":{"marker":"avail_1772798872950_xxbx9d5nmvj"}}
 {"ts":"2026-03-08T01:00:41.374Z","ok":true,"db_ok":true,"latency_ms":1,"source":"ops","meta":{"marker":"avail_1772931641374_yam452nfxyr"}}
 {"ts":"2026-03-10T09:06:59.792Z","ok":true,"db_ok":true,"latency_ms":1,"source":"ops","meta":{"marker":"avail_1773133619791_h5ksyz6va2"}}
+{"ts":"2026-03-11T11:04:12.472Z","ok":true,"db_ok":true,"latency_ms":1,"source":"ops","meta":{"marker":"avail_1773227052472_66x4ds4v0z9"}}
+{"ts":"2026-03-11T11:33:58.316Z","ok":true,"db_ok":true,"latency_ms":1,"source":"ops","meta":{"marker":"avail_1773228838316_xp8osx3kwe"}}
+{"ts":"2026-03-11T11:38:50.939Z","ok":true,"db_ok":true,"latency_ms":11,"source":"public"}
+{"ts":"2026-03-11T11:43:36.609Z","ok":true,"db_ok":true,"latency_ms":5,"source":"public"}
+{"ts":"2026-03-11T11:44:08.445Z","ok":true,"db_ok":true,"latency_ms":30,"source":"public"}
+{"ts":"2026-03-11T11:45:12.731Z","ok":true,"db_ok":true,"latency_ms":1,"source":"ops","meta":{"marker":"avail_1773229512731_z91mlbzaxe"}}
+{"ts":"2026-03-11T11:45:23.115Z","ok":true,"db_ok":true,"latency_ms":4,"source":"public"}

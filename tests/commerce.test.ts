@@ -136,8 +136,9 @@ describe("commerce flows", () => {
 
     const catalog = await getCommerceCatalog(pageId);
     expect(catalog.length).toBe(1);
-    expect(catalog[0].category?.name).toBe("의류");
-    expect(catalog[0].inventory?.stock).toBe(12);
+    const catalogItem = catalog[0] as { category?: { name?: string }; inventory?: { stock?: number } };
+    expect(catalogItem.category?.name).toBe("의류");
+    expect(catalogItem.inventory?.stock).toBe(12);
   });
 
   it("handles cart -> order -> payment/refund -> shipment/inventory", async () => {
@@ -177,6 +178,7 @@ describe("commerce flows", () => {
 
     const add = await addItemToCart(pageId, "app_user_1", product.id, 2);
     expect(add.ok).toBe(true);
+    if (!add.ok) throw new Error("expected addItemToCart to succeed");
     const cartId = add.cartId;
 
     const cartRecord = store.records.find((rec) => rec.id === cartId)!;
@@ -187,12 +189,14 @@ describe("commerce flows", () => {
     expect(coupon.ok).toBe(true);
     const totals = await rebuildCartTotals(pageId, cartId);
     expect(totals.ok).toBe(true);
+    if (!totals.ok || !totals.totals) throw new Error("expected rebuildCartTotals to return totals");
     expect(totals.totals.totalCents).toBe(10400);
     expect(totals.totals.discountCents).toBe(1000);
     expect(totals.totals.taxCents).toBe(900);
 
     const orderRes = await createOrderFromCart(pageId, cartId);
     expect(orderRes.ok).toBe(true);
+    if (!orderRes.ok) throw new Error("expected createOrderFromCart to succeed");
     const orderId = orderRes.orderId;
 
     const inventory = store.records.find((rec) => rec.collection_slug === COMMERCE_COLLECTIONS.inventory)!;
@@ -200,6 +204,7 @@ describe("commerce flows", () => {
 
     const payment = await createPaymentForOrder(pageId, orderId, "mock");
     expect(payment.ok).toBe(true);
+    if (!payment.ok) throw new Error("expected createPaymentForOrder to succeed");
 
     const refund = await createRefund(pageId, payment.paymentId, 5000, "test");
     expect(refund.ok).toBe(true);
@@ -213,6 +218,7 @@ describe("commerce flows", () => {
 
     const adjust = await adjustInventory(pageId, product.id, { stock: 20 });
     expect(adjust.ok).toBe(true);
+    if (!adjust.ok) throw new Error("expected adjustInventory to succeed");
     expect(adjust.stock).toBe(20);
   });
 });

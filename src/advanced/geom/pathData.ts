@@ -16,6 +16,31 @@ export type PathAnchor = {
   isSmooth?: boolean;
 };
 
+function inferSmoothAnchor(anchor: PathAnchor): PathAnchor {
+  if (anchor.isSmooth != null) return anchor;
+  if (
+    anchor.handle1X == null ||
+    anchor.handle1Y == null ||
+    anchor.handle2X == null ||
+    anchor.handle2Y == null
+  ) {
+    return anchor;
+  }
+  const v1x = anchor.handle1X - anchor.x;
+  const v1y = anchor.handle1Y - anchor.y;
+  const v2x = anchor.handle2X - anchor.x;
+  const v2y = anchor.handle2Y - anchor.y;
+  const len1 = Math.hypot(v1x, v1y);
+  const len2 = Math.hypot(v2x, v2y);
+  if (len1 < 1e-6 || len2 < 1e-6) return anchor;
+  const dot = (v1x * v2x + v1y * v2y) / (len1 * len2);
+  const cross = Math.abs(v1x * v2y - v1y * v2x) / (len1 * len2);
+  if (dot <= -0.98 && cross <= 0.2) {
+    return { ...anchor, isSmooth: true };
+  }
+  return anchor;
+}
+
 const SNAP_45 = Math.PI / 4;
 
 /** 각도를 45° 단위로 스냅 (Shift 스냅용) */
@@ -156,6 +181,18 @@ export function pathDataToAnchors(d: string): { anchors: PathAnchor[]; closed: b
       lastY = startY;
       break;
     }
+  }
+
+  if (closed && anchors.length > 1) {
+    const first = anchors[0];
+    const last = anchors[anchors.length - 1];
+    if (first && last && first.x === last.x && first.y === last.y) {
+      anchors.pop();
+    }
+  }
+
+  for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex += 1) {
+    anchors[anchorIndex] = inferSmoothAnchor(anchors[anchorIndex]!);
   }
 
   return { anchors, closed };

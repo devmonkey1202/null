@@ -1,5 +1,8 @@
 import { cloneDoc } from "../doc/scene";
 import type { AutoLayout, Doc, Frame, LayoutSizingAxis, Node } from "../doc/scene";
+import { getTextLineMetrics } from "../geom/textLayout";
+import { applyGridLayout } from "./autoLayoutGrid";
+import { resolveGuideAwareConstraints } from "./constraintGuideResolution";
 
 type LayoutItem = {
   node: Node;
@@ -12,13 +15,22 @@ type LayoutItem = {
   sizing: LayoutSizingAxis;
 };
 
+type AutoLayoutLine = {
+  items: LayoutItem[];
+  cross: number;
+  main: number;
+};
+
 const DEFAULT_AUTO_LAYOUT: AutoLayout = {
   mode: "auto",
   dir: "row",
   gap: 8,
+  justify: "start",
   padding: { t: 16, r: 16, b: 16, l: 16 },
   align: "start",
   wrap: false,
+  wrapGap: 8,
+  wrapAlign: "start",
 };
 
 function normalizeAutoLayout(layout?: AutoLayout): AutoLayout {
@@ -29,6 +41,7 @@ function normalizeAutoLayout(layout?: AutoLayout): AutoLayout {
     dir: layout.dir ?? "row",
     gap: Number.isFinite(layout.gap) ? layout.gap : 8,
     gapMode: layout.gapMode ?? "fixed",
+    justify: layout.justify ?? ((layout.gapMode ?? "fixed") === "space-between" ? "space-between" : "start"),
     padding: {
       t: Number.isFinite(layout.padding?.t) ? layout.padding.t : 16,
       r: Number.isFinite(layout.padding?.r) ? layout.padding.r : 16,
@@ -37,8 +50,130 @@ function normalizeAutoLayout(layout?: AutoLayout): AutoLayout {
     },
     align: layout.dir === "column" && align === "baseline" ? "start" : align,
     wrap: Boolean(layout.wrap),
+    wrapGap: Number.isFinite(layout.wrapGap) ? layout.wrapGap : (Number.isFinite(layout.gap) ? layout.gap : 8),
+    wrapAlign: layout.wrapAlign ?? "start",
     includeStrokeInBounds: Boolean(layout.includeStrokeInBounds),
   };
+}
+
+function clampBy(value: number, min?: number, max?: number) {
+  let next = value;
+  if (min != null && Number.isFinite(min)) next = Math.max(next, min);
+  if (max != null && Number.isFinite(max)) next = Math.min(next, max);
+  return next;
+}
+
+function getStrokeInset(node: Node, includeStroke: boolean): number {
+  if (!includeStroke || !node.style?.strokes?.length) return 0;
+  const maxW = Math.max(...node.style.strokes.map((s) => s.width ?? 0), 0);
+  const align = node.style.strokes[0]?.align ?? "center";
+  if (align === "outside") return maxW;
+  if (align === "inside") return 0;
+  return Math.ceil(maxW / 2);
+}
+
+function suppressHugForOverflowAxis(node: Node, axis: "width" | "height") {
+  const overflow = node.overflowScrolling ?? "none";
+  if (axis === "width") return overflow === "horizontal" || overflow === "both";
+  return overflow === "vertical" || overflow === "both";
+}
+
+function isIgnoredAutoLayoutChild(node: Node) {
+  return node.layoutPositioning === "absolute";
+}
+
+function collectLayoutItems(doc: Doc, container: Node, includeStroke: boolean): LayoutItem[] {
+  return container.children
+    .map((id) => doc.nodes[id])
+    .filter((node): node is Node => Boolean(node))
+    .filter((node) => !isIgnoredAutoLayoutChild(node))
+    .map((node) => {
+      const inset = getStrokeInset(node, includeStroke);
+      const w = Math.max(0, node.frame.w + (includeStroke ? inset * 2 : 0));
+      const h = Math.max(0, node.frame.h + (includeStroke ? inset * 2 : 0));
+      return {
+        node,
+        width: w,
+        height: h,
+        layoutWidth: w,
+        layoutHeight: h,
+        strokeInset: inset,
+        sizing: resolveSizing(node),
+      };
+    });
+}
+
+function getItemAxisSize(
+  item: LayoutItem,
+  isRow: boolean,
+  axis: "main" | "cross",
+  options?: { fillAsCurrent?: boolean },
+) {
+  const mainMode = isRow ? item.sizing.width : item.sizing.height;
+  const crossMode = isRow ? item.sizing.height : item.sizing.width;
+  const mainBase = isRow ? item.layoutWidth : item.layoutHeight;
+  const crossBase = isRow ? item.layoutHeight : item.layoutWidth;
+
+  if (axis === "main") {
+    const base = mainMode === "fill"
+      ? options?.fillAsCurrent
+        ? mainBase
+        : 0
+      : mainBase;
+    return {
+      mode: mainMode,
+      size: clampBy(
+        base,
+        isRow ? item.sizing.minWidth : item.sizing.minHeight,
+        isRow ? item.sizing.maxWidth : item.sizing.maxHeight,
+      ),
+    };
+  }
+
+  return {
+    mode: crossMode,
+    size: clampBy(
+      crossBase,
+      isRow ? item.sizing.minHeight : item.sizing.minWidth,
+      isRow ? item.sizing.maxHeight : item.sizing.maxWidth,
+    ),
+  };
+}
+
+function getBaselineOffset(item: LayoutItem) {
+  if (item.node.type === "text") {
+    return item.strokeInset + getTextLineMetrics(item.node.text?.style ?? {}).baselineOffset;
+  }
+  return Math.max(0, item.height - item.strokeInset);
+}
+
+function buildAutoLayoutLines(
+  items: LayoutItem[],
+  layout: AutoLayout,
+  isRow: boolean,
+  availableMain: number,
+  options?: { fillAsCurrent?: boolean },
+): AutoLayoutLine[] {
+  const lines: AutoLayoutLine[] = [];
+  let line: AutoLayoutLine = { items: [], cross: 0, main: 0 };
+
+  items.forEach((item) => {
+    const main = getItemAxisSize(item, isRow, "main", options).size;
+    const cross = getItemAxisSize(item, isRow, "cross").size;
+    const nextMain = line.items.length ? line.main + layout.gap + main : main;
+
+    if (layout.wrap && line.items.length && nextMain > availableMain) {
+      lines.push(line);
+      line = { items: [], cross: 0, main: 0 };
+    }
+
+    line.items.push(item);
+    line.cross = Math.max(line.cross, cross);
+    line.main = line.items.length === 1 ? main : line.main + layout.gap + main;
+  });
+
+  if (line.items.length) lines.push(line);
+  return lines;
 }
 
 function resolveSizing(node: Node): LayoutSizingAxis {
@@ -49,6 +184,7 @@ export function applyConstraintsOnResize(doc: Doc, parentId: string, prevFrame: 
   if (prevFrame.w === nextFrame.w && prevFrame.h === nextFrame.h) return doc;
   const parent = doc.nodes[parentId];
   if (!parent || !parent.children.length) return doc;
+  const parentIsAutoLayout = parent.layout?.mode === "auto";
 
   const next = cloneDoc(doc);
   const nextParent = next.nodes[parentId];
@@ -60,59 +196,13 @@ export function applyConstraintsOnResize(doc: Doc, parentId: string, prevFrame: 
     const original = doc.nodes[childId];
     const child = next.nodes[childId];
     if (!original || !child) return;
+    if (parentIsAutoLayout && !isIgnoredAutoLayoutChild(original)) return;
     const constraints = original.constraints ?? {};
-    let x = original.frame.x;
-    let y = original.frame.y;
-    let w = original.frame.w;
-    let h = original.frame.h;
-
-    if (constraints.scaleX && prevFrame.w > 0) {
-      const ratio = nextFrame.w / prevFrame.w;
-      x *= ratio;
-      w *= ratio;
-    } else {
-      const left = Boolean(constraints.left);
-      const right = Boolean(constraints.right);
-      const hCenter = Boolean(constraints.hCenter);
-      if (left && right) {
-        const leftOffset = original.frame.x;
-        const rightOffset = prevFrame.w - (original.frame.x + original.frame.w);
-        x = leftOffset;
-        w = Math.max(1, nextFrame.w - leftOffset - rightOffset);
-      } else if (left) {
-        x = original.frame.x;
-      } else if (right) {
-        const rightOffset = prevFrame.w - (original.frame.x + original.frame.w);
-        x = nextFrame.w - rightOffset - original.frame.w;
-      } else if (hCenter) {
-        const centerOffset = original.frame.x + original.frame.w / 2 - prevFrame.w / 2;
-        x = nextFrame.w / 2 + centerOffset - original.frame.w / 2;
-      }
-    }
-
-    if (constraints.scaleY && prevFrame.h > 0) {
-      const ratio = nextFrame.h / prevFrame.h;
-      y *= ratio;
-      h *= ratio;
-    } else {
-      const top = Boolean(constraints.top);
-      const bottom = Boolean(constraints.bottom);
-      const vCenter = Boolean(constraints.vCenter);
-      if (top && bottom) {
-        const topOffset = original.frame.y;
-        const bottomOffset = prevFrame.h - (original.frame.y + original.frame.h);
-        y = topOffset;
-        h = Math.max(1, nextFrame.h - topOffset - bottomOffset);
-      } else if (top) {
-        y = original.frame.y;
-      } else if (bottom) {
-        const bottomOffset = prevFrame.h - (original.frame.y + original.frame.h);
-        y = nextFrame.h - bottomOffset - original.frame.h;
-      } else if (vCenter) {
-        const centerOffset = original.frame.y + original.frame.h / 2 - prevFrame.h / 2;
-        y = nextFrame.h / 2 + centerOffset - original.frame.h / 2;
-      }
-    }
+    const resolved = resolveGuideAwareConstraints(parent, original, prevFrame, nextFrame, constraints);
+    const x = resolved.x;
+    const y = resolved.y;
+    const w = resolved.w;
+    const h = resolved.h;
 
     child.frame = { ...child.frame, x, y, w, h };
   });
@@ -128,133 +218,117 @@ function applyAutoLayout(doc: Doc, container: Node) {
   const availableCross = Math.max(0, (isRow ? container.frame.h : container.frame.w) - (isRow ? padding.t + padding.b : padding.l + padding.r));
 
   const includeStroke = Boolean(layout.includeStrokeInBounds);
-  const strokeInset = (node: Node): number => {
-    if (!includeStroke || !node.style?.strokes?.length) return 0;
-    const maxW = Math.max(...node.style.strokes.map((s) => s.width ?? 0), 0);
-    const align = node.style.strokes[0]?.align ?? "center";
-    if (align === "outside") return maxW;
-    if (align === "inside") return 0;
-    return Math.ceil(maxW / 2);
-  };
-
-  const items: LayoutItem[] = container.children
-    .map((id) => doc.nodes[id])
-    .filter((node): node is Node => Boolean(node))
-    .map((node) => {
-      const inset = strokeInset(node);
-      const w = Math.max(0, node.frame.w + (includeStroke ? inset * 2 : 0));
-      const h = Math.max(0, node.frame.h + (includeStroke ? inset * 2 : 0));
-      return {
-        node,
-        width: w,
-        height: h,
-        layoutWidth: w,
-        layoutHeight: h,
-        strokeInset: inset,
-        sizing: resolveSizing(node),
-      };
-    });
+  const items = collectLayoutItems(doc, container, includeStroke);
 
   if (!items.length) return;
+  const lines = buildAutoLayoutLines(items, layout, isRow, availableMain, { fillAsCurrent: layout.wrap });
 
-  type Line = { items: LayoutItem[]; cross: number };
-  const lines: Line[] = [];
-  let line: Line = { items: [], cross: 0 };
-
-  items.forEach((item) => {
-    const mainMode = isRow ? item.sizing.width : item.sizing.height;
-    const mainSize = mainMode === "fill" ? 0 : isRow ? item.layoutWidth : item.layoutHeight;
-    const crossSize = isRow ? item.layoutHeight : item.layoutWidth;
-    const gap = line.items.length ? layout.gap : 0;
-    const nextMain = line.items.length ? line.items.reduce((sum, it) => {
-      const mode = isRow ? it.sizing.width : it.sizing.height;
-      const size = mode === "fill" ? 0 : isRow ? it.layoutWidth : it.layoutHeight;
-      return sum + size;
-    }, 0) + layout.gap * line.items.length + mainSize : mainSize;
-
-    if (layout.wrap && line.items.length && nextMain > availableMain) {
-      lines.push(line);
-      line = { items: [], cross: 0 };
-    }
-
-    line.items.push(item);
-    line.cross = Math.max(line.cross, crossSize);
-  });
-
-  if (line.items.length) lines.push(line);
-
-  let crossOffset = isRow ? padding.t : padding.l;
   const mainStart = isRow ? padding.l : padding.t;
+  const totalCross = lines.reduce((sum, current) => sum + current.cross, 0)
+    + (layout.wrap ? (layout.wrapGap ?? layout.gap) * Math.max(0, lines.length - 1) : 0);
+  const remainingCross = Math.max(0, availableCross - totalCross);
+  const wrapGap = layout.wrapGap ?? layout.gap;
+  const crossGap =
+    layout.wrap && layout.wrapAlign === "space-between" && lines.length > 1
+      ? Math.max(0, remainingCross / (lines.length - 1))
+      : wrapGap;
+  let crossOffset = (isRow ? padding.t : padding.l)
+    + (
+      layout.wrap
+        ? layout.wrapAlign === "center"
+          ? remainingCross / 2
+          : layout.wrapAlign === "end"
+            ? remainingCross
+            : 0
+        : 0
+    );
 
   lines.forEach((current) => {
     let fixedMain = 0;
     let fillCount = 0;
 
     current.items.forEach((item) => {
-      const mainMode = isRow ? item.sizing.width : item.sizing.height;
-      const mainSize = mainMode === "fill" ? 0 : isRow ? item.layoutWidth : item.layoutHeight;
+      const { mode: mainMode, size: mainSize } = getItemAxisSize(item, isRow, "main");
       if (mainMode === "fill") fillCount += 1;
       else fixedMain += mainSize;
     });
 
-    const gapMode = layout.gapMode ?? "fixed";
-    const totalGap = gapMode === "space-between" && current.items.length > 1
-      ? 0
-      : layout.gap * Math.max(0, current.items.length - 1);
+    const baseGap = layout.gap;
+    const totalGap = baseGap * Math.max(0, current.items.length - 1);
     const leftover = Math.max(0, availableMain - fixedMain - totalGap);
     const fillSize = fillCount ? leftover / fillCount : 0;
-    const gapBetween = gapMode === "space-between" && current.items.length > 1
-      ? Math.max(0, (availableMain - fixedMain - fillCount * fillSize) / (current.items.length - 1))
-      : layout.gap;
+    const justify = layout.justify ?? ((layout.gapMode ?? "fixed") === "space-between" ? "space-between" : "start");
+    const gapBetween =
+      justify === "space-between" && current.items.length > 1 && fillCount === 0
+        ? Math.max(0, (availableMain - fixedMain) / (current.items.length - 1))
+        : baseGap;
     const lineCross = layout.wrap ? current.cross : availableCross;
-
-    let mainOffset = mainStart;
-    const isBaseline = layout.align === "baseline" && isRow;
-
-    const clampBy = (val: number, min?: number, max?: number) => {
-      if (min != null && Number.isFinite(min)) val = Math.max(val, min);
-      if (max != null && Number.isFinite(max)) val = Math.min(val, max);
-      return val;
-    };
-
-    current.items.forEach((item) => {
-      const mainMode = isRow ? item.sizing.width : item.sizing.height;
-      const crossMode = isRow ? item.sizing.height : item.sizing.width;
-      let layoutMain = mainMode === "fill" ? fillSize : isRow ? item.layoutWidth : item.layoutHeight;
-      let layoutCross = isRow ? item.layoutHeight : item.layoutWidth;
-      layoutMain = clampBy(layoutMain, isRow ? item.sizing.minWidth : item.sizing.minHeight, isRow ? item.sizing.maxWidth : item.sizing.maxHeight);
-      layoutCross = clampBy(layoutCross, isRow ? item.sizing.minHeight : item.sizing.minWidth, isRow ? item.sizing.maxHeight : item.sizing.maxWidth);
+    const resolvedItems = current.items.map((item) => {
+      const { mode: mainMode, size: clampedMain } = getItemAxisSize(item, isRow, "main");
+      const { mode: crossMode, size: clampedCross } = getItemAxisSize(item, isRow, "cross");
+      const layoutMain = mainMode === "fill" ? fillSize : clampedMain;
+      const layoutCross = clampedCross;
       const contentW = item.width;
       const contentH = item.height;
       const inset = item.strokeInset;
-
-      const crossSize = (layout.align === "stretch" || crossMode === "fill") ? lineCross : layoutCross;
-      let w = isRow ? (mainMode === "fill" ? Math.max(1, layoutMain) : contentW) : (crossMode === "fill" ? Math.max(1, crossSize) : contentW);
-      let h = isRow ? (crossMode === "fill" ? Math.max(1, crossSize) : contentH) : (mainMode === "fill" ? Math.max(1, layoutMain) : contentH);
+      const stretchedCross = (layout.align === "stretch" || crossMode === "fill") ? lineCross : layoutCross;
+      let w = isRow ? (mainMode === "fill" ? Math.max(1, layoutMain) : contentW) : (crossMode === "fill" ? Math.max(1, stretchedCross) : contentW);
+      let h = isRow ? (crossMode === "fill" ? Math.max(1, stretchedCross) : contentH) : (mainMode === "fill" ? Math.max(1, layoutMain) : contentH);
       w = clampBy(w, item.sizing.minWidth, item.sizing.maxWidth);
       h = clampBy(h, item.sizing.minHeight, item.sizing.maxHeight);
+      return {
+        item,
+        mainMode,
+        crossMode,
+        layoutMain,
+        layoutCross,
+        inset,
+        crossSize: stretchedCross,
+        width: w,
+        height: h,
+        actualMain: isRow ? w : h,
+        actualCross: isRow ? h : w,
+      };
+    });
+    const occupiedMain = resolvedItems.reduce((sum, resolved) => sum + resolved.actualMain, 0)
+      + gapBetween * Math.max(0, resolvedItems.length - 1);
+    const remainingMain = Math.max(0, availableMain - occupiedMain);
 
+    let mainOffset = mainStart
+      + (
+        justify === "center"
+          ? remainingMain / 2
+          : justify === "end"
+            ? remainingMain
+            : 0
+      );
+    const isBaseline = layout.align === "baseline" && isRow;
+    const lineBaseline = isBaseline
+      ? resolvedItems.reduce((max, resolved) => Math.max(max, getBaselineOffset(resolved.item)), 0)
+      : 0;
+
+    resolvedItems.forEach((resolved) => {
+      const { item, mainMode, crossMode, layoutCross, inset, width: w, height: h, actualCross, actualMain } = resolved;
       let cellX: number;
       let cellY: number;
       if (isRow) {
         cellX = mainOffset + (mainMode === "fill" ? 0 : inset);
         if (isBaseline) {
-          const baselineRatio = 0.8;
-          const baselineY = crossOffset + lineCross * baselineRatio;
-          cellY = baselineY - contentH * baselineRatio;
+          const baselineY = crossOffset + lineBaseline;
+          cellY = baselineY - getBaselineOffset(item);
         } else if (layout.align === "center") {
-          cellY = crossOffset + (lineCross - (crossMode === "fill" ? crossSize : layoutCross)) / 2 + (crossMode === "fill" ? 0 : inset);
+          cellY = crossOffset + (lineCross - (crossMode === "fill" ? actualCross : layoutCross)) / 2 + (crossMode === "fill" ? 0 : inset);
         } else if (layout.align === "end") {
-          cellY = crossOffset + lineCross - (crossMode === "fill" ? crossSize : layoutCross) - (crossMode === "fill" ? 0 : inset);
+          cellY = crossOffset + lineCross - (crossMode === "fill" ? actualCross : layoutCross) - (crossMode === "fill" ? 0 : inset);
         } else {
           cellY = crossOffset + (crossMode === "fill" ? 0 : inset);
         }
       } else {
         cellY = mainOffset + (mainMode === "fill" ? 0 : inset);
         if (layout.align === "center") {
-          cellX = crossOffset + (lineCross - (crossMode === "fill" ? crossSize : layoutCross)) / 2 + (crossMode === "fill" ? 0 : inset);
+          cellX = crossOffset + (lineCross - (crossMode === "fill" ? actualCross : layoutCross)) / 2 + (crossMode === "fill" ? 0 : inset);
         } else if (layout.align === "end") {
-          cellX = crossOffset + lineCross - (crossMode === "fill" ? crossSize : layoutCross) - (crossMode === "fill" ? 0 : inset);
+          cellX = crossOffset + lineCross - (crossMode === "fill" ? actualCross : layoutCross) - (crossMode === "fill" ? 0 : inset);
         } else {
           cellX = crossOffset + (crossMode === "fill" ? 0 : inset);
         }
@@ -266,60 +340,45 @@ function applyAutoLayout(doc: Doc, container: Node) {
         item.node.frame = { ...item.node.frame, x: cellX, y: cellY, w: Math.max(1, w), h: Math.max(1, h) };
       }
 
-      mainOffset += layoutMain + gapBetween;
+      mainOffset += actualMain + gapBetween;
     });
 
-    crossOffset += lineCross + (layout.wrap ? layout.gap : 0);
+    crossOffset += lineCross + (layout.wrap ? crossGap : 0);
   });
 }
 
 function applyAutoLayoutHug(doc: Doc, container: Node) {
   const sizing = resolveSizing(container);
-  if (sizing.width !== "hug" && sizing.height !== "hug") return false;
+  const hugWidth = sizing.width === "hug" && !suppressHugForOverflowAxis(container, "width");
+  const hugHeight = sizing.height === "hug" && !suppressHugForOverflowAxis(container, "height");
+  if (!hugWidth && !hugHeight) return false;
   const layout = normalizeAutoLayout(container.layout?.mode === "auto" ? container.layout : undefined);
-  if (layout.wrap) return false;
 
   const isRow = layout.dir === "row";
   const padding = layout.padding;
   const includeStroke = Boolean(layout.includeStrokeInBounds);
-  const strokeInset = (node: Node): number => {
-    if (!includeStroke || !node.style?.strokes?.length) return 0;
-    const maxW = Math.max(...node.style.strokes.map((s) => s.width ?? 0), 0);
-    const align = node.style.strokes[0]?.align ?? "center";
-    if (align === "outside") return maxW;
-    if (align === "inside") return 0;
-    return Math.ceil(maxW / 2);
-  };
+  const items = collectLayoutItems(doc, container, includeStroke);
+  const mainPadding = isRow ? padding.l + padding.r : padding.t + padding.b;
+  const currentAvailableMain = Math.max(0, (isRow ? container.frame.w : container.frame.h) - mainPadding);
+  const hugMain = isRow ? hugWidth : hugHeight;
+  const lineAvailableMain = layout.wrap && !hugMain ? currentAvailableMain : Number.POSITIVE_INFINITY;
+  const lines = items.length
+    ? buildAutoLayoutLines(items, layout, isRow, lineAvailableMain, { fillAsCurrent: true })
+    : [];
+  const measuredMain = lines.length ? Math.max(...lines.map((line) => line.main)) : 0;
+  const measuredCross = lines.length
+    ? lines.reduce((sum, line) => sum + line.cross, 0) + (layout.wrap ? (layout.wrapGap ?? layout.gap) * Math.max(0, lines.length - 1) : 0)
+    : 0;
 
-  const items = container.children
-    .map((id) => doc.nodes[id])
-    .filter((node): node is Node => Boolean(node));
-
-  const hasItems = items.length > 0;
-  const mainSizes = items.map((item) => {
-    const inset = strokeInset(item);
-    const w = item.frame.w + (includeStroke ? inset * 2 : 0);
-    const h = item.frame.h + (includeStroke ? inset * 2 : 0);
-    return isRow ? w : h;
-  });
-  const crossSizes = items.map((item) => {
-    const inset = strokeInset(item);
-    const w = item.frame.w + (includeStroke ? inset * 2 : 0);
-    const h = item.frame.h + (includeStroke ? inset * 2 : 0);
-    return isRow ? h : w;
-  });
-  const mainTotal = hasItems ? mainSizes.reduce((sum, size) => sum + size, 0) + layout.gap * Math.max(0, items.length - 1) : 0;
-  const crossMax = hasItems ? Math.max(...crossSizes) : 0;
-
-  const desiredWidth = isRow ? padding.l + padding.r + mainTotal : padding.l + padding.r + crossMax;
-  const desiredHeight = isRow ? padding.t + padding.b + crossMax : padding.t + padding.b + mainTotal;
+  const desiredWidth = isRow ? padding.l + padding.r + measuredMain : padding.l + padding.r + measuredCross;
+  const desiredHeight = isRow ? padding.t + padding.b + measuredCross : padding.t + padding.b + measuredMain;
 
   let changed = false;
-  if (sizing.width === "hug" && Math.abs(container.frame.w - desiredWidth) > 0.5) {
+  if (hugWidth && Math.abs(container.frame.w - desiredWidth) > 0.5) {
     container.frame.w = Math.max(1, desiredWidth);
     changed = true;
   }
-  if (sizing.height === "hug" && Math.abs(container.frame.h - desiredHeight) > 0.5) {
+  if (hugHeight && Math.abs(container.frame.h - desiredHeight) > 0.5) {
     container.frame.h = Math.max(1, desiredHeight);
     changed = true;
   }
@@ -346,6 +405,11 @@ function layoutNode(doc: Doc, nodeId: string) {
     applyAutoLayout(doc, node);
     if (applyAutoLayoutHug(doc, node)) {
       applyAutoLayout(doc, node);
+    }
+  } else if (node.layout?.mode === "grid") {
+    const gridChanged = applyGridLayout(doc, node);
+    if (gridChanged) {
+      applyGridLayout(doc, node);
     }
   }
   if (node.type === "table" && node.table?.columns) {

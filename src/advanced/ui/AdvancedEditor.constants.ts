@@ -1,18 +1,32 @@
-import type { NodeType } from "../doc/scene";
+import type { AutoLayout, GridAutoLayout, NodeType } from "../doc/scene";
 import type { Tool } from "./AdvancedEditor.types";
 
 export const GRID = 8;
 export const DEFAULT_FONT_FAMILY =
   "Space Grotesk, 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
 
-export const DEFAULT_AUTO_LAYOUT = {
+export const DEFAULT_AUTO_LAYOUT: AutoLayout = {
   mode: "auto" as const,
   dir: "row" as const,
   gap: 8,
   gapMode: "fixed" as const,
+  justify: "start" as const,
   padding: { t: 16, r: 16, b: 16, l: 16 },
   align: "start" as const,
   wrap: false,
+  wrapGap: 8,
+  wrapAlign: "start" as const,
+};
+
+export const DEFAULT_GRID_LAYOUT: GridAutoLayout = {
+  mode: "grid" as const,
+  columns: 2,
+  rows: 2,
+  columnGap: 16,
+  rowGap: 16,
+  padding: { t: 16, r: 16, b: 16, l: 16 },
+  columnsSizing: [{ type: "flex" as const, value: 1 }, { type: "flex" as const, value: 1 }],
+  rowsSizing: [{ type: "hug" as const }, { type: "hug" as const }],
 };
 
 export const NODE_TYPE_LABELS: Partial<Record<NodeType, string>> = {

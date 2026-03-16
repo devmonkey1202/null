@@ -1,0 +1,191 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`runtime renderer representative fixtures > keeps rendered output stable for component-variant 1`] = `
+{
+  "nodeOrder": [
+    {
+      "childTags": [
+        "rect",
+        "g",
+        "g",
+        "g",
+      ],
+      "text": "Continue",
+    },
+    {
+      "childTags": [
+        "rect",
+        "g",
+      ],
+      "text": "Continue",
+    },
+    {
+      "childTags": [
+        "text",
+      ],
+      "text": "Continue",
+    },
+    {
+      "childTags": [
+        "rect",
+      ],
+      "text": undefined,
+    },
+    {
+      "childTags": [
+        "rect",
+      ],
+      "text": undefined,
+    },
+  ],
+  "tagCounts": {
+    "foreignObject": 0,
+    "image": 0,
+    "path": 1,
+    "rect": 4,
+    "text": 1,
+  },
+}
+`;
+
+exports[`runtime renderer representative fixtures > keeps rendered output stable for layout-wrap 1`] = `
+{
+  "nodeOrder": [
+    {
+      "childTags": [
+        "rect",
+        "g",
+      ],
+      "text": undefined,
+    },
+    {
+      "childTags": [
+        "rect",
+        "defs",
+        "g",
+      ],
+      "text": undefined,
+    },
+    {
+      "childTags": [
+        "rect",
+      ],
+      "text": undefined,
+    },
+    {
+      "childTags": [
+        "rect",
+      ],
+      "text": undefined,
+    },
+    {
+      "childTags": [
+        "rect",
+      ],
+      "text": undefined,
+    },
+  ],
+  "tagCounts": {
+    "foreignObject": 1,
+    "image": 0,
+    "path": 1,
+    "rect": 6,
+    "text": 0,
+  },
+}
+`;
+
+exports[`runtime renderer representative fixtures > keeps rendered output stable for text-rich 1`] = `
+{
+  "nodeOrder": [
+    {
+      "childTags": [
+        "rect",
+        "g",
+        "g",
+      ],
+      "text": "Hello braveNew worldText on path",
+    },
+    {
+      "childTags": [
+        "foreignobject",
+      ],
+      "text": "Hello braveNew world",
+    },
+    {
+      "childTags": [
+        "g",
+      ],
+      "text": "Text on path",
+    },
+  ],
+  "tagCounts": {
+    "foreignObject": 1,
+    "image": 0,
+    "path": 2,
+    "rect": 1,
+    "text": 1,
+  },
+}
+`;
+
+exports[`runtime renderer representative fixtures > keeps rendered output stable for tokens-basic 1`] = `
+{
+  "nodeOrder": [
+    {
+      "childTags": [
+        "rect",
+        "g",
+        "g",
+      ],
+      "text": "Figma Grade",
+    },
+    {
+      "childTags": [
+        "rect",
+      ],
+      "text": undefined,
+    },
+    {
+      "childTags": [
+        "text",
+      ],
+      "text": "Figma Grade",
+    },
+  ],
+  "tagCounts": {
+    "foreignObject": 0,
+    "image": 0,
+    "path": 1,
+    "rect": 2,
+    "text": 1,
+  },
+}
+`;
+
+exports[`runtime renderer representative fixtures > keeps rendered output stable for vector-boolean 1`] = `
+{
+  "nodeOrder": [
+    {
+      "childTags": [
+        "rect",
+        "g",
+      ],
+      "text": undefined,
+    },
+    {
+      "childTags": [
+        "path",
+      ],
+      "text": undefined,
+    },
+  ],
+  "tagCounts": {
+    "foreignObject": 0,
+    "image": 0,
+    "path": 2,
+    "rect": 1,
+    "text": 0,
+  },
+}
+`;

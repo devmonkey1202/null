@@ -10,15 +10,30 @@ export type FigmaRectangle = { x: number; y: number; width: number; height: numb
 
 export type FigmaRGBA = { r: number; g: number; b: number; a: number };
 
+export type FigmaVariableAlias = {
+  type: "VARIABLE_ALIAS";
+  id: string;
+};
+
+export type FigmaPaintBoundVariables = {
+  color?: FigmaVariableAlias;
+  opacity?: FigmaVariableAlias;
+};
+
 export type FigmaSolidPaint = {
   type: "SOLID";
   color: FigmaRGBA;
   opacity?: number;
   visible?: boolean;
+  boundVariables?: FigmaPaintBoundVariables;
 };
 
-export type FigmaGradientStop = { position: number; color: FigmaRGBA };
+export type FigmaGradientStop = { position: number; color: FigmaRGBA; boundVariables?: FigmaPaintBoundVariables };
 export type FigmaVector = { x: number; y: number };
+
+export type FigmaTypeStyleBoundVariables = Partial<
+  Record<"fontFamily" | "fontWeight" | "fontSize" | "lineHeight" | "letterSpacing" | "paragraphSpacing", FigmaVariableAlias>
+>;
 
 export type FigmaGradientPaint = {
   type: "GRADIENT_LINEAR" | "GRADIENT_RADIAL" | "GRADIENT_ANGULAR" | "GRADIENT_DIAMOND";
@@ -26,6 +41,7 @@ export type FigmaGradientPaint = {
   gradientStops: FigmaGradientStop[];
   opacity?: number;
   visible?: boolean;
+  boundVariables?: FigmaPaintBoundVariables;
 };
 
 export type FigmaImagePaint = {
@@ -34,6 +50,7 @@ export type FigmaImagePaint = {
   scaleMode?: "FILL" | "FIT" | "TILE" | "STRETCH";
   opacity?: number;
   visible?: boolean;
+  boundVariables?: FigmaPaintBoundVariables;
 };
 
 export type FigmaPaint = FigmaSolidPaint | FigmaGradientPaint | FigmaImagePaint;
@@ -43,19 +60,84 @@ export type FigmaLayoutConstraint = {
   horizontal: "LEFT" | "RIGHT" | "CENTER" | "LEFT_RIGHT" | "SCALE";
 };
 
+export type FigmaLayoutGrid = {
+  pattern: "COLUMNS" | "ROWS" | "GRID";
+  sectionSize?: number;
+  visible?: boolean;
+  color?: FigmaRGBA;
+  gutterSize?: number;
+  offset?: number;
+  count?: number;
+  alignment?: "MIN" | "CENTER" | "STRETCH";
+};
+
 export type FigmaTypeStyle = {
   fontFamily?: string;
   fontPostScriptName?: string | null;
   fontWeight?: number;
   fontSize?: number;
+  fontFeatureSettings?: string;
+  fontVariationSettings?: string;
   letterSpacing?: number;
+  paragraphSpacing?: number;
   lineHeightPx?: number;
   lineHeightPercent?: number;
+  lineHeightPercentFontSize?: number;
+  lineHeightUnit?: "PIXELS" | "FONT_SIZE_%" | "INTRINSIC_%";
   textAlignHorizontal?: "LEFT" | "RIGHT" | "CENTER" | "JUSTIFIED";
   textCase?: "ORIGINAL" | "UPPER" | "LOWER" | "TITLE" | "SMALL_CAPS" | "SMALL_CAPS_FORCED";
   textDecoration?: "NONE" | "STRIKETHROUGH" | "UNDERLINE";
+  textAutoResize?: "NONE" | "WIDTH_AND_HEIGHT" | "HEIGHT" | "TRUNCATE";
   italic?: boolean;
   fills?: FigmaPaint[];
+  boundVariables?: FigmaTypeStyleBoundVariables;
+};
+
+export type FigmaStyleMeta = {
+  key?: string;
+  name?: string;
+  style_type?: "FILL" | "TEXT" | "EFFECT" | "GRID";
+  description?: string;
+};
+
+export type FigmaVariableValue = FigmaRGBA | number | string | boolean | FigmaVariableAlias;
+
+export type FigmaVariableMode = {
+  modeId: string;
+  name: string;
+};
+
+export type FigmaLocalVariableCollection = {
+  id: string;
+  name: string;
+  key?: string;
+  defaultModeId?: string;
+  modes?: FigmaVariableMode[];
+  variableIds?: string[];
+  hiddenFromPublishing?: boolean;
+  remote?: boolean;
+};
+
+export type FigmaLocalVariable = {
+  id: string;
+  name: string;
+  key?: string;
+  variableCollectionId: string;
+  resolvedType?: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN";
+  valuesByMode?: Record<string, FigmaVariableValue>;
+  scopes?: string[];
+  description?: string;
+  hiddenFromPublishing?: boolean;
+  remote?: boolean;
+};
+
+export type FigmaLocalVariablesResponse = {
+  status?: number;
+  error?: boolean;
+  meta?: {
+    variableCollections?: Record<string, FigmaLocalVariableCollection>;
+    variables?: Record<string, FigmaLocalVariable>;
+  };
 };
 
 export type FigmaDropShadowEffect = {
@@ -84,13 +166,84 @@ export type FigmaBlurEffect = {
 
 export type FigmaEffect = FigmaDropShadowEffect | FigmaInnerShadowEffect | FigmaBlurEffect;
 
+export type FigmaPrototypeEasing = {
+  type: string;
+  easingFunctionCubicBezier?: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
+  easingFunctionSpring?: {
+    mass: number;
+    stiffness: number;
+    damping: number;
+  };
+};
+
+export type FigmaPrototypeTransition =
+  | {
+      type: "DISSOLVE" | "SMART_ANIMATE" | "SCROLL_ANIMATE";
+      duration: number;
+      easing: FigmaPrototypeEasing;
+    }
+  | {
+      type: "MOVE_IN" | "MOVE_OUT" | "PUSH" | "SLIDE_IN" | "SLIDE_OUT";
+      direction: "LEFT" | "RIGHT" | "TOP" | "BOTTOM";
+      duration: number;
+      easing: FigmaPrototypeEasing;
+      matchLayers?: boolean;
+    };
+
+export type FigmaPrototypeTrigger =
+  | { type: "ON_CLICK" | "ON_HOVER" | "ON_PRESS" | "ON_DRAG" }
+  | { type: "AFTER_TIMEOUT"; timeout: number }
+  | { type: "MOUSE_ENTER" | "MOUSE_LEAVE" | "MOUSE_UP" | "MOUSE_DOWN"; delay: number; deprecatedVersion?: boolean }
+  | { type: "ON_KEY_DOWN"; device: string; keyCodes: number[] }
+  | { type: "ON_MEDIA_HIT"; mediaHitTime: number }
+  | { type: "ON_MEDIA_END" };
+
+export type FigmaPrototypeAction =
+  | { type: "BACK" | "CLOSE" }
+  | { type: "URL"; url: string }
+  | {
+      type: "NODE";
+      destinationId: string | null;
+      navigation: "NAVIGATE" | "SWAP" | "OVERLAY" | "SCROLL_TO" | "CHANGE_TO";
+      transition?: FigmaPrototypeTransition | null;
+      preserveScrollPosition?: boolean;
+      overlayRelativePosition?: FigmaVector;
+      resetVideoPosition?: boolean;
+      resetScrollPosition?: boolean;
+      resetInteractiveComponents?: boolean;
+    };
+
+export type FigmaInteraction = {
+  trigger: FigmaPrototypeTrigger | null;
+  actions?: FigmaPrototypeAction[];
+};
+
+export type FigmaFlowStartingPoint = {
+  nodeId: string;
+  name: string;
+};
+
+export type FigmaPrototypeDevice = {
+  type: "NONE" | "PRESET" | "CUSTOM" | "PRESENTATION";
+  size?: { width: number; height: number };
+  presetIdentifier?: string;
+  rotation: "NONE" | "CCW_90";
+};
+
 /** Figma API 노드: 공통 필드 + children 등 (타입은 문자열로) */
 export interface FigmaNode {
   id: string;
   name: string;
   type: string;
+  booleanOperation?: "UNION" | "SUBTRACT" | "INTERSECT" | "EXCLUDE";
   visible?: boolean;
   locked?: boolean;
+  isMask?: boolean;
   rotation?: number;
   absoluteBoundingBox?: FigmaRectangle | null;
   children?: FigmaNode[];
@@ -99,31 +252,82 @@ export interface FigmaNode {
   strokeWeight?: number;
   strokeAlign?: "INSIDE" | "OUTSIDE" | "CENTER";
   strokeDashes?: number[];
+  strokeCap?: string;
+  strokeJoin?: string;
   cornerRadius?: number;
   rectangleCornerRadii?: number[];
   opacity?: number;
   blendMode?: string;
   effects?: FigmaEffect[];
+  transitionNodeID?: string;
+  transitionDuration?: number;
+  transitionEasing?: string;
+  interactions?: FigmaInteraction[];
   constraints?: FigmaLayoutConstraint;
+  layoutGrids?: FigmaLayoutGrid[];
   clipsContent?: boolean;
   layoutMode?: "NONE" | "HORIZONTAL" | "VERTICAL" | "GRID";
+  gridRowCount?: number;
+  gridColumnCount?: number;
+  gridRowGap?: number;
+  gridColumnGap?: number;
+  gridRowsSizing?: string;
+  gridColumnsSizing?: string;
   primaryAxisSizingMode?: "FIXED" | "AUTO";
   counterAxisSizingMode?: "FIXED" | "AUTO";
+  layoutSizingHorizontal?: "FIXED" | "HUG" | "FILL";
+  layoutSizingVertical?: "FIXED" | "HUG" | "FILL";
   primaryAxisAlignItems?: "MIN" | "CENTER" | "MAX" | "SPACE_BETWEEN";
   counterAxisAlignItems?: "MIN" | "CENTER" | "MAX" | "BASELINE" | "STRETCH";
+  counterAxisAlignContent?: "AUTO" | "SPACE_BETWEEN";
   paddingLeft?: number;
   paddingRight?: number;
   paddingTop?: number;
   paddingBottom?: number;
   itemSpacing?: number;
+  counterAxisSpacing?: number;
   layoutWrap?: "NO_WRAP" | "WRAP";
+  layoutPositioning?: "AUTO" | "ABSOLUTE";
+  layoutAlign?: "INHERIT" | "STRETCH";
+  layoutGrow?: number;
+  gridChildHorizontalAlign?: "AUTO" | "MIN" | "CENTER" | "MAX";
+  gridChildVerticalAlign?: "AUTO" | "MIN" | "CENTER" | "MAX";
+  gridRowSpan?: number;
+  gridColumnSpan?: number;
+  gridRowAnchorIndex?: number;
+  gridColumnAnchorIndex?: number;
+  minWidth?: number | null;
+  maxWidth?: number | null;
+  minHeight?: number | null;
+  maxHeight?: number | null;
+  strokesIncludedInLayout?: boolean;
   overflowDirection?: "NONE" | "HORIZONTAL_SCROLLING" | "VERTICAL_SCROLLING" | "HORIZONTAL_AND_VERTICAL_SCROLLING";
+  styles?: Record<string, string>;
+  boundVariables?: {
+    fills?: Array<FigmaVariableAlias | null | undefined>;
+    strokes?: Array<FigmaVariableAlias | null | undefined>;
+    characters?: FigmaVariableAlias;
+  };
   characters?: string;
   style?: FigmaTypeStyle;
+  styleOverrideTable?: Record<string, FigmaTypeStyle>;
+  characterStyleOverrides?: number[];
   componentId?: string;
+  componentSetId?: string;
+  variantProperties?: Record<string, string>;
+  componentProperties?: Record<string, { type?: string; value?: string | boolean | number }>;
+  componentPropertyDefinitions?: Record<string, { type?: string; defaultValue?: string | boolean | number; variantOptions?: string[] }>;
+  componentPropertyReferences?: Record<string, string>;
   exportSettings?: Array<{ format: string; constraint?: { type: string; value: number } }>;
+  flowStartingPoints?: FigmaFlowStartingPoint[];
+  prototypeStartNodeID?: string | null;
+  prototypeDevice?: FigmaPrototypeDevice;
+  prototypeBackgrounds?: FigmaRGBA[];
   fillGeometry?: Array<{ path: string }>;
   strokeGeometry?: Array<{ path: string }>;
+  pointCount?: number;
+  arcData?: { startingAngle: number; endingAngle: number; innerRadius: number };
+  sharedPluginData?: Record<string, Record<string, string>>;
 }
 
 export type FigmaDocumentNode = { type: "DOCUMENT"; id: string; name: string; children: FigmaNode[] };
@@ -134,6 +338,7 @@ export type FigmaFileResponse = {
   version: string;
   document: FigmaDocumentNode;
   components?: Record<string, unknown>;
+  styles?: Record<string, FigmaStyleMeta>;
   schemaVersion?: number;
 };
 
@@ -240,6 +445,13 @@ export async function getImages(
   let path = `/images/${fileKey}?ids=${encodeURIComponent(ids)}&format=${format}`;
   if (scale != null) path += `&scale=${scale}`;
   return request<FigmaImagesResponse>(path, accessToken);
+}
+
+export async function getLocalVariables(
+  fileKey: string,
+  accessToken: string
+): Promise<FigmaLocalVariablesResponse> {
+  return request<FigmaLocalVariablesResponse>(`/files/${fileKey}/variables/local`, accessToken);
 }
 
 export function rgbaToHex(rgba: FigmaRGBA): string {

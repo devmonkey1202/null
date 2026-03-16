@@ -9,6 +9,14 @@ import { prisma } from "@/lib/db";
 import { getRedis, pushEvent } from "@/lib/redis";
 import { storeGhostTrace, getGhostTraces } from "@/lib/ghost";
 import { getPageState, removeSession, type SessionBuffer } from "@/server/liveState";
+import {
+  getEditorRoom,
+  getLatestEditorDocOperation,
+  normalizeEditorDocOperation,
+  rememberEditorDocOperation,
+  wrapEditorDocOperation,
+  type EditorDocOperation,
+} from "@/lib/collab";
 import { resolvePlanFeatures } from "@/lib/plan";
 import { logWithThrottle } from "@/lib/logger";
 
@@ -69,6 +77,7 @@ type EditorPresence = {
 };
 
 const editorPresenceBySocket = new Map<string, { pageId: string; presence: EditorPresence }>();
+const editorDocHistoryByPage = new Map<string, EditorDocOperation[]>();
 
 
 function maskSensitivePayload(value: unknown): unknown {
@@ -182,14 +191,20 @@ async function handleEditorConnection(io: Server, socket: Socket, pageId: string
     return;
   }
 
-  const room = `editor:${pageId}`;
-  socket.join(room);
+  const presenceRoom = getEditorRoom(pageId, "presence");
+  const docRoom = getEditorRoom(pageId, "doc");
+  socket.join(presenceRoom);
+  socket.join(docRoom);
 
   const peers = Array.from(editorPresenceBySocket.values())
     .filter((entry) => entry.pageId === pageId)
     .map((entry) => entry.presence);
 
   socket.emit("editor:peers", { peers });
+  const latestOperation = getLatestEditorDocOperation(editorDocHistoryByPage.get(pageId));
+  if (latestOperation) {
+    socket.emit("editor:op:sync", wrapEditorDocOperation(latestOperation));
+  }
 
   socket.on("editor:presence", (payload) => {
     if (!payload || typeof payload !== "object") return;
@@ -208,31 +223,30 @@ async function handleEditorConnection(io: Server, socket: Socket, pageId: string
     };
 
     editorPresenceBySocket.set(socket.id, { pageId, presence });
-    socket.to(room).emit("editor:presence", presence);
+    socket.to(presenceRoom).emit("editor:presence", presence);
   });
 
-  socket.on("editor:doc", (payload) => {
-    if (!payload || typeof payload !== "object") return;
-    const raw = payload as Record<string, unknown>;
-    const content = raw.content;
-    if (!content || typeof content !== "object") return;
-    const ts = typeof raw.ts === "number" ? raw.ts : Date.now();
-    const sessionId = typeof raw.sessionId === "string" ? raw.sessionId : undefined;
-    const senderId = typeof raw.senderId === "string" ? raw.senderId : undefined;
-    const deletedNodeIds = Array.isArray(raw.deletedNodeIds)
-      ? raw.deletedNodeIds.filter((id): id is string => typeof id === "string")
-      : [];
-    const deletedPageIds = Array.isArray(raw.deletedPageIds)
-      ? raw.deletedPageIds.filter((id): id is string => typeof id === "string")
-      : [];
-    socket.to(room).emit("editor:doc", { ts, sessionId, senderId, content, deletedNodeIds, deletedPageIds });
-  });
+  const broadcastEditorOperation = (payload: unknown) => {
+    const operation = normalizeEditorDocOperation(payload);
+    if (!operation) return;
+    const history = editorDocHistoryByPage.get(pageId) ?? [];
+    editorDocHistoryByPage.set(pageId, rememberEditorDocOperation(history, operation, 96));
+    socket.to(docRoom).emit("editor:op", wrapEditorDocOperation(operation));
+  };
+
+  socket.on("editor:op", broadcastEditorOperation);
+  socket.on("editor:doc", broadcastEditorOperation);
 
   socket.on("disconnect", () => {
     const entry = editorPresenceBySocket.get(socket.id);
     editorPresenceBySocket.delete(socket.id);
     if (entry?.presence?.id) {
-      socket.to(room).emit("editor:leave", { id: entry.presence.id });
+      socket.to(presenceRoom).emit("editor:leave", { id: entry.presence.id });
+    }
+    const remainingPresence = io.sockets.adapter.rooms.get(presenceRoom)?.size ?? 0;
+    const remainingDoc = io.sockets.adapter.rooms.get(docRoom)?.size ?? 0;
+    if (remainingPresence === 0 && remainingDoc === 0) {
+      editorDocHistoryByPage.delete(pageId);
     }
   });
 }

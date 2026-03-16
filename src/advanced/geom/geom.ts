@@ -1,6 +1,6 @@
 ﻿import type { Doc } from "../doc/scene";
 
-function getAbsoluteFrame(doc: Doc, nodeId: string) {
+export function getAbsoluteFrame(doc: Doc, nodeId: string) {
   const node = doc.nodes[nodeId];
   if (!node) return null;
   let x = node.frame.x;
