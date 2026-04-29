@@ -550,10 +550,7 @@ export default function EditorView() {
       .catch(() => null);
   }, []);
 
-  const draftKey = useMemo(() => `NULL_EDITOR_DRAFT:${pageId ?? "new"}`,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pageId],
-  );
+  const draftKey = useMemo(() => `NULL_EDITOR_DRAFT:${pageId ?? "new"}`, [pageId]);
 
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [startSceneId, setStartSceneId] = useState<string | null>(null);
@@ -815,6 +812,7 @@ export default function EditorView() {
       summary.push({ nodeId: node.id, label, keys });
     }
     return summary;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectionInstanceId, selectionComponentId, selectionVariantId, activeComponent, nodes]);
 
   const canUndo = history.past.length > 0;
@@ -902,7 +900,7 @@ export default function EditorView() {
         setSelectedIds([]);
       })
       .catch(() => null);
-  }, [pageId]);
+  }, [initialSceneId, pageId]);
 
   useEffect(() => {
     setDocMeta((prev) => ({ ...prev, nodes }));
@@ -2910,6 +2908,7 @@ export default function EditorView() {
       window.removeEventListener("pointermove", handleMove);
       window.removeEventListener("pointerup", handleUp);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   
@@ -2971,13 +2970,6 @@ export default function EditorView() {
   function getActiveScene(v2: ContentV2, sid: string | null) {
     const id = sid && v2.scenes.some((s) => s.id === sid) ? sid : v2.startSceneId;
     return v2.scenes.find((s) => s.id === id) ?? v2.scenes[0];
-  }
-
-  function replaceScene(v2: ContentV2, sid: string, patch: Partial<Scene>): ContentV2 {
-    return {
-      ...v2,
-      scenes: v2.scenes.map((s) => (s.id === sid ? { ...s, ...patch } : s)),
-    };
   }
 
   function extractPageId(data: unknown): string | null {
@@ -3362,7 +3354,7 @@ export default function EditorView() {
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-6xl gap-6 px-6 py-8 lg:grid-cols-[180px_1fr_280px]">
+      <div className="mx-auto grid w-full max-w-6xl gap-6 px-6 py-8 lg:grid-cols-[180px_minmax(0,1fr)_280px]">
         {/* 도구함 */}
         <aside className="rounded-[14px] border border-neutral-200 p-4 text-xs text-neutral-700">
           <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-400">도구함</div>
@@ -3608,7 +3600,7 @@ export default function EditorView() {
         </aside>
 
         {/* Canvas */}
-        <section className="flex flex-col items-center gap-4">
+        <section className="flex min-w-0 flex-col items-center gap-4">
           {message ? (
             <div className="w-full text-right text-[11px] text-red-500" role="status" aria-live="polite">
               {message}
@@ -3637,7 +3629,7 @@ export default function EditorView() {
             <span className="text-neutral-500">{Math.round(zoom * 100)}%</span>
           </div>
           <div
-            className="overflow-auto rounded-[16px] border border-neutral-200 bg-neutral-50 p-6"
+            className="w-full max-w-full overflow-auto rounded-[16px] border border-neutral-200 bg-neutral-50 p-6"
             style={{ maxHeight: "70vh" }}
             onWheel={(e) => {
               if (!e.ctrlKey) return;

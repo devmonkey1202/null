@@ -81,7 +81,7 @@ export const MESSAGE_LABELS: Record<string, string> = {
   preset_added: "프리셋이 추가되었습니다.",
   preset_failed: "프리셋 추가에 실패했습니다.",
   component_pushed: "컴포넌트가 업데이트되었습니다.",
-  vector_coming_soon: "Outline/Offset 기능은 준비 중입니다.",
+  vector_conversion_unavailable: "선택한 도형은 현재 아웃라인 또는 오프셋 패스 변환을 지원하지 않습니다.",
   export_pdf_unsupported: "PDF 내보내기는 지원되지 않습니다. jspdf 설정을 확인하세요.",
   figma_token_required:
     "Figma Access Token이 필요합니다. Figma > Personal access tokens에서 생성 후 .env의 FIGMA_ACCESS_TOKEN에 등록하세요.",
@@ -99,7 +99,7 @@ const ERROR_KEYS = new Set([
 
 const INFO_KEYS = new Set([
   "page_delete_blocked", "selection_required", "tidy_parent_required",
-  "zoom_no_selection", "vector_coming_soon",
+  "zoom_no_selection", "vector_conversion_unavailable",
 ]);
 
 export function resolveMessageType(key: string): MessageType {

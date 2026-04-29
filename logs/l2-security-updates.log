@@ -1,6 +1,0 @@
-# L2 Security Updates Scenario
-ts=2026-03-06T12:24:38.832Z
-recorded patch=2026.03.06-1 rollback=2026.03.06-rollback
-log_entries=2
-entry version=2026.03.06-1 severity=high summary=L2 patch: dependency bump + policy refresh
-entry version=2026.03.06-rollback severity=medium summary=L2 rollback: revert patch 2026.03.06-1

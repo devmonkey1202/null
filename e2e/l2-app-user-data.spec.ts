@@ -1,6 +1,6 @@
 import { test, expect, APIRequestContext } from "@playwright/test";
 
-const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
+const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3101";
 
 async function initAnon(request: APIRequestContext): Promise<string> {
   const ip = `127.0.0.${Math.floor(Math.random() * 200) + 20}`;
@@ -68,7 +68,7 @@ test.describe.serial("L2 App user data access", () => {
       ],
     };
     await request.put(`${BASE}/api/app/${pageId}/schema`, {
-      headers,
+      headers: { ...headers, "x-null-env": "prod" },
       data: JSON.stringify(schemaPayload),
     });
 
@@ -129,7 +129,7 @@ test.describe.serial("L2 App user data access", () => {
   test("owner can see all records", async ({ request }) => {
     test.skip(!pageId || !anonId || !recordA || !recordB, "setup not ready");
     const res = await request.get(`${BASE}/api/app/${pageId}/notes?limit=10`, {
-      headers: { "x-anon-user-id": anonId },
+      headers: { "x-anon-user-id": anonId, "x-null-env": "prod" },
     });
     expect(res.ok()).toBeTruthy();
     const data = await res.json();

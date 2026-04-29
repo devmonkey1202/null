@@ -271,7 +271,7 @@ function convertStrokeToPaint(stroke: Stroke, colorAlias?: FigmaVariableAlias): 
   };
 }
 
-function convertEffect(effect: Effect): FigmaEffect | null {
+function convertEffect(effect: Effect, ctx: ExportContext): FigmaEffect | null {
   if (effect.type === "shadow") {
     return {
       type: "DROP_SHADOW",
@@ -279,6 +279,12 @@ function convertEffect(effect: Effect): FigmaEffect | null {
       offset: { x: effect.x, y: effect.y },
       radius: effect.blur,
       visible: true,
+      boundVariables: {
+        color: resolveVariableAlias(ctx, effect.colorRef),
+        radius: resolveVariableAlias(ctx, effect.blurRef),
+        offsetX: resolveVariableAlias(ctx, effect.xRef),
+        offsetY: resolveVariableAlias(ctx, effect.yRef),
+      },
     };
   }
   if (effect.type === "blur") {
@@ -286,6 +292,9 @@ function convertEffect(effect: Effect): FigmaEffect | null {
       type: "LAYER_BLUR",
       radius: effect.blur,
       visible: true,
+      boundVariables: {
+        radius: resolveVariableAlias(ctx, effect.blurRef),
+      },
     };
   }
   return null;
@@ -657,6 +666,16 @@ function exportBlendMode(style: NodeStyle) {
   if (style.blendMode === "overlay") return "OVERLAY";
   if (style.blendMode === "darken") return "DARKEN";
   if (style.blendMode === "lighten") return "LIGHTEN";
+  if (style.blendMode === "color-burn") return "COLOR_BURN";
+  if (style.blendMode === "color-dodge") return "COLOR_DODGE";
+  if (style.blendMode === "hard-light") return "HARD_LIGHT";
+  if (style.blendMode === "soft-light") return "SOFT_LIGHT";
+  if (style.blendMode === "difference") return "DIFFERENCE";
+  if (style.blendMode === "exclusion") return "EXCLUSION";
+  if (style.blendMode === "hue") return "HUE";
+  if (style.blendMode === "saturation") return "SATURATION";
+  if (style.blendMode === "color") return "COLOR";
+  if (style.blendMode === "luminosity") return "LUMINOSITY";
   return "NORMAL";
 }
 
@@ -1023,7 +1042,7 @@ function buildBaseNode(
     strokeJoin: exportStrokeJoin(node.style),
     opacity: node.style.opacity,
     blendMode: exportBlendMode(node.style),
-    effects: effects.map(convertEffect).filter((effect): effect is FigmaEffect => Boolean(effect)),
+    effects: effects.map((effect) => convertEffect(effect, ctx)).filter((effect): effect is FigmaEffect => Boolean(effect)),
     constraints: exportConstraints(node.constraints),
     layoutGrids: exportLayoutGrids(node.layoutGrid),
     clipsContent: node.clipContent ?? false,

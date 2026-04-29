@@ -13,6 +13,7 @@ import {
 import { ensureDevCollections, readEnvFromRequest, resolveAppEnv } from "@/lib/app-env";
 import { logAppAudit } from "@/lib/app-audit";
 import { apiErrorJson } from "@/lib/api-error";
+import { canAccessPublishedPage } from "@/lib/page-access";
 import { parseJsonBody } from "@/lib/validation";
 
 type Params = { pageId: string };
@@ -20,7 +21,7 @@ type Params = { pageId: string };
 async function getPageAndOwner(pageId: string, req: Request) {
   const page = await prisma.page.findUnique({
     where: { id: pageId, is_deleted: false },
-    select: { id: true, owner_id: true, owner: { select: { anon_id: true } }, status: true, is_hidden: true },
+    select: { id: true, owner_id: true, owner: { select: { anon_id: true } }, status: true, is_hidden: true, live_expires_at: true, deployed_at: true },
   });
   if (!page) return { page: null as null, isOwner: false };
   const anonUserId = await resolveAnonUserId(req);
@@ -36,7 +37,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
   const { page, isOwner } = await getPageAndOwner(pageId, req);
   if (!page) return apiErrorJson("not_found", 404);
   if (!isOwner) {
-    if (page.is_hidden || page.status !== "live") return apiErrorJson("not_found", 404);
+    if (!canAccessPublishedPage(page, false)) return apiErrorJson("not_found", 404);
   }
 
   const env = await resolveAppEnv(pageId, { isOwner, requestEnv: readEnvFromRequest(req) });

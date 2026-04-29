@@ -1,6 +1,6 @@
 import { test, expect, APIRequestContext } from "@playwright/test";
 
-const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
+const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3101";
 const ADMIN_KEY = process.env.ADMIN_KEY || "";
 const CRON_SECRET = process.env.CRON_SECRET || "";
 

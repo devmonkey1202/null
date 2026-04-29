@@ -36,6 +36,20 @@ const triggerSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("form_submitted"), formName: z.string().min(1) }),
   z.object({ type: z.literal("schedule"), cron: z.string().min(1) }),
   z.object({ type: z.literal("webhook"), path: z.string().min(1) }),
+  z.object({
+    type: z.literal("service_event"),
+    eventType: z.string().min(1).optional(),
+    topic: z.string().min(1).optional(),
+    stream: z.string().min(1).optional(),
+    entityType: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal("state_transition"),
+    machine: z.string().min(1),
+    from: z.string().min(1).optional(),
+    to: z.string().min(1).optional(),
+    entityType: z.string().min(1).optional(),
+  }),
   z.object({ type: z.literal("user_registered") }),
   z.object({ type: z.literal("user_logged_in") }),
 ]);

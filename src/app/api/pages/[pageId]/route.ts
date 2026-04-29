@@ -33,12 +33,13 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     collab_invite_code: page.collab_invite_code ?? null,
     collab_invite_enabled: page.collab_invite_enabled ?? false,
   });
+  const now = new Date();
+  const isLive = page.status === "live" && page.live_expires_at && page.live_expires_at > now;
+  const isDeployed = page.deployed_at != null;
 
   if (!isOwner) {
     if (page.is_hidden) return apiErrorJson("not_found", 404);
     if (!allowCollabInvite) {
-      const isLive = page.status === "live" && page.live_expires_at && page.live_expires_at > new Date();
-      const isDeployed = page.deployed_at != null;
       if (!isLive && !isDeployed) return apiErrorJson("not_found", 404);
     }
   }
@@ -64,6 +65,10 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
         selectedVersion = await prisma.pageVersion.findUnique({ where: { id: prodVersionId } });
       }
       versionSource = "prod";
+    } else if (isLive && page.current_version) {
+      // Live public pages may not have a deployed prod snapshot yet.
+      selectedVersion = page.current_version;
+      versionSource = "prod_fallback";
     } else if (isEditor) {
       selectedVersion = page.current_version;
       versionSource = selectedVersion ? "prod_fallback" : "none";

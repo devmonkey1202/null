@@ -7,6 +7,7 @@ import { logApiError } from "@/lib/logger";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
 import { logSecurityEvent } from "@/lib/security-log";
+import { shouldUseSecureCookies } from "@/lib/cookie-security";
 
 const COOKIE_NAME = "anon_user_id";
 const LOGIN_MAX_PER_MINUTE = 10;
@@ -85,7 +86,7 @@ export async function POST(req: Request) {
     response.cookies.set(COOKIE_NAME, user.anon_id, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookies(req),
       path: "/",
       maxAge: 60 * 60 * 24 * 365,
     });

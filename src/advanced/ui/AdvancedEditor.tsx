@@ -3,5 +3,9 @@
 import AdvancedEditorView from "./AdvancedEditorView";
 
 export default function AdvancedEditor() {
-  return <AdvancedEditorView />;
+  return (
+    <div className="advanced-editor-theme">
+      <AdvancedEditorView />
+    </div>
+  );
 }

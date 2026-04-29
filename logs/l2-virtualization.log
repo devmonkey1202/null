@@ -1,8 +1,0 @@
-# L2 Virtualization Scenario (simulation)
-ts=2026-03-06T12:38:52.705Z
-params: count=5000 itemSize=32 viewport=640 overscan=5
-scroll=0 start=0 end=24 visible=25 offsetTop=0
-scroll=320 start=5 end=34 visible=30 offsetTop=160
-scroll=1600 start=45 end=74 visible=30 offsetTop=1440
-scroll=6400 start=195 end=224 visible=30 offsetTop=6240
-scroll=12000 start=370 end=399 visible=30 offsetTop=11840

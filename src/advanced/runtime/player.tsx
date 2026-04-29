@@ -8,6 +8,7 @@ import RuntimeRenderer, { buildControlRoles, type NavigateEvent, type ControlRol
 
 import type { Doc, Node, PrototypeAction, PrototypeCondition, PrototypeInteraction, PrototypeTransitionType, SerializableDoc, GlobalStateItem } from "../doc/scene";
 import { cloneDoc, hydrateDoc } from "../doc/scene";
+import { buildServiceActionRequest, resolveServiceFieldMeta } from "./serviceActionRuntime";
 
 import { applyConstraintsOnResize, layoutDoc } from "../layout/engine";
 import {
@@ -385,7 +386,35 @@ type FieldMeta = {
 
   valueHint?: string;
 
+  valueType?: "string" | "number" | "boolean" | "json" | "email" | "password" | "message" | "id";
+
+  required?: boolean;
+
+  fallbackValue?: string | number | boolean | Record<string, unknown> | unknown[] | null;
+
 };
+
+function coerceControlFieldValue(raw: string, meta?: FieldMeta) {
+  const trimmed = raw.trim();
+  if (trimmed === "") return "";
+  if (meta?.valueType === "number") {
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : raw;
+  }
+  if (meta?.valueType === "boolean") {
+    const lower = trimmed.toLowerCase();
+    if (lower === "true") return true;
+    if (lower === "false") return false;
+  }
+  if (meta?.valueType === "json") {
+    try {
+      return JSON.parse(raw) as Record<string, unknown> | unknown[] | null;
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
 
 
 
@@ -419,6 +448,320 @@ function stripFieldKey(label: string) {
 
     .trim();
 
+}
+
+type ServiceRecord = Record<string, unknown>;
+
+function asServiceItems(payload: unknown): ServiceRecord[] {
+  if (!payload || typeof payload !== "object") return [];
+  const items = (payload as { items?: unknown }).items;
+  return Array.isArray(items) ? (items as ServiceRecord[]) : [];
+}
+
+function readServiceRecordValue(record: ServiceRecord | null | undefined, ...keys: string[]) {
+  if (!record) return undefined;
+  const data =
+    record.data && typeof record.data === "object" && !Array.isArray(record.data)
+      ? (record.data as Record<string, unknown>)
+      : null;
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null) return record[key];
+    if (data && data[key] !== undefined && data[key] !== null) return data[key];
+  }
+  return undefined;
+}
+
+function joinServiceValues(values: Array<unknown>, sep: string) {
+  return values
+    .map((value) => (value == null ? "" : String(value).trim()))
+    .filter(Boolean)
+    .join(sep);
+}
+
+function buildPartnerPortalVariableUpdates(
+  input: {
+    reservationResources?: ServiceRecord[];
+    reservations?: ServiceRecord[];
+    ticketQueues?: ServiceRecord[];
+    tickets?: ServiceRecord[];
+    ticketMessages?: ServiceRecord[];
+    crmStages?: ServiceRecord[];
+    crmLeads?: ServiceRecord[];
+    documents?: ServiceRecord[];
+  },
+  sep: string,
+): Record<string, string | number | boolean> {
+  const reservationResources = input.reservationResources ?? [];
+  const reservations = input.reservations ?? [];
+  const ticketQueues = input.ticketQueues ?? [];
+  const tickets = input.tickets ?? [];
+  const ticketMessages = input.ticketMessages ?? [];
+  const crmStages = [...(input.crmStages ?? [])].sort((left, right) => {
+    const leftOrder = Number(readServiceRecordValue(left, "order", "sort_order") ?? 0);
+    const rightOrder = Number(readServiceRecordValue(right, "order", "sort_order") ?? 0);
+    return leftOrder - rightOrder;
+  });
+  const crmLeads = input.crmLeads ?? [];
+  const documents = input.documents ?? [];
+
+  const activeReservation = reservations[0];
+  const activeTicket = tickets[0];
+  const primaryReservationResource = reservationResources[0];
+  const primaryTicketQueue = ticketQueues[0];
+  const activeLead = crmLeads[0];
+  const activeLeadStageId = String(readServiceRecordValue(activeLead, "stageId", "stage_id") ?? "");
+  const activeLeadPipelineId = String(readServiceRecordValue(activeLead, "pipelineId", "pipeline_id") ?? "");
+  const pipelineStages = crmStages.filter((stage) => {
+    const stagePipelineId = String(readServiceRecordValue(stage, "pipelineId", "pipeline_id") ?? "");
+    return !activeLeadPipelineId || stagePipelineId === activeLeadPipelineId;
+  });
+  const activeStage =
+    pipelineStages.find((stage) => String(stage.id ?? "") === activeLeadStageId) ??
+    crmStages.find((stage) => String(stage.id ?? "") === activeLeadStageId) ??
+    pipelineStages[0] ??
+    crmStages[0];
+  const activeStageIndex = pipelineStages.findIndex((stage) => String(stage.id ?? "") === String(activeStage?.id ?? ""));
+  const nextStage =
+    (activeStageIndex >= 0 ? pipelineStages[activeStageIndex + 1] : null) ??
+    pipelineStages.find((stage) => !Boolean(readServiceRecordValue(stage, "terminal"))) ??
+    activeStage;
+  const activeDocument =
+    documents.find((record) => String(readServiceRecordValue(record, "status", "state") ?? "") === "submitted") ??
+    documents[0];
+
+  return {
+    reservation_titles: joinServiceValues(
+      reservations.map((record) => readServiceRecordValue(record, "title", "name")),
+      sep,
+    ),
+    reservation_states: joinServiceValues(
+      reservations.map((record) => readServiceRecordValue(record, "status", "state")),
+      sep,
+    ),
+    reservation_active_id: String(activeReservation?.id ?? ""),
+    reservation_active_title: String(readServiceRecordValue(activeReservation, "title", "name") ?? ""),
+    reservation_active_state: String(readServiceRecordValue(activeReservation, "status", "state") ?? ""),
+    reservation_resource_id: String(
+      primaryReservationResource?.id ??
+        readServiceRecordValue(activeReservation, "resourceId", "resource_id") ??
+        "",
+    ),
+    reservation_customer_key: String(
+      readServiceRecordValue(activeReservation, "customerKey", "customer_key") ?? "",
+    ),
+    ticket_titles: joinServiceValues(
+      tickets.map((record) => readServiceRecordValue(record, "title", "name")),
+      sep,
+    ),
+    ticket_states: joinServiceValues(
+      tickets.map((record) => readServiceRecordValue(record, "status", "state")),
+      sep,
+    ),
+    ticket_messages: joinServiceValues(
+      ticketMessages.map((record) => readServiceRecordValue(record, "body", "content", "message")),
+      sep,
+    ),
+    ticket_active_id: String(activeTicket?.id ?? ""),
+    ticket_active_title: String(readServiceRecordValue(activeTicket, "title", "name") ?? ""),
+    ticket_active_state: String(readServiceRecordValue(activeTicket, "status", "state") ?? ""),
+    ticket_queue_id: String(
+      primaryTicketQueue?.id ??
+        readServiceRecordValue(activeTicket, "queueId", "queue_id") ??
+        "",
+    ),
+    ticket_requester_key: String(
+      readServiceRecordValue(activeTicket, "requesterKey", "requester_key") ?? "",
+    ),
+    ticket_author_key: String(
+      readServiceRecordValue(activeTicket, "assigneeKey", "assignee_key", "requesterKey", "requester_key") ?? "",
+    ),
+    crm_lead_titles: joinServiceValues(
+      crmLeads.map((record) => readServiceRecordValue(record, "name", "title")),
+      sep,
+    ),
+    crm_lead_stages: joinServiceValues(
+      crmLeads.map((record) => {
+        const stageId = String(readServiceRecordValue(record, "stageId", "stage_id") ?? "");
+        const stage = crmStages.find((candidate) => String(candidate.id ?? "") === stageId);
+        return readServiceRecordValue(stage, "name", "title", "key") ?? readServiceRecordValue(record, "status", "stage");
+      }),
+      sep,
+    ),
+    crm_active_lead_id: String(activeLead?.id ?? ""),
+    crm_active_lead_title: String(readServiceRecordValue(activeLead, "name", "title") ?? ""),
+    crm_active_stage_id: String(activeStage?.id ?? ""),
+    crm_active_stage_name: String(readServiceRecordValue(activeStage, "name", "title", "key") ?? ""),
+    crm_pipeline_id: activeLeadPipelineId,
+    crm_next_stage_id: String(nextStage?.id ?? ""),
+    crm_next_stage_name: String(readServiceRecordValue(nextStage, "name", "title", "key") ?? ""),
+    crm_next_stage_key: String(readServiceRecordValue(nextStage, "key", "status") ?? ""),
+    document_titles: joinServiceValues(
+      documents.map((record) => readServiceRecordValue(record, "title", "name")),
+      sep,
+    ),
+    document_states: joinServiceValues(
+      documents.map((record) => readServiceRecordValue(record, "status", "state")),
+      sep,
+    ),
+    document_active_id: String(activeDocument?.id ?? ""),
+    document_active_title: String(readServiceRecordValue(activeDocument, "title", "name") ?? ""),
+    document_active_status: String(readServiceRecordValue(activeDocument, "status", "state") ?? ""),
+    document_request_id: String(readServiceRecordValue(activeDocument, "approvalRequestId", "approval_request_id") ?? ""),
+    approval_status: String(readServiceRecordValue(activeDocument, "status", "state") ?? ""),
+  };
+}
+
+async function fetchPartnerPortalVariableUpdatesForPage(pageId: string, sep: string) {
+  if (!pageId || typeof window === "undefined") return {};
+  const origin = window.location.origin;
+  const anonId = localStorage.getItem("anon_user_id") ?? undefined;
+  const headers: Record<string, string> = anonId ? { "x-anon-user-id": anonId } : {};
+  const [reservationResourcesRes, reservationsRes, ticketQueuesRes, ticketsRes, ticketMessagesRes, crmStagesRes, crmLeadsRes, documentsRes] =
+    await Promise.all([
+      fetch(`${origin}/api/app/${pageId}/reservation_resources?limit=5`, { credentials: "include", headers }),
+      fetch(`${origin}/api/app/${pageId}/reservations?limit=5`, { credentials: "include", headers }),
+      fetch(`${origin}/api/app/${pageId}/ticket_queues?limit=5`, { credentials: "include", headers }),
+      fetch(`${origin}/api/app/${pageId}/tickets?limit=5`, { credentials: "include", headers }),
+      fetch(`${origin}/api/app/${pageId}/ticket_messages?limit=5`, { credentials: "include", headers }),
+      fetch(`${origin}/api/app/${pageId}/crm_stages?limit=20`, { credentials: "include", headers }),
+      fetch(`${origin}/api/app/${pageId}/crm_leads?limit=10`, { credentials: "include", headers }),
+      fetch(`${origin}/api/app/${pageId}/documents?limit=10`, { credentials: "include", headers }),
+    ]);
+  const [reservationResourcesData, reservationsData, ticketQueuesData, ticketsData, ticketMessagesData, crmStagesData, crmLeadsData, documentsData] =
+    await Promise.all([
+      reservationResourcesRes.json().catch(() => null),
+      reservationsRes.json().catch(() => null),
+      ticketQueuesRes.json().catch(() => null),
+      ticketsRes.json().catch(() => null),
+      ticketMessagesRes.json().catch(() => null),
+      crmStagesRes.json().catch(() => null),
+      crmLeadsRes.json().catch(() => null),
+      documentsRes.json().catch(() => null),
+    ]);
+  return buildPartnerPortalVariableUpdates(
+    {
+      reservationResources: asServiceItems(reservationResourcesData),
+      reservations: asServiceItems(reservationsData),
+      ticketQueues: asServiceItems(ticketQueuesData),
+      tickets: asServiceItems(ticketsData),
+      ticketMessages: asServiceItems(ticketMessagesData),
+      crmStages: asServiceItems(crmStagesData),
+      crmLeads: asServiceItems(crmLeadsData),
+      documents: asServiceItems(documentsData),
+    },
+    sep,
+  );
+}
+
+function buildPolicyEvaluationVariableUpdates(
+  payload: unknown,
+  sep: string,
+): Record<string, string | number | boolean> {
+  if (!payload || typeof payload !== "object") return {};
+  const evaluation =
+    "evaluation" in (payload as Record<string, unknown>)
+      ? ((payload as Record<string, unknown>).evaluation as Record<string, unknown> | null | undefined)
+      : (payload as Record<string, unknown>);
+  if (!evaluation || typeof evaluation !== "object") return {};
+  const reasons = Array.isArray(evaluation.reasons) ? evaluation.reasons.map((value) => String(value ?? "")).filter(Boolean) : [];
+  return {
+    policy_eval_decision: String(evaluation.decision ?? ""),
+    policy_eval_allowed: Boolean(evaluation.allowed),
+    policy_eval_requires_approval: Boolean(evaluation.requiresApproval),
+    policy_eval_blocked: Boolean(evaluation.blocked),
+    policy_eval_risk_score: Number(evaluation.riskScore ?? 0),
+    policy_eval_reasons: reasons.join(sep),
+    policy_eval_request_id: String(evaluation.approvalRequestId ?? ""),
+  };
+}
+
+async function fetchOpsConsoleVariableUpdatesForPage(
+  pageId: string,
+  sep: string,
+): Promise<Record<string, string | number | boolean>> {
+  if (!pageId || typeof window === "undefined") return {};
+  const origin = window.location.origin;
+  const anonId = localStorage.getItem("anon_user_id") ?? undefined;
+  const headers: Record<string, string> = anonId ? { "x-anon-user-id": anonId } : {};
+  const [operationsRes, policyRes, billingRes, appAuditRes, pageAuditRes] = await Promise.all([
+    fetch(`${origin}/api/app/${pageId}/operations`, { credentials: "include", headers }),
+    fetch(`${origin}/api/app/${pageId}/policy`, { credentials: "include", headers }),
+    fetch(`${origin}/api/app/${pageId}/billing`, { credentials: "include", headers }),
+    fetch(`${origin}/api/app/${pageId}/audit-logs?limit=5`, { credentials: "include", headers }),
+    fetch(`${origin}/api/pages/${pageId}/audit-logs?limit=5`, { credentials: "include", headers }),
+  ]);
+  const [operationsData, policyData, billingData, appAuditData, pageAuditData] = await Promise.all([
+    operationsRes.json().catch(() => null),
+    policyRes.json().catch(() => null),
+    billingRes.json().catch(() => null),
+    appAuditRes.json().catch(() => null),
+    pageAuditRes.json().catch(() => null),
+  ]);
+  if (!operationsRes.ok && !policyRes.ok && !billingRes.ok) return {};
+
+  const profile = operationsData?.profile ?? {};
+  const overview = operationsData?.overview ?? {};
+  const metrics = overview?.metrics ?? {};
+  const deployment = overview?.deployment ?? {};
+  const runbook = operationsData?.runbook?.sections ?? {};
+  const releases = Array.isArray(profile?.releases) ? profile.releases : [];
+  const backups = Array.isArray(profile?.backups) ? profile.backups : [];
+  const latestRelease = releases[0] ?? null;
+  const latestBackup = backups[0] ?? null;
+  const rules = Array.isArray(policyData?.rules) ? policyData.rules : [];
+  const incidents = Array.isArray(policyData?.incidents) ? policyData.incidents : [];
+  const sanctions = Array.isArray(policyData?.sanctions) ? policyData.sanctions : [];
+  const approvalRequests = Array.isArray(policyData?.approvalRequests) ? policyData.approvalRequests : [];
+  const accounts = Array.isArray(billingData?.accounts) ? billingData.accounts : [];
+  const invoices = Array.isArray(billingData?.invoices) ? billingData.invoices : [];
+  const settlements = Array.isArray(billingData?.settlements) ? billingData.settlements : [];
+  const latestAccount = accounts[0] ?? null;
+  const latestInvoice = invoices[0] ?? null;
+  const latestSettlement = settlements[0] ?? null;
+  const appAuditLogs = Array.isArray(appAuditData?.logs) ? appAuditData.logs : [];
+  const pageAuditLogs = Array.isArray(pageAuditData?.logs) ? pageAuditData.logs : [];
+  const latestAppAudit = appAuditLogs[0] ?? null;
+  const latestPageAudit = pageAuditLogs[0] ?? null;
+
+  return {
+    ops_release_count: String(releases.length),
+    ops_latest_release_note: String(latestRelease?.note ?? ""),
+    ops_latest_release_env: String(latestRelease?.environmentKey ?? ""),
+    ops_latest_release_url: String(latestRelease?.deployUrl ?? deployment?.prodUrl ?? ""),
+    ops_latest_release_at: String(latestRelease?.createdAt ?? ""),
+    ops_deployed_at: String(deployment?.deployedAt ?? ""),
+    ops_current_version_id: String(deployment?.currentVersionId ?? ""),
+    ops_prod_url: String(deployment?.prodUrl ?? ""),
+    ops_last_backup_kind: String(latestBackup?.kind ?? ""),
+    ops_runbook_release: Array.isArray(runbook?.release) ? runbook.release.join(sep) : "",
+    ops_runbook_rollback: Array.isArray(runbook?.rollback) ? runbook.rollback.join(sep) : "",
+    ops_runbook_backup: Array.isArray(runbook?.backup) ? runbook.backup.join(sep) : "",
+    ops_policy_rule_count: String(rules.length),
+    ops_risk_incident_count: String(incidents.length),
+    ops_sanction_count: String(sanctions.length),
+    ops_approval_request_count: String(approvalRequests.length),
+    ops_events_24h: String(metrics?.events24h ?? 0),
+    ops_app_collections: String(metrics?.appCollections ?? 0),
+    ops_app_records: String(metrics?.appRecords ?? 0),
+    ops_media_assets: String(metrics?.mediaAssets ?? 0),
+    ops_queued_jobs: String(metrics?.queuedJobs ?? 0),
+    ops_dead_lettered_jobs: String(metrics?.deadLetteredJobs ?? 0),
+    ops_page_audit_24h: String(metrics?.pageAudit24h ?? 0),
+    ops_app_audit_24h: String(metrics?.appAudit24h ?? 0),
+    ops_latest_app_audit_action: String(latestAppAudit?.action ?? ""),
+    ops_latest_app_audit_at: String(latestAppAudit?.createdAt ?? ""),
+    ops_latest_page_audit_action: String(latestPageAudit?.action ?? ""),
+    ops_latest_page_audit_at: String(latestPageAudit?.createdAt ?? ""),
+    billing_account_count: String(accounts.length),
+    billing_invoice_count: String(invoices.length),
+    billing_latest_account_id: String(latestAccount?.id ?? ""),
+    billing_latest_invoice_id: String(latestInvoice?.id ?? ""),
+    billing_latest_invoice_status: String(latestInvoice?.status ?? ""),
+    billing_latest_invoice_total_cents: String(latestInvoice?.total_cents ?? 0),
+    billing_latest_settlement_id: String(latestSettlement?.id ?? ""),
+    billing_latest_settlement_status: String(latestSettlement?.status ?? ""),
+    billing_latest_settlement_net_cents: String(latestSettlement?.net_cents ?? 0),
+  };
 }
 
 
@@ -603,7 +946,6 @@ const LOAD_MORE_PATTERN = /더보기|load\s*more|more/i;
 
 const PERIOD_FILTER_PATTERN = /이번\s*주|주간|이번\s*달|월간|이번\s*년|연간|week|month|year/i;
 
-const UNREAD_PATTERN = /안읽|미읽|unread|읽지\s*않/i;
 
 const ATTACHMENT_SECTION_PATTERN = /첨부|attachment|file|upload/i;
 
@@ -817,7 +1159,6 @@ const ADDRESS_SECTION_PATTERN = /주소|address|zip\s*search/i;
 
 const ADDRESS_SEARCH_PATTERN = /검색|search|find/i;
 
-const ADDRESS_RESULT_PATTERN = /결과|result|list/i;
 
 const ADDRESS_DETAIL_PATTERN = /상세|detail|apartment|suite/i;
 
@@ -843,9 +1184,6 @@ const PRICE_COMPARE_PATTERN = /비교|compare|highlight/i;
 
 const PAYMENT_RESULT_PATTERN = /결제\s*결과|payment\s*result|result/i;
 
-const PAYMENT_SUCCESS_PATTERN = /성공|success|paid/i;
-
-const PAYMENT_FAIL_PATTERN = /실패|fail|failed|error|declined/i;
 
 const PAYMENT_RETRY_PATTERN = /재시도|retry|try\s*again/i;
 
@@ -871,7 +1209,6 @@ const ANCHOR_PATTERN = /섹션|anchor|jump|scroll/i;
 
 const DASHBOARD_SECTION_PATTERN = /대시보드|dashboard|overview/i;
 
-const WIDGET_PATTERN = /위젯|widget|card/i;
 
 const LAYOUT_SAVE_PATTERN = /레이아웃|layout|save/i;
 
@@ -1315,7 +1652,7 @@ function resolveBreadcrumbItems(
 
   const indexed = Object.entries(variableOverrides)
 
-    .filter(([key, value]) => /^crumbs?[_-]\d+$/i.test(key) || /^breadcrumb[_-]\d+$/i.test(key))
+    .filter(([key]) => /^crumbs?[_-]\d+$/i.test(key) || /^breadcrumb[_-]\d+$/i.test(key))
 
     .map(([key, value]) => ({ key, value }))
 
@@ -1420,14 +1757,6 @@ function resolveLocaleCode(label: string) {
   if (normalized.length >= 2) return normalized.slice(0, 2);
 
   return null;
-
-}
-
-
-
-function isSearchInputLabel(label: string) {
-
-  return matchesPattern(label, SEARCH_INPUT_PATTERN);
 
 }
 
@@ -4583,23 +4912,27 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
   useEffect(() => {
 
+    const cooldownTimers = cooldownTimersRef.current;
+    const searchDebounce = searchDebounceRef.current;
+    const faqSearchDebounce = faqSearchDebounceRef.current;
+
     return () => {
 
-      Object.values(cooldownTimersRef.current).forEach((timerId) => {
+      Object.values(cooldownTimers).forEach((timerId) => {
 
         if (typeof window !== "undefined") window.clearTimeout(timerId);
 
       });
 
-      if (searchDebounceRef.current && typeof window !== "undefined") {
+      if (searchDebounce && typeof window !== "undefined") {
 
-        window.clearTimeout(searchDebounceRef.current);
+        window.clearTimeout(searchDebounce);
 
       }
 
-      if (faqSearchDebounceRef.current && typeof window !== "undefined") {
+      if (faqSearchDebounce && typeof window !== "undefined") {
 
-        window.clearTimeout(faqSearchDebounceRef.current);
+        window.clearTimeout(faqSearchDebounce);
 
       }
 
@@ -5339,31 +5672,59 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     const sep = "|";
 
+    const fetchJsonSafe = async (url: string) => {
+
+      try {
+
+        const response = await fetch(url, { credentials: "include", headers });
+
+        return await response.json().catch(() => null);
+
+      } catch {
+
+        return null;
+
+      }
+
+    };
+
     const run = async () => {
 
       try {
 
-        const [todosRes, calendarRes, noteRes, settingsRes, notifRes, rankingRes, kanbanRes] = await Promise.all([
+        const [
+          todoData,
+          calData,
+          noteData,
+          setData,
+          notifData,
+          rankData,
+          kanbanData,
+          partnerPortalUpdates,
+          opsConsoleUpdates,
+        ] = await Promise.all([
 
-          fetch(`${origin}/api/pages/${appPageId}/todos`, { credentials: "include", headers }),
+          fetchJsonSafe(`${origin}/api/pages/${appPageId}/todos`),
 
-          fetch(`${origin}/api/pages/${appPageId}/calendar?from=1970-01-01&to=2100-12-31`, { credentials: "include", headers }),
+          fetchJsonSafe(`${origin}/api/pages/${appPageId}/calendar?from=1970-01-01&to=2100-12-31`),
 
-          fetch(`${origin}/api/pages/${appPageId}/note`, { credentials: "include", headers }),
+          fetchJsonSafe(`${origin}/api/pages/${appPageId}/note`),
 
-          fetch(`${origin}/api/pages/${appPageId}/settings`, { credentials: "include", headers }),
+          fetchJsonSafe(`${origin}/api/pages/${appPageId}/settings`),
 
-          anonId ? fetch(`${origin}/api/pages/${appPageId}/notifications?limit=20`, { credentials: "include", headers }) : Promise.resolve(null),
+          anonId ? fetchJsonSafe(`${origin}/api/pages/${appPageId}/notifications?limit=20`) : Promise.resolve(null),
 
-          fetch(`${origin}/api/ranking?limit=20`, { credentials: "include", headers }),
+          fetchJsonSafe(`${origin}/api/ranking?limit=20`),
 
-          fetch(`${origin}/api/pages/${appPageId}/kanban/columns`, { credentials: "include", headers }),
+          fetchJsonSafe(`${origin}/api/pages/${appPageId}/kanban/columns`),
+
+          fetchPartnerPortalVariableUpdatesForPage(appPageId, sep).catch(() => ({})),
+
+          fetchOpsConsoleVariableUpdatesForPage(appPageId, " | ").catch(() => ({})),
 
         ]);
 
         const updates: Record<string, string | number | boolean> = {};
-
-        const todoData = await todosRes.json().catch(() => null);
 
         if (Array.isArray(todoData?.todos)) {
 
@@ -5375,8 +5736,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         }
 
-        const calData = await calendarRes.json().catch(() => null);
-
         if (Array.isArray(calData?.events)) {
 
           updates.calendar_events = calData.events.map((e: { title?: string }) => e.title ?? "").join(sep);
@@ -5387,8 +5746,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         }
 
-        const noteData = await noteRes.json().catch(() => null);
-
         const noteContent = noteData?.note?.content ?? noteData?.content ?? "";
 
         if (typeof noteContent === "string") {
@@ -5398,8 +5755,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
           updates.noteContent = noteContent;
 
         }
-
-        const setData = await settingsRes.json().catch(() => null);
 
         if (setData?.settings && typeof setData.settings === "object") {
 
@@ -5413,22 +5768,15 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         }
 
-        if (notifRes) {
-
-          const notifData = await notifRes.json().catch(() => null);
-
-          if (Array.isArray(notifData?.notifications)) {
+        if (Array.isArray(notifData?.notifications)) {
 
             updates.notification_titles = notifData.notifications.map((n: { title?: string; type?: string }) => n.title ?? n.type ?? "").join(sep);
 
             updates.notification_metas = notifData.notifications.map((n: { readAt?: string | null }) => (n.readAt ? "읽음" : "아직 알림")).join(sep);
 
-          }
-
         }
 
-        const rankData = await rankingRes.json().catch(() => null);
-
+        /*
         if (Array.isArray(rankData?.ranking)) {
 
           updates.ranking_titles = rankData.ranking.map((r: { title?: string }) => r.title ?? "").join(sep);
@@ -5437,7 +5785,15 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         }
 
-        const kanbanData = await kanbanRes.json().catch(() => null);
+        */
+
+        if (Array.isArray(rankData?.ranking)) {
+
+          updates.ranking_titles = rankData.ranking.map((r: { title?: string }) => r.title ?? "").join(sep);
+
+          updates.ranking_metas = rankData.ranking.map((r: { rank?: number }) => String(r.rank ?? 0)).join(sep);
+
+        }
 
         if (Array.isArray(kanbanData?.columns)) {
 
@@ -5462,6 +5818,9 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
           }
 
         }
+
+        Object.assign(updates, partnerPortalUpdates);
+        Object.assign(updates, opsConsoleUpdates);
 
         if (Object.keys(updates).length) applyVariableOverrides(updates);
 
@@ -5542,8 +5901,9 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
       if (role.role !== "root") return;
 
       const label = resolveControlLabel(laidOut, role, role.rootId);
-
-      const meta = mapFieldLabel(label) ?? { label, key: "" };
+      const node = laidOut.nodes[role.rootId];
+      const fallback = mapFieldLabel(label);
+      const meta = resolveServiceFieldMeta(node?.overrides?.service ?? node?.service, label, fallback);
 
       map.set(role.rootId, meta);
 
@@ -6229,7 +6589,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     return { hidden, orderOverrides };
 
-  }, [basePageId, controlFields, controlRootRoles, controlState, laidOut, variableOverrides]);
+  }, [basePageId, controlFields, controlRootRoles, controlState, laidOut]);
 
 
 
@@ -7938,8 +8298,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
       if (!scopeIds.has(rootId)) return;
 
       if (!hasAncestorMatching(laidOut, rootId, TODO_SECTION_PATTERN)) return;
-
-      const nodeName = laidOut.nodes[rootId]?.name ?? "";
 
       if (role.type === "choice") {
 
@@ -11895,15 +12253,18 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
   useEffect(() => {
 
+    const timers = timersRef.current;
+    const noticeTimers = noticeTimersRef.current;
+
     return () => {
 
-      timersRef.current.forEach((id) => window.clearTimeout(id));
+      timers.forEach((id) => window.clearTimeout(id));
 
       timersRef.current = [];
 
-      noticeTimersRef.current.forEach((id) => window.clearTimeout(id));
+      noticeTimers.forEach((id) => window.clearTimeout(id));
 
-      noticeTimersRef.current.clear();
+      noticeTimers.clear();
 
     };
 
@@ -12416,8 +12777,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
       const isStoryCtx = isStoryContext(currentDoc, currentPageId, rootId);
 
-      const isLiveCtx = isLiveContext(currentDoc, currentPageId, rootId);
-
       const isKpiCtx = isKpiContext(currentDoc, currentPageId, rootId);
 
       const isChartCtx = isChartContext(currentDoc, currentPageId, rootId);
@@ -12469,8 +12828,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
       const isCallVideo = Boolean(isCallCtx && label && matchesPattern(label, CALL_VIDEO_PATTERN));
 
       const isCallEnd = Boolean(isCallCtx && (matchesPattern(label, CALL_END_PATTERN) || matchesPattern(nodeName, CALL_END_PATTERN)));
-
-      const isTodoItem = Boolean((role?.type === "toggle" || role?.type === "checkbox") && isTodoCtx);
 
       const isTodoAdd = Boolean(isTodoCtx && label && matchesPattern(label, TODO_ADD_PATTERN));
 
@@ -15455,11 +15812,11 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     const scopeIds = options?.scopeIds ?? resolveSubmitScopeIds(doc, pageId, null);
 
-    const fields: Record<string, string | boolean> = {};
+    const fields: Record<string, string | number | boolean | Record<string, unknown> | unknown[] | null> = {};
 
     const files: Record<string, File | File[]> = {};
 
-    const fallbackValues: Record<string, string | boolean> = {};
+    const fallbackValues: Record<string, string | number | boolean | Record<string, unknown> | unknown[] | null> = {};
 
     const otpInputs: Array<{ id: string; value: string; x: number }> = [];
 
@@ -15507,13 +15864,14 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         }
 
-        const value = controlTextState[rootId] ?? "";
+        const rawValue = controlTextState[rootId] ?? "";
+        const value = coerceControlFieldValue(rawValue, meta);
 
         if (meta?.label && matchesPattern(meta.label, OTP_LABEL_PATTERN)) {
 
           const node = doc.nodes[rootId];
 
-          otpInputs.push({ id: rootId, value: value.trim(), x: node?.frame?.x ?? 0 });
+          otpInputs.push({ id: rootId, value: String(value).trim(), x: node?.frame?.x ?? 0 });
 
           return;
 
@@ -15525,23 +15883,23 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         } else if (key === "reason") {
 
-          if (value.trim()) {
+          if (typeof value === "string" && value.trim()) {
 
             appendReason(value);
 
           } else if (!(key in fields)) {
 
-            fallbackValues[key] = "";
+            fallbackValues[key] = meta?.fallbackValue ?? "";
 
           }
 
-        } else if (value !== "") {
+        } else if (!(typeof value === "string" && value === "")) {
 
           fields[key] = value;
 
         } else if (!(key in fields)) {
 
-          fallbackValues[key] = "";
+          fallbackValues[key] = meta?.fallbackValue ?? "";
 
         }
 
@@ -15565,7 +15923,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           } else if (!(key in fields)) {
 
-            fallbackValues[key] = "";
+            fallbackValues[key] = meta?.fallbackValue ?? "";
 
           }
 
@@ -15577,10 +15935,9 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
           } else if (!(key in fields)) {
 
-            fallbackValues[key] = false;
+            fallbackValues[key] = meta?.fallbackValue ?? false;
 
-          }
-
+        }
         }
 
       }
@@ -15978,6 +16335,281 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
       }
 
+      const transitionType = getTransitionType(action);
+
+      const transitionOpts =
+
+        "transition" in action && action.transition
+
+          ? { duration: action.transition.duration, easing: action.transition.easing }
+
+          : { duration: undefined, easing: undefined };
+
+      if (action.type === "service") {
+
+        const servicePageId = appPageId;
+
+        if (!servicePageId) {
+
+          pushNotice({ type: "error", message: "Service actions require an app page id." });
+
+          return;
+
+        }
+
+        const pageId = source?.pageId ?? currentPageId;
+
+        const scopeIds = resolveSubmitScopeIds(currentDoc, pageId, source?.nodeId ?? null);
+
+        const payload = buildSubmitPayload({ pageId, scopeIds });
+
+        const descriptor = buildServiceActionRequest({
+
+          pageId: servicePageId,
+
+          action,
+
+          fields: payload.fields,
+
+          variables: variableOverrides,
+
+          globalState,
+
+        });
+
+        if ("error" in descriptor) {
+
+          applyVariableOverrides({
+
+            service_last_action: action.action,
+
+            service_last_ok: false,
+
+            service_last_error: descriptor.error,
+
+          });
+
+          pushNotice({ type: "error", message: descriptor.error });
+
+          return;
+
+        }
+
+        (async () => {
+
+          try {
+
+            const res = await fetch(descriptor.endpoint, {
+
+              method: descriptor.method,
+
+              headers: { "Content-Type": "application/json" },
+
+              credentials: "include",
+
+              body: descriptor.body ? JSON.stringify(descriptor.body) : undefined,
+
+            });
+
+            const data = await res.json().catch(() => ({ ok: false, error: "parse_error" }));
+
+            if (!res.ok || !data?.ok) {
+
+              throw new Error(String(data?.error ?? `service_${res.status}`));
+
+            }
+
+            if ((action.action === "auth.login" || action.action === "auth.register") && data.user) {
+
+              applyVariableOverrides({
+
+                "$app_user.id": data.user.id,
+
+                "$app_user.email": data.user.email,
+
+                "$app_user.display_name": data.user.display_name ?? "",
+
+                "$app_user.role": data.user.role ?? "user",
+
+                "$app_user.logged_in": true,
+
+              });
+
+              const partnerUpdates = await fetchPartnerPortalVariableUpdatesForPage(servicePageId, " | ");
+              if (Object.keys(partnerUpdates).length) {
+                applyVariableOverrides(partnerUpdates);
+              }
+              const opsUpdates = await fetchOpsConsoleVariableUpdatesForPage(servicePageId, " | ");
+              if (Object.keys(opsUpdates).length) {
+                applyVariableOverrides(opsUpdates);
+              }
+
+            } else if (action.action === "auth.logout") {
+
+              applyVariableOverrides({
+
+                "$app_user.id": "",
+
+                "$app_user.email": "",
+
+                "$app_user.display_name": "",
+
+                "$app_user.role": "",
+
+                "$app_user.logged_in": false,
+
+                ops_release_count: "",
+                ops_latest_release_note: "",
+                ops_latest_release_env: "",
+                ops_latest_release_url: "",
+                ops_latest_release_at: "",
+                ops_deployed_at: "",
+                ops_current_version_id: "",
+                ops_prod_url: "",
+                ops_last_backup_kind: "",
+                ops_runbook_release: "",
+                ops_runbook_rollback: "",
+                ops_runbook_backup: "",
+                ops_policy_rule_count: "",
+                ops_risk_incident_count: "",
+                ops_sanction_count: "",
+                ops_approval_request_count: "",
+                ops_events_24h: "",
+                ops_app_collections: "",
+                ops_app_records: "",
+                ops_media_assets: "",
+                ops_queued_jobs: "",
+                ops_dead_lettered_jobs: "",
+                ops_page_audit_24h: "",
+                ops_app_audit_24h: "",
+                ops_latest_app_audit_action: "",
+                ops_latest_app_audit_at: "",
+                ops_latest_page_audit_action: "",
+                ops_latest_page_audit_at: "",
+                policy_eval_decision: "",
+                policy_eval_allowed: false,
+                policy_eval_requires_approval: false,
+                policy_eval_blocked: false,
+                policy_eval_risk_score: 0,
+                policy_eval_reasons: "",
+                policy_eval_request_id: "",
+
+              });
+
+            }
+
+            if (action.action === "todo.create") {
+              const todoRes = await fetch(`/api/pages/${servicePageId}/todos`, { credentials: "include" });
+              const todoData = await todoRes.json().catch(() => null);
+              if (Array.isArray(todoData?.todos)) {
+                const sep = ", ";
+                applyVariableOverrides({
+                  todo_items: todoData.todos.map((t: { title?: string }) => t.title ?? "").join(sep),
+                  todo_list: todoData.todos.map((t: { title?: string }) => t.title ?? "").join(sep),
+                  todo_meta: todoData.todos.map((t: { done?: boolean }) => (t.done ? "완료" : "미완료")).join(sep),
+                });
+              }
+            } else if (action.action === "note.save") {
+              const noteRes = await fetch(`/api/pages/${servicePageId}/note`, { credentials: "include" });
+              const noteData = await noteRes.json().catch(() => null);
+              const content = noteData?.note?.content ?? noteData?.content ?? "";
+              if (typeof content === "string") {
+                applyVariableOverrides({ note_content: content, noteContent: content });
+              }
+            } else if (action.action === "kanban.column.create" || action.action === "kanban.card.create") {
+              const kanbanRes = await fetch(`/api/pages/${servicePageId}/kanban/columns`, { credentials: "include" });
+              const kanbanData = await kanbanRes.json().catch(() => null);
+              if (Array.isArray(kanbanData?.columns)) {
+                const sep = ", ";
+                const cards: string[] = [];
+                kanbanData.columns.forEach((column: { title?: string; cards?: Array<{ title?: string }> }) => {
+                  (column.cards ?? []).forEach((card) => cards.push(card.title ?? ""));
+                });
+                applyVariableOverrides({
+                  kanban_columns: kanbanData.columns.map((c: { title?: string }) => c.title ?? "").join(sep),
+                  kanbanColumns: kanbanData.columns.map((c: { title?: string }) => c.title ?? "").join(sep),
+                  kanban_cards: cards.join(sep),
+                  kanbanCards: cards.join(sep),
+                });
+              }
+            } else if (
+              action.action === "reservation.create" ||
+              action.action === "reservation.transition" ||
+              action.action === "ticket.create" ||
+              action.action === "ticket.reply" ||
+              action.action === "document.submit" ||
+              action.action === "document.decide"
+            ) {
+              const sep = " | ";
+              const partnerUpdates = await fetchPartnerPortalVariableUpdatesForPage(servicePageId, sep);
+              if (Object.keys(partnerUpdates).length) {
+                applyVariableOverrides(partnerUpdates);
+              }
+            } else if (
+              action.action === "operations.release.record" ||
+              action.action === "operations.runbook.generate" ||
+              action.action === "billing.checkout" ||
+              action.action === "billing.invoice.pay"
+            ) {
+              const opsUpdates = await fetchOpsConsoleVariableUpdatesForPage(servicePageId, " | ");
+              if (Object.keys(opsUpdates).length) {
+                applyVariableOverrides(opsUpdates);
+              }
+            } else if (action.action === "policy.evaluate") {
+              const policyEvaluationUpdates = buildPolicyEvaluationVariableUpdates(data, " | ");
+              if (Object.keys(policyEvaluationUpdates).length) {
+                applyVariableOverrides(policyEvaluationUpdates);
+              }
+              const opsUpdates = await fetchOpsConsoleVariableUpdatesForPage(servicePageId, " | ");
+              if (Object.keys(opsUpdates).length) {
+                applyVariableOverrides(opsUpdates);
+              }
+            }
+
+            applyVariableOverrides({
+
+              service_last_action: action.action,
+
+              service_last_ok: true,
+
+              service_last_error: "",
+
+              service_last_response: JSON.stringify(data),
+
+            });
+
+            pushNotice({ type: "success", message: descriptor.successMessage });
+
+            if (action.nextPageId) {
+
+              startPageTransition(currentPageId ?? "", action.nextPageId, transitionType, transitionOpts);
+
+            }
+
+          } catch (error) {
+
+            const message = error instanceof Error ? error.message : "service_action_failed";
+
+            applyVariableOverrides({
+
+              service_last_action: action.action,
+
+              service_last_ok: false,
+
+              service_last_error: message,
+
+            });
+
+            pushNotice({ type: "error", message });
+
+          }
+
+        })();
+
+        return;
+
+      }
+
       if (action.type === "appAuth") {
 
         const authPageId = appPageId;
@@ -16095,16 +16727,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
         return;
 
       }
-
-      const transitionType = getTransitionType(action);
-
-      const transitionOpts =
-
-        "transition" in action && action.transition
-
-          ? { duration: action.transition.duration, easing: action.transition.easing }
-
-          : { duration: undefined, easing: undefined };
 
       if (action.type === "url") {
 
@@ -17220,7 +17842,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         const el = typeof document !== "undefined" ? document.querySelector(`[data-node-id="${action.targetNodeId}"]`) : null;
 
-        if (el instanceof HTMLElement) {
+        if (el instanceof Element && typeof (el as Element & { scrollIntoView?: unknown }).scrollIntoView === "function") {
 
           el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
 
@@ -17276,6 +17898,8 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     ensureAnonSession,
 
+    globalState,
+
     handleCookieBannerAction,
 
     openOverlay,
@@ -17293,6 +17917,10 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     variableMode,
 
     variableOverrides,
+
+    applyGlobalStateValue,
+
+    onChatSent,
 
   ]);
 
@@ -19046,6 +19674,17 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
         );
 
       })}
+
+      <div className="sr-only" aria-live="polite">
+        {[
+          typeof variableOverrides.ops_latest_release_note === "string" ? variableOverrides.ops_latest_release_note : "",
+          typeof variableOverrides.billing_latest_invoice_id === "string" ? variableOverrides.billing_latest_invoice_id : "",
+          typeof variableOverrides.ops_current_version_id === "string" ? variableOverrides.ops_current_version_id : "",
+          typeof variableOverrides.ops_latest_release_env === "string" ? variableOverrides.ops_latest_release_env : "",
+        ]
+          .filter((value) => typeof value === "string" && value.trim().length > 0)
+          .join(" | ")}
+      </div>
 
     </div>
 

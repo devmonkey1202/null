@@ -3,8 +3,9 @@ import { loadEnvConfig } from "@next/env";
 
 loadEnvConfig(process.cwd());
 
-const port = Number(process.env.PORT ?? 3000);
-const baseURL = process.env.PLAYWRIGHT_TEST_BASE_URL ?? `http://localhost:${port}`;
+const port = Number(process.env.PLAYWRIGHT_TEST_PORT ?? 3101);
+const baseURL = process.env.PLAYWRIGHT_TEST_BASE_URL ?? `http://127.0.0.1:${port}`;
+const healthURL = `${baseURL}/api/health`;
 
 export default defineConfig({
   timeout: 120_000,
@@ -23,9 +24,9 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "npm run dev",
-    url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    command: "npm run dev:e2e",
+    url: healthURL,
+    reuseExistingServer: false,
     timeout: 60_000,
   },
 });

@@ -1,6 +1,6 @@
 import { test, expect, APIRequestContext } from "@playwright/test";
 
-const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
+const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3101";
 
 async function initAnon(request: APIRequestContext): Promise<string> {
   const ip = `127.0.0.${Math.floor(Math.random() * 200) + 20}`;

@@ -42,4 +42,22 @@ describe("plugin permissions and compatibility", () => {
     ]);
     expect(result.length).toBe(0);
   });
+
+  it("requires both editor and network permissions for importWeb", async () => {
+    const result = await setPlugins("page-1", [
+      {
+        id: "missing-editor",
+        name: "Missing Editor",
+        permissions: ["network"],
+        actions: [{ id: "import", label: "Import", type: "importWeb", params: { url: "https://example.com" } }],
+      },
+      {
+        id: "missing-network",
+        name: "Missing Network",
+        permissions: ["editor"],
+        actions: [{ id: "import", label: "Import", type: "importWeb", params: { url: "https://example.com" } }],
+      },
+    ]);
+    expect(result.length).toBe(0);
+  });
 });

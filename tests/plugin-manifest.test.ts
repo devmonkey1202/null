@@ -71,4 +71,25 @@ describe("plugin manifest normalization", () => {
     const macro = result[0]?.actions?.[0] as { steps?: unknown[] };
     expect(Array.isArray(macro?.steps)).toBe(true);
   });
+
+  it("accepts importWeb actions with editor and network permissions", async () => {
+    const result = await setPlugins("page-3", [
+      {
+        id: "web-import",
+        name: "Web Import",
+        permissions: ["editor", "network"],
+        actions: [
+          {
+            id: "import-url",
+            label: "Import URL",
+            type: "importWeb",
+            params: { url: "https://example.com", viewportId: "tablet" },
+          },
+        ],
+      },
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.actions[0]?.type).toBe("importWeb");
+  });
 });

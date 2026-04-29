@@ -43,22 +43,8 @@ export default function Feed() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [upvotedPageIds, setUpvotedPageIds] = useState<string[]>([]);
   const [viewerCounts, setViewerCounts] = useState<Record<string, number>>({});
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const limit = 18;
-
-  useEffect(() => {
-    const anonId = typeof window !== "undefined" ? localStorage.getItem("anon_user_id") : null;
-    fetch("/api/me", {
-      credentials: "include",
-      headers: anonId ? { "x-anon-user-id": anonId } : undefined,
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        setIsLoggedIn(Boolean(data?.isLoggedIn ?? data?.email));
-      })
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setFeedSearchDebounced(feedSearch), 400);
@@ -210,70 +196,29 @@ export default function Feed() {
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
     >
-      <header className="sticky top-0 z-20 border-b border-[#EAEAEA] bg-white/90 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4 text-sm">
-          <Link href="/" className="text-lg font-semibold text-[#111111]">
-            NULL
-          </Link>
-          <nav className="flex items-center gap-2 rounded-full border border-[#EAEAEA] bg-white px-2 py-1 text-xs" aria-label="피드 탭">
-            {tabs.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setTab(item.id)}
-                aria-selected={tab === item.id}
-                aria-label={`${item.label} 탭`}
-                className={`rounded-full px-3 py-1 ${
-                  tab === item.id ? "bg-[#111111] text-white" : "bg-transparent text-[#666666]"
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-          <div className="flex items-center gap-2">
-            {!isLoggedIn && (
-              <Link
-                href="/login"
-                className="rounded-full border border-[#EAEAEA] px-3 py-2 text-xs font-semibold text-[#111111] hover:bg-[#FAFAFA]"
-              >
-                로그인
-              </Link>
-            )}
-            <Link
-              href="/account"
-              className="rounded-full border border-[#EAEAEA] px-3 py-2 text-xs font-semibold text-[#111111]"
-              aria-label="계정"
-            >
-              계정
-            </Link>
-            <Link
-              href="/editor"
-              className="flex items-center gap-2 rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold text-white hover:bg-[#333333]"
-              style={{ color: "#ffffff" }}
-              aria-label="새 페이지 만들기"
-            >
-              <PlusIcon stroke="#ffffff" />
-              새 페이지
-            </Link>
-            <Link
-              href="/library"
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-[#EAEAEA] text-[#111111]"
-              aria-label="라이브러리 열기"
-            >
-              <FolderIcon />
-            </Link>
-          </div>
-        </div>
-      </header>
-
       <main ref={mainRef} className="mx-auto w-full max-w-6xl px-6 py-8">
         {pullDistance > 0 ? (
           <div className="mb-2 flex justify-center py-2 text-xs text-[#666666]" aria-live="polite">
             {pullDistance >= PULL_THRESHOLD ? "놓으면 새로고침" : "끌어서 새로고침"}
           </div>
         ) : null}
-        <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-[14px] border border-black/[0.08] bg-white/70 px-3 py-3 text-xs shadow-[0_12px_32px_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.92)] backdrop-blur-xl">
+          <nav className="flex items-center gap-1 rounded-full border border-black/[0.08] bg-white/70 p-1" aria-label="피드 탭">
+            {tabs.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                aria-label={`${item.label} 탭`}
+                className={`rounded-full px-3 py-1.5 font-medium transition ${
+                  tab === item.id ? "bg-[#111111] text-white" : "bg-transparent text-[#666666] hover:bg-black/[0.04] hover:text-[#111111]"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+          <div className="flex flex-wrap items-center gap-2">
           <input
             type="text"
             value={feedSearch}
@@ -297,6 +242,7 @@ export default function Feed() {
           >
             만료 임박(1시간)
           </button>
+          </div>
         </div>
         {loading ? (
           <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3" aria-live="polite" aria-busy="true">
@@ -519,15 +465,15 @@ function FeedCard({
       className="flex cursor-pointer flex-col rounded-[14px] border border-[#EAEAEA] bg-white shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-shadow hover:shadow-[0_4px_12px_rgba(0,0,0,0.08)]"
       aria-label={`작품 보기: ${title}`}
     >
-      <div className="flex items-center justify-between border-b border-[#EAEAEA] px-4 py-3 text-xs text-[#666666]">
-        <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-[#EAEAEA] px-4 py-3 text-xs text-[#666666]">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="inline-flex h-2 w-2 rounded-full bg-red-500" aria-hidden />
           <span className="font-medium">제목</span>
-          <span className="min-w-0 max-w-[180px] truncate font-medium text-[#111111]" title={title}>
+          <span className="min-w-0 max-w-[120px] truncate font-medium text-[#111111] sm:max-w-[180px]" title={title}>
             {title}
           </span>
         </div>
-        <span className="rounded-full border border-[#EAEAEA] px-2 py-1 font-medium text-[#111111]">
+        <span className="shrink-0 rounded-full border border-[#EAEAEA] px-2 py-1 font-medium text-[#111111]">
           남은 시간 <Countdown expiresAt={item.live_expires_at} />
         </span>
       </div>
@@ -656,24 +602,6 @@ function MetricPill({ label, value }: { label: string; value: string | number })
     <div className="rounded-full border border-[#EAEAEA] px-2 py-1 text-[#666666]">
       {label} {value}
     </div>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M3 7.5h6l2 2H21v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7.5z" />
-      <path d="M3 7.5V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1.5" />
-    </svg>
-  );
-}
-
-function PlusIcon({ stroke = "currentColor" }: { stroke?: string }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="1.5">
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </svg>
   );
 }
 

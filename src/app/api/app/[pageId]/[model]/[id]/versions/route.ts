@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { resolveAnonUserId } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
+import { ensureDevCollections, readEnvFromRequest, resolveAppEnv, toEnvSlug } from "@/lib/app-env";
 
 type Params = { pageId: string; model: string; id: string };
 
@@ -25,9 +26,14 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
 
   const { error } = await requireOwner(pageId, req);
   if (error) return error;
+  const env = await resolveAppEnv(pageId, { isOwner: true, requestEnv: readEnvFromRequest(req) });
+  if (env === "dev") {
+    await ensureDevCollections(pageId);
+  }
+  const resolvedSlug = toEnvSlug(model, env);
 
   const record = await prisma.appRecord.findFirst({
-    where: { id, page_id: pageId, collection_slug: model },
+    where: { id, page_id: pageId, collection_slug: resolvedSlug },
     select: { id: true },
   });
   if (!record) return apiErrorJson("not_found", 404);
@@ -43,7 +49,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     where: {
       page_id: pageId,
       record_id: id,
-      collection_slug: model,
+      collection_slug: resolvedSlug,
       ...(cursor ? { created_at: { lt: cursor } } : {}),
     },
     orderBy: { created_at: "desc" },
@@ -56,7 +62,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     versions: versions.map((v) => ({
       id: v.id,
       recordId: v.record_id,
-      collection: v.collection_slug,
+      collection: model,
       action: v.action,
       data: v.data,
       actorUserId: v.actor_user_id,

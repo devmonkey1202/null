@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import { apiErrorJson } from "./api-error";
 import { logError } from "./logger";
 import { checkWaf } from "./waf";

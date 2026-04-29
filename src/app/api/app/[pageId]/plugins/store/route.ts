@@ -5,6 +5,8 @@ import { apiErrorJson } from "@/lib/api-error";
 import { safeParseBody, withErrorHandler } from "@/lib/api-handler";
 import { addPlugins, grantPluginPermissions } from "@/lib/app-plugins";
 import { getStorePlugin, toManifest } from "@/lib/plugin-store";
+import { getStoreGovernance } from "@/lib/store-governance";
+import { getStorePluginGovernanceState } from "@/lib/store-governance-rules";
 
 type Params = { pageId: string };
 
@@ -32,6 +34,17 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
   if (!storeId) return apiErrorJson("store_id_required", 400);
   const storePlugin = getStorePlugin(storeId);
   if (!storePlugin) return apiErrorJson("store_plugin_not_found", 404);
+  const governance = await getStoreGovernance(pageId);
+  const governanceState = getStorePluginGovernanceState(storePlugin, governance.policy, governance.requests);
+  if (governanceState.blockedPermissions.length) {
+    return apiErrorJson("store_permission_blocked", 403, {
+      message: `blocked permissions: ${governanceState.blockedPermissions.join(", ")}`,
+      extra: { blocked_permissions: governanceState.blockedPermissions },
+    });
+  }
+  if (!governanceState.canInstall) {
+    return apiErrorJson("store_approval_required", 403);
+  }
   const manifest = toManifest(storePlugin);
   const needsConsent = (manifest.permissions?.length ?? 0) > 0;
   if (needsConsent && !consent) return apiErrorJson("permission_consent_required", 400);

@@ -70,7 +70,6 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     },
   });
 
-  const baseTs = startedAt.getTime();
   for (let i = 0; i < events.length; i++) {
     const e = events[i] as {
       event_id?: string;

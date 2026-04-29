@@ -132,7 +132,7 @@ function normalizeValue(def: AppFieldDef, raw: unknown): { value?: unknown; erro
           if (!re.test(raw)) {
             return { error: { field: def.name, code: "pattern", message: "pattern_mismatch", value: raw } };
           }
-        } catch (err) {
+        } catch {
           return {
             error: { field: def.name, code: "pattern_invalid", message: "invalid_pattern", value: def.pattern },
           };

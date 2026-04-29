@@ -6,6 +6,7 @@ import { getCollectionBySlug, type AppFieldDef } from "@/lib/app-data";
 import { type AppEnv, toEnvSlug } from "@/lib/app-env";
 import { resolveAppUserFromRequest } from "@/lib/app-request";
 import { apiErrorJson } from "@/lib/api-error";
+import { canAccessPublishedPage } from "@/lib/page-access";
 import { parseJsonObject } from "@/lib/validation";
 
 export type FilterOp =
@@ -243,11 +244,11 @@ export async function handleAppRecordQuery(
 
   const page = await prisma.page.findFirst({
     where: { id: pageId, is_deleted: false },
-    select: { id: true, owner_id: true, status: true, is_hidden: true },
+    select: { id: true, owner_id: true, status: true, is_hidden: true, live_expires_at: true, deployed_at: true },
   });
   if (!page) return apiErrorJson("not_found", 404);
   const isOwner = Boolean(user && page.owner_id === user.id);
-  if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
+  if (!canAccessPublishedPage(page, isOwner)) return apiErrorJson("not_found", 404);
 
   const coll = await getCollectionBySlug(pageId, model, env);
   if (!coll) return apiErrorJson("collection_not_found", 404);

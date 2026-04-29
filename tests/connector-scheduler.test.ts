@@ -25,9 +25,7 @@ describe("connector scheduler", () => {
       { page_id: "page1", value: [connector] },
     ]);
 
-    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-
-    const results = await runConnectorSchedules(now, { db: db as any, fetcher });
+    const results = await runConnectorSchedules(now, { db: db as any });
     expect(results.length).toBe(1);
     expect(results[0]?.results[0]?.status).toBe("success");
     expect(db.pageSetting.upsert).toHaveBeenCalled();

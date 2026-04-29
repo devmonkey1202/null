@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { PrototypeAction } from "../src/advanced/doc/scene";
 import { cloneDoc, createDoc } from "../src/advanced/doc/scene";
 
 describe("scene clone", () => {
@@ -180,6 +181,52 @@ describe("scene clone", () => {
     expect(cloned.nodes[pageId]!.propertyDefinitions!.text_a!.name).toBe("CTA");
   });
 
+  it("deep clones nested crop data for node media and image fills", () => {
+    const doc = createDoc();
+    const pageId = doc.pages[0]!.rootId;
+    doc.nodes[pageId] = {
+      ...doc.nodes[pageId]!,
+      type: "image",
+      image: {
+        src: "https://example.com/image.png",
+        fit: "cover",
+        scale: 1.25,
+        focalX: 0.7,
+        focalY: 0.2,
+        crop: { x: 0.1, y: 0.2, w: 0.8, h: 0.7 },
+      },
+      style: {
+        ...doc.nodes[pageId]!.style,
+        fills: [
+          {
+            type: "image",
+            src: "https://example.com/fill.png",
+            fit: "contain",
+            scale: 1.4,
+            focalX: 0.3,
+            focalY: 0.9,
+            crop: { x: 0.05, y: 0.1, w: 0.6, h: 0.5 },
+          },
+        ],
+      },
+    };
+
+    const cloned = cloneDoc(doc);
+    cloned.nodes[pageId]!.image!.crop!.x = 0.9;
+    cloned.nodes[pageId]!.image!.focalX = 0.1;
+    (cloned.nodes[pageId]!.style.fills[0] as { crop: { w: number }; focalY: number }).crop.w = 0.2;
+    (cloned.nodes[pageId]!.style.fills[0] as { crop: { w: number }; focalY: number }).focalY = 0.1;
+
+    expect(doc.nodes[pageId]!.image!.crop!.x).toBe(0.1);
+    expect(doc.nodes[pageId]!.image!.focalX).toBe(0.7);
+    expect((doc.nodes[pageId]!.style.fills[0] as { crop: { w: number }; focalY: number }).crop.w).toBe(0.6);
+    expect((doc.nodes[pageId]!.style.fills[0] as { crop: { w: number }; focalY: number }).focalY).toBe(0.9);
+    expect(cloned.nodes[pageId]!.image!.crop!.x).toBe(0.9);
+    expect(cloned.nodes[pageId]!.image!.focalX).toBe(0.1);
+    expect((cloned.nodes[pageId]!.style.fills[0] as { crop: { w: number }; focalY: number }).crop.w).toBe(0.2);
+    expect((cloned.nodes[pageId]!.style.fills[0] as { crop: { w: number }; focalY: number }).focalY).toBe(0.1);
+  });
+
   it("deep clones grid layout tracks, guide alignment, and grid child placement", () => {
     const doc = createDoc();
     const pageId = doc.pages[0]!.rootId;
@@ -229,5 +276,81 @@ describe("scene clone", () => {
     expect(clonedNode.layout.rowsSizing?.[0]).toEqual({ type: "fixed", value: 40 });
     expect(clonedNode.layoutGrid?.[0]).toMatchObject({ alignment: "start" });
     expect(clonedNode.gridChild).toMatchObject({ column: 1, horizontalAlign: "start" });
+  });
+
+  it("deep clones service bindings on nodes, data bindings, and prototype actions", () => {
+    const doc = createDoc();
+    const pageId = doc.pages[0]!.rootId;
+    doc.nodes[pageId] = {
+      ...doc.nodes[pageId]!,
+      service: {
+        field: {
+          key: "reservation.notes",
+          valueType: "message",
+          required: true,
+          fallbackValue: { draft: true },
+        },
+        dataSource: {
+          source: "reservations.list",
+          fields: ["id", "title"],
+          filters: [{ field: "status", op: "eq", value: "requested" }],
+          search: { q: "desk", fields: ["title"] },
+          params: { limit: 10 },
+        },
+        stateTransition: {
+          machine: "reservation",
+          to: "confirmed",
+          from: ["requested"],
+          recordIdField: "reservationId",
+        },
+      },
+      data: {
+        type: "service",
+        source: "tickets.list",
+        fields: ["id", "title"],
+        filters: [{ field: "status", op: "eq", value: "open" }],
+        search: { q: "vip", fields: ["title"] },
+        params: { queueId: "queue_1" },
+      },
+      prototype: {
+        interactions: [
+          {
+            id: "service-int",
+            trigger: "click",
+            action: {
+              type: "service",
+              action: "document.decide",
+              bindings: [{ target: "documentId", source: "field", fieldKey: "documentId", required: true }],
+              dataSource: { source: "documents.list", fields: ["id"] },
+              stateTransition: {
+                machine: "document",
+                to: "approved",
+                from: ["pending"],
+                recordIdField: "documentId",
+              },
+            },
+          },
+        ],
+      },
+    };
+
+    const cloned = cloneDoc(doc);
+    cloned.nodes[pageId]!.service!.field!.key = "ticket.body";
+    (cloned.nodes[pageId]!.service!.field!.fallbackValue as { draft: boolean }).draft = false;
+    cloned.nodes[pageId]!.service!.dataSource!.fields![0] = "status";
+    cloned.nodes[pageId]!.service!.stateTransition!.to = "completed";
+    (cloned.nodes[pageId]!.data as { fields: string[] }).fields[0] = "status";
+    (
+      cloned.nodes[pageId]!.prototype!.interactions[0]!.action as Extract<PrototypeAction, { type: "service" }>
+    ).bindings![0]!.target = "status";
+
+    expect(doc.nodes[pageId]!.service!.field!.key).toBe("reservation.notes");
+    expect((doc.nodes[pageId]!.service!.field!.fallbackValue as { draft: boolean }).draft).toBe(true);
+    expect(doc.nodes[pageId]!.service!.dataSource!.fields![0]).toBe("id");
+    expect(doc.nodes[pageId]!.service!.stateTransition!.to).toBe("confirmed");
+    expect((doc.nodes[pageId]!.data as { fields: string[] }).fields[0]).toBe("id");
+    expect(
+      (doc.nodes[pageId]!.prototype!.interactions[0]!.action as Extract<PrototypeAction, { type: "service" }>).bindings![0]!.target,
+    ).toBe("documentId");
   });
 });

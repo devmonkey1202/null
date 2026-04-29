@@ -6,6 +6,7 @@ import { ensurePlanDefaults } from "@/lib/plan";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/rate-limit";
 import { logApiError } from "@/lib/logger";
 import { apiErrorJson } from "@/lib/api-error";
+import { shouldUseSecureCookies } from "@/lib/cookie-security";
 
 const COOKIE_NAME = "anon_user_id";
 const HEADER_NAME = "x-anon-user-id";
@@ -50,7 +51,7 @@ export async function POST(req: Request) {
     response.cookies.set(COOKIE_NAME, user.anon_id, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookies(req),
       path: "/",
       maxAge: 60 * 60 * 24 * 365,
     });

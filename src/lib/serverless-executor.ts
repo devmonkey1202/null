@@ -56,6 +56,12 @@ export async function executeServerlessNode(options: {
   memoryMb?: number;
   variables?: Record<string, unknown>;
   triggerData?: unknown;
+  policy?: {
+    network?: {
+      allow?: string[];
+      deny?: string[];
+    };
+  };
 }): Promise<ServerlessExecutorResponse> {
   const executorUrl = process.env.SERVERLESS_EXECUTOR_URL;
   if (!executorUrl) {
@@ -90,6 +96,15 @@ export async function executeServerlessNode(options: {
     secretMap[s.key] = s.value;
   });
 
+  const envAllow = process.env.SERVERLESS_EXECUTOR_ALLOWED_HOSTS
+    ? process.env.SERVERLESS_EXECUTOR_ALLOWED_HOSTS.split(/[,\s]+/).filter(Boolean)
+    : [];
+  const envDeny = process.env.SERVERLESS_EXECUTOR_DENIED_HOSTS
+    ? process.env.SERVERLESS_EXECUTOR_DENIED_HOSTS.split(/[,\s]+/).filter(Boolean)
+    : [];
+  const runtimeAllow = options.policy?.network?.allow?.filter((value) => typeof value === "string" && value.trim()) ?? [];
+  const runtimeDeny = options.policy?.network?.deny?.filter((value) => typeof value === "string" && value.trim()) ?? [];
+
   const payload: ServerlessExecutorRequest = {
     code,
     inputs: options.inputs,
@@ -103,12 +118,8 @@ export async function executeServerlessNode(options: {
     memoryMb: clampMemory(options.memoryMb),
     policy: {
       network: {
-        allow: process.env.SERVERLESS_EXECUTOR_ALLOWED_HOSTS
-          ? process.env.SERVERLESS_EXECUTOR_ALLOWED_HOSTS.split(/[,\s]+/).filter(Boolean)
-          : undefined,
-        deny: process.env.SERVERLESS_EXECUTOR_DENIED_HOSTS
-          ? process.env.SERVERLESS_EXECUTOR_DENIED_HOSTS.split(/[,\s]+/).filter(Boolean)
-          : undefined,
+        allow: Array.from(new Set([...envAllow, ...runtimeAllow])).filter(Boolean),
+        deny: Array.from(new Set([...envDeny, ...runtimeDeny])).filter(Boolean),
       },
     },
   };

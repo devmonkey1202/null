@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
 import ReplayPlayer from "@/components/replay-player";
 import { DEFAULT_CANVAS, type CanvasDocument } from "@/lib/canvas";
 
@@ -37,7 +39,6 @@ export default function ReplayView({ pageId }: { pageId: string }) {
   const replayCaptureRef = useRef<HTMLDivElement | null>(null);
   const timeline = useMemo(() => computeTimeline(events), [events]);
 
-  // 6.3.1 최초 plan 체크: 무료면 업그레이드 안내, Pro면 리플레이 로드
   useEffect(() => {
     fetch("/api/me", { credentials: "include" })
       .then((res) => (res.ok ? res.json() : null))
@@ -77,7 +78,7 @@ export default function ReplayView({ pageId }: { pageId: string }) {
         if (!res.ok) {
           if (data?.error === "upgrade_required") {
             setReplayEnabled(false);
-            setError("유료 플랜에서만 리플레이가 가능합니다.");
+            setError("리플레이는 유료 플랜에서만 열 수 있습니다.");
           } else {
             setError("리플레이 데이터를 불러오지 못했습니다.");
           }
@@ -98,11 +99,11 @@ export default function ReplayView({ pageId }: { pageId: string }) {
 
     try {
       if (typeof window === "undefined") {
-        setVideoMessage("브라우저 환경에서만 내보내기가 가능합니다.");
+        setVideoMessage("브라우저 환경에서만 내보내기를 사용할 수 있습니다.");
         return;
       }
       if (!("MediaRecorder" in window)) {
-        setVideoMessage("이 브라우저는 영상 녹화를 지원하지 않습니다.");
+        setVideoMessage("현재 브라우저는 영상 녹화를 지원하지 않습니다.");
         return;
       }
       if (!replayCaptureRef.current) {
@@ -116,7 +117,7 @@ export default function ReplayView({ pageId }: { pageId: string }) {
 
       const target = replayCaptureRef.current.querySelector("[data-replay-canvas]") as HTMLElement | null;
       if (!target) {
-        setVideoMessage("캔버스 영역을 찾지 못했습니다.");
+        setVideoMessage("캡처 대상 영역을 찾지 못했습니다.");
         return;
       }
 
@@ -162,44 +163,70 @@ export default function ReplayView({ pageId }: { pageId: string }) {
       const blob = new Blob(chunks, { type: mime || "video/webm" });
       const ext = blob.type.includes("mp4") ? "mp4" : "webm";
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `replay-${pageId}-${Date.now()}.${ext}`;
-      a.click();
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `replay-${pageId}-${Date.now()}.${ext}`;
+      anchor.click();
       URL.revokeObjectURL(url);
-      setVideoMessage(ext === "mp4" ? "MP4로 저장되었습니다." : "WebM으로 저장되었습니다.");
+      setVideoMessage(ext === "mp4" ? "MP4로 내보냈습니다." : "WebM으로 내보냈습니다.");
     } catch (err) {
-      setVideoMessage(err instanceof Error ? err.message : "동영상 내보내기에 실패했습니다.");
+      setVideoMessage(err instanceof Error ? err.message : "영상 내보내기에 실패했습니다.");
     } finally {
       setVideoExporting(false);
       setSeekToMs(null);
     }
   }, [events.length, pageId, timeline.duration, videoExporting]);
 
+  const eventCounts = useMemo(() => {
+    return events.reduce<Record<string, number>>((acc, event) => {
+      acc[event.type] = (acc[event.type] ?? 0) + 1;
+      return acc;
+    }, {});
+  }, [events]);
+
   if (!planChecked) {
     return (
-      <div className="min-h-screen bg-white px-6 py-8 text-sm text-neutral-900">
-        <div className="mx-auto max-w-5xl">로딩 중...</div>
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3eb_0%,#f4efe5_35%,#fbfaf8_100%)] px-6 py-8 text-sm text-neutral-900">
+        <div className="mx-auto max-w-5xl text-[#6b665f]">리플레이 정보를 불러오는 중입니다.</div>
       </div>
     );
   }
 
   if (!replayEnabled) {
     return (
-      <div className="min-h-screen bg-white px-6 py-8 text-sm text-neutral-900">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3eb_0%,#f4efe5_35%,#fbfaf8_100%)] px-6 py-8 text-sm text-neutral-900">
         <div className="mx-auto flex max-w-5xl flex-col gap-6">
-          <header className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-lg font-semibold">리플레이</div>
-            <a href="/upgrade" className="rounded-full border border-[#111111] bg-[#111111] px-4 py-2 text-xs font-semibold text-white">
-              Pro 업그레이드
-            </a>
+          <header className="rounded-[28px] border border-black/8 bg-[#161616] px-6 py-6 text-white shadow-[0_24px_90px_rgba(0,0,0,0.14)]">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[#f4c46a]">Replay</div>
+                <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em]">리플레이</h1>
+                <p className="mt-3 max-w-2xl text-sm leading-7 text-white/72">
+                  방문자의 이동, 클릭, 이탈 지점을 다시 보고 싶다면 리플레이 기능이 필요합니다. 현재 계정에서는 아직 이 기능이
+                  열려 있지 않습니다.
+                </p>
+              </div>
+              <Link
+                href="/upgrade"
+                className="rounded-full bg-[#f4c46a] px-4 py-2 text-sm font-semibold text-[#161616] transition hover:bg-[#f8d48d]"
+              >
+                Pro 업그레이드
+              </Link>
+            </div>
           </header>
-          <div className="rounded-[14px] border border-[#EAEAEA] bg-white p-6 text-[#666666]">
-            <p className="font-medium text-[#111111]">리플레이는 유료 플랜에서만 제공됩니다.</p>
-            <p className="mt-2 text-xs">최근 24시간 행동을 재생하려면 Pro 이상으로 업그레이드해 주세요.</p>
-            <a href="/upgrade" className="mt-4 inline-block rounded-full bg-[#111111] px-4 py-2 text-xs font-medium text-white">
+
+          <div className="rounded-[28px] border border-black/8 bg-white p-6 shadow-[0_20px_70px_rgba(17,17,17,0.05)]">
+            <p className="text-lg font-semibold text-[#161616]">리플레이는 유료 플랜에서만 제공됩니다.</p>
+            <p className="mt-3 text-sm leading-6 text-[#6b665f]">
+              최근 24시간 행동 흐름을 다시 보려면 Pro 이상으로 업그레이드해 주세요. 업그레이드 후에는 현재 프로젝트의 공개
+              흐름을 바로 복기할 수 있습니다.
+            </p>
+            <Link
+              href="/upgrade"
+              className="mt-5 inline-flex rounded-full bg-[#f4c46a] px-4 py-2 text-sm font-semibold text-[#161616] transition hover:bg-[#f8d48d]"
+            >
               업그레이드하기
-            </a>
+            </Link>
           </div>
         </div>
       </div>
@@ -207,25 +234,46 @@ export default function ReplayView({ pageId }: { pageId: string }) {
   }
 
   return (
-    <div className="min-h-screen bg-white px-6 py-8 text-sm text-neutral-900">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-        <header className="flex flex-wrap items-center justify-between gap-3">
-          <div className="text-lg font-semibold">리플레이</div>
-          <a href={`/p/${pageId}`} className="rounded-full border border-[#EAEAEA] px-4 py-2 text-xs font-medium text-[#111111]">
-            페이지 보기
-          </a>
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3eb_0%,#f4efe5_35%,#fbfaf8_100%)] px-6 py-8 text-sm text-neutral-900">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+        <header className="rounded-[28px] border border-black/8 bg-white px-6 py-6 shadow-[0_20px_70px_rgba(17,17,17,0.05)]">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8f7b5a]">Replay</div>
+              <div className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-[#161616]">리플레이</div>
+              <p className="mt-2 text-sm leading-6 text-[#6b665f]">
+                재생 구간을 이동하며 사용자의 행동 흐름과 주요 이벤트를 다시 확인합니다.
+              </p>
+            </div>
+            <Link
+              href={`/p/${pageId}`}
+              className="rounded-full border border-black/10 bg-[#f7f3eb] px-4 py-2 text-sm font-semibold text-[#161616] transition hover:bg-[#efe7d8]"
+            >
+              공개 페이지 보기
+            </Link>
+          </div>
         </header>
+
         {error ? (
-          <div className="rounded-[14px] border border-[#EAEAEA] bg-white p-6 text-sm text-[#666666]">
-            {error}
+          <div className="rounded-[22px] border border-rose-200 bg-white p-6 text-sm text-rose-700">{error}</div>
+        ) : null}
+
+        {!error && events.length === 0 ? (
+          <div className="rounded-[22px] border border-black/8 bg-white p-6 text-center text-sm text-[#6b665f]">
+            아직 재생할 이벤트가 없습니다.
           </div>
-        ) : events.length === 0 ? (
-          <div className="rounded-[14px] border border-[#EAEAEA] bg-white p-6 text-center text-sm text-[#666666]">
-            이벤트가 없습니다.
-          </div>
-        ) : (
+        ) : null}
+
+        {!error && events.length > 0 ? (
           <>
-            <div ref={replayCaptureRef}>
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <ReplayMetric label="전체 이벤트" value={String(events.length)} />
+              <ReplayMetric label="리플레이 길이" value={formatTs(timeline.duration)} />
+              <ReplayMetric label="하이라이트" value={String(highlights.length)} />
+              <ReplayMetric label="클릭 수" value={String(eventCounts.click ?? 0)} />
+            </section>
+
+            <div ref={replayCaptureRef} className="rounded-[28px] border border-black/8 bg-white p-4 shadow-[0_20px_70px_rgba(17,17,17,0.05)]">
               <ReplayPlayer
                 events={events}
                 doc={doc}
@@ -234,73 +282,98 @@ export default function ReplayView({ pageId }: { pageId: string }) {
                 onSeekDone={() => setSeekToMs(null)}
               />
             </div>
-            {highlights.length > 0 && (
-              <section className="rounded-[14px] border border-[#EAEAEA] bg-white p-4">
-                <div className="text-xs font-semibold text-[#666666]">하이라이트 구간</div>
-                <ul className="mt-2 flex flex-col gap-1">
-                  {highlights.map((h, i) => (
-                    <li key={`${h.start_ts}-${i}`}>
-                      <button
-                        type="button"
-                        className="w-full rounded-[10px] border border-[#EAEAEA] px-3 py-2 text-left text-xs text-[#111111] hover:bg-[#EAEAEA]/50"
-                        onClick={() => setSeekToMs(h.start_ms)}
-                      >
-                        <span className="text-[#666666]">{h.label}</span>
-                        <span className="ml-2 text-[10px] text-[#666666]">
-                          {formatTs(h.start_ms)} ~ {formatTs(h.end_ms)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-            <section className="rounded-[14px] border border-[#EAEAEA] bg-white p-4">
-              <div className="text-xs font-semibold text-[#666666]">요약 리포트 (6.2.4)</div>
-              <p className="mt-1 text-[11px] text-[#666666]">이벤트와 하이라이트 요약을 JSON으로 제공합니다. PDF는 Phase2.</p>
-              <button
-                type="button"
-                className="mt-2 rounded-full border border-[#111111] bg-[#111111] px-3 py-1.5 text-xs font-medium text-white"
-                onClick={() => downloadSummaryReport(pageId, events, highlights)}
-              >
-                요약 리포트 다운로드 (JSON)
-              </button>
+
+            <section className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
+              <article className="rounded-[22px] border border-black/8 bg-white p-4 shadow-[0_20px_70px_rgba(17,17,17,0.05)]">
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[#8f7b5a]">Highlights</div>
+                {highlights.length ? (
+                  <ul className="mt-3 flex flex-col gap-2">
+                    {highlights.map((highlight, index) => (
+                      <li key={`${highlight.start_ts}-${index}`}>
+                        <button
+                          type="button"
+                          className="flex w-full items-center justify-between gap-3 rounded-[16px] border border-black/8 bg-[#fbfaf7] px-4 py-3 text-left transition hover:bg-[#f5efdf]"
+                          onClick={() => setSeekToMs(highlight.start_ms)}
+                        >
+                          <div>
+                            <div className="text-sm font-semibold text-[#161616]">{highlight.label}</div>
+                            <div className="mt-1 text-[12px] text-[#6b665f]">
+                              {formatTs(highlight.start_ms)} ~ {formatTs(highlight.end_ms)}
+                            </div>
+                          </div>
+                          <span className="rounded-full bg-[#efe8dc] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#6d5c39]">
+                            {highlight.type}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-3 text-sm text-[#6b665f]">하이라이트가 아직 생성되지 않았습니다.</p>
+                )}
+              </article>
+
+              <div className="grid gap-4">
+                <article className="rounded-[22px] border border-black/8 bg-white p-4 shadow-[0_20px_70px_rgba(17,17,17,0.05)]">
+                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[#8f7b5a]">Summary</div>
+                  <p className="mt-2 text-sm leading-6 text-[#6b665f]">
+                    이벤트와 하이라이트 요약을 JSON으로 내려받습니다. 조사 공유용 기본 산출물입니다.
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-4 rounded-full border border-[#111111] bg-[#111111] px-3 py-1.5 text-xs font-medium text-white"
+                    onClick={() => downloadSummaryReport(pageId, events, highlights)}
+                  >
+                    요약 리포트 다운로드
+                  </button>
+                </article>
+
+                <article className="rounded-[22px] border border-black/8 bg-white p-4 text-xs text-[#6b665f] shadow-[0_20px_70px_rgba(17,17,17,0.05)]">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>리플레이 영상 내보내기</span>
+                    <button
+                      type="button"
+                      onClick={exportReplayVideo}
+                      disabled={videoExporting || events.length === 0}
+                      className="rounded-full border border-[#111111] bg-[#111111] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+                    >
+                      {videoExporting ? "내보내는 중" : "MP4 또는 WebM"}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[11px] text-[#6b665f]">
+                    브라우저가 MP4를 지원하면 MP4로, 그렇지 않으면 WebM으로 저장합니다.
+                  </p>
+                  {videoMessage ? <p className="mt-2 text-[11px] text-[#6b665f]">{videoMessage}</p> : null}
+                </article>
+              </div>
             </section>
           </>
-        )}
-        <div className="rounded-[14px] border border-[#EAEAEA] bg-white p-4 text-xs text-[#666666]">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>리플레이 영상 내보내기</span>
-            <button
-              type="button"
-              onClick={exportReplayVideo}
-              disabled={videoExporting || events.length === 0}
-              className="rounded-full border border-[#111111] bg-[#111111] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
-            >
-              {videoExporting ? "내보내는 중..." : "MP4/WebM 저장"}
-            </button>
-          </div>
-          <p className="mt-2 text-[11px] text-[#666666]">
-            브라우저가 MP4를 지원하면 MP4로 저장되며, 지원하지 않으면 WebM으로 저장됩니다.
-          </p>
-          {videoMessage ? <p className="mt-2 text-[11px] text-[#666666]">{videoMessage}</p> : null}
-        </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
+function ReplayMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="rounded-[22px] border border-black/8 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(17,17,17,0.05)]">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8f7b5a]">{label}</div>
+      <div className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-[#161616]">{value}</div>
+    </article>
+  );
+}
+
 function formatTs(ms: number) {
-  const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return [h, m, sec].map((n) => String(n).padStart(2, "0")).join(":");
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
 }
 
 function computeTimeline(events: ReplayEvent[]) {
   if (events.length === 0) return { start: 0, end: 0, duration: 0 };
-  const times = events.map((e) => new Date(e.ts).getTime());
+  const times = events.map((event) => new Date(event.ts).getTime());
   const start = Math.min(...times);
   const end = Math.max(...times);
   return { start, end, duration: Math.max(end - start, 0) };
@@ -308,12 +381,7 @@ function computeTimeline(events: ReplayEvent[]) {
 
 function pickRecorderMime() {
   if (typeof MediaRecorder === "undefined") return "";
-  const candidates = [
-    "video/mp4;codecs=avc1",
-    "video/mp4",
-    "video/webm;codecs=vp9",
-    "video/webm",
-  ];
+  const candidates = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
   for (const mime of candidates) {
     if (MediaRecorder.isTypeSupported(mime)) return mime;
   }
@@ -328,17 +396,12 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 6.2.4 요약 리포트 다운로드 (JSON). PDF는 Phase2. */
-function downloadSummaryReport(
-  pageId: string,
-  events: ReplayEvent[],
-  highlights: ReplayHighlight[],
-) {
-  const byType = events.reduce<Record<string, number>>((acc, e) => {
-    acc[e.type] = (acc[e.type] ?? 0) + 1;
+function downloadSummaryReport(pageId: string, events: ReplayEvent[], highlights: ReplayHighlight[]) {
+  const byType = events.reduce<Record<string, number>>((acc, event) => {
+    acc[event.type] = (acc[event.type] ?? 0) + 1;
     return acc;
   }, {});
-  const times = events.map((e) => new Date(e.ts).getTime());
+  const times = events.map((event) => new Date(event.ts).getTime());
   const startMs = times.length ? Math.min(...times) : 0;
   const endMs = times.length ? Math.max(...times) : 0;
   const summary = {
@@ -353,20 +416,21 @@ function downloadSummaryReport(
       total: events.length,
       by_type: byType,
     },
-    highlights: highlights.map((h) => ({
-      type: h.type,
-      label: h.label,
-      start_ms: h.start_ms,
-      end_ms: h.end_ms,
-      start_ts: h.start_ts,
-      end_ts: h.end_ts,
+    highlights: highlights.map((highlight) => ({
+      type: highlight.type,
+      label: highlight.label,
+      start_ms: highlight.start_ms,
+      end_ms: highlight.end_ms,
+      start_ts: highlight.start_ts,
+      end_ts: highlight.end_ts,
     })),
   };
-  const blob = new Blob([JSON.stringify(summary, null, 2)], { type: "application/json;charset=utf-8" });
+
+  const blob = new Blob([JSON.stringify(summary, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `replay-summary-${pageId}-${Date.now()}.json`;
-  a.click();
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `replay-summary-${pageId}.json`;
+  anchor.click();
   URL.revokeObjectURL(url);
 }

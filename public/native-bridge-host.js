@@ -83,7 +83,7 @@
         window.NullNativeHost.postMessage(JSON.stringify(payload));
         return true;
       }
-    } catch (err) {
+    } catch {
       return false;
     }
     return false;

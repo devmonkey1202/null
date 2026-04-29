@@ -35,7 +35,7 @@ type ReplayPlayerProps = {
   onSeekDone?: () => void;
 };
 
-export default function ReplayPlayer({ events, doc, highlights = [], seekToMs, onSeekDone }: ReplayPlayerProps) {
+export default function ReplayPlayer({ events, doc, seekToMs, onSeekDone }: ReplayPlayerProps) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1 as (typeof SPEEDS)[number]);
   /** §29.3 루프 on/off: 재생 끝에 정지 vs 처음부터 반복 */
@@ -165,7 +165,7 @@ export default function ReplayPlayer({ events, doc, highlights = [], seekToMs, o
       });
   }, [current, filtered, timeline.start]);
 
-  const [fullscreen, setFullscreen] = useState(false);
+  const [, setFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {

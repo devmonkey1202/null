@@ -4,6 +4,7 @@ import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
 import { withErrorHandler, safeParseBody } from "@/lib/api-handler";
 import { logAppAudit } from "@/lib/app-audit";
 import { logSecurityEvent } from "@/lib/security-log";
+import { shouldUseSecureCookies } from "@/lib/cookie-security";
 
 export const POST = withErrorHandler(
   async (req: Request, context: { params: Promise<{ pageId: string }> }) => {
@@ -35,7 +36,7 @@ export const POST = withErrorHandler(
       res.cookies.set(`app_token_${pageId}`, result.token, {
         httpOnly: true,
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: shouldUseSecureCookies(req),
         path: "/",
         maxAge: 30 * 24 * 60 * 60,
       });

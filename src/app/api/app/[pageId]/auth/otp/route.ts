@@ -162,7 +162,7 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
 
     await prisma.appUser.update({
       where: { id: user.id },
-      data: { otp_enabled: false, otp_secret: null, otp_backup_codes: Prisma.DbNull as any, otp_last_used_at: null },
+      data: { otp_enabled: false, otp_secret: null, otp_backup_codes: Prisma.DbNull, otp_last_used_at: null },
     });
     await logAppAudit({
       pageId,

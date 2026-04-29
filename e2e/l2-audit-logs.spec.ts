@@ -1,6 +1,6 @@
 import { test, expect, APIRequestContext } from "@playwright/test";
 
-const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
+const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3101";
 
 async function initAnon(request: APIRequestContext): Promise<string> {
   const ip = `127.0.0.${Math.floor(Math.random() * 200) + 20}`;
@@ -237,11 +237,12 @@ test.describe.serial("L2 Audit log scenarios", () => {
     const plugin = {
       id: "audit-plugin",
       name: "Audit Plugin",
+      permissions: ["network"],
       actions: [{ id: "open", label: "Open", type: "openUrl", url: "https://example.com" }],
     };
     const pluginAddRes = await request.post(`${BASE}/api/app/${pageId}/plugins`, {
       headers,
-      data: JSON.stringify({ plugin }),
+      data: JSON.stringify({ plugin, consent: true }),
     });
     expect(pluginAddRes.ok()).toBeTruthy();
 

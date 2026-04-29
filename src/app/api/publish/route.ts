@@ -2,7 +2,6 @@
 import { z } from "zod";
 import { getRedis } from "@/lib/redis";
 import { logWithThrottle } from "@/lib/logger";
-import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody, parseSearchParams } from "@/lib/validation";
 
 const store = new Map<string, unknown>();

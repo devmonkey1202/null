@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 /** N4: 이미지 로드 실패 시 placeholder·경고 표시 */
 function MediaImageWithError({
-  nodeId,
   href,
   fw,
   fh,
@@ -15,7 +14,6 @@ function MediaImageWithError({
   clipId,
   filterUrl,
 }: {
-  nodeId: string;
   href: string;
   fw: number;
   fh: number;
@@ -180,6 +178,7 @@ function isImageFill(fill: Fill | null | undefined): fill is ImageFill {
 }
 import type { Doc, Node, SerializableDoc, Fill, Stroke, StyleToken, TextStyle, PrototypeAction, PrototypeTrigger, PrototypeInteraction, Variable, NodeDataBinding } from "../doc/scene";
 import { hasRichTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "../geom/richTextModel";
+import { MEDIA_PATTERN_BOX, resolveImageFillLayout, resolveNodeMediaLayout } from "../geom/mediaLayout";
 import { getParagraphSpacing, getRenderedTextLines, getTextLineMetrics } from "../geom/textLayout";
 import { getTextPathId, normalizeTextPathStartOffset, normalizeTextPathText } from "../geom/textPathLayout";
 import {
@@ -188,6 +187,7 @@ import {
   resolveNodeTextValue as resolveBoundNodeTextValue,
   resolveTextRangeBindings,
   resolveVariableColor as resolveBoundVariableColor,
+  resolveVariableNumber as resolveBoundVariableNumber,
   resolveVariableValue as resolveBoundVariableValue,
 } from "../geom/variableBindings";
 import { primaryPathDataFromShape } from "../geom/vectorNetwork";
@@ -199,7 +199,7 @@ import { getCustomNodeRenderer } from "./plugins";
 import { buildRuntimeInteractionBundle } from "./runtimeInteractions";
 import { buildRuntimeSceneGraph, pickRuntimeRendererMode, type RuntimeRendererMode } from "./sceneGraph";
 import { WidgetSandbox } from "./widget-sandbox";
-import { buildBindingDecision } from "./data-binding";
+import { buildBindingDecision, type CollectionNodeDataBinding } from "./data-binding";
 
 function getEffectFilterId(prefix: string, nodeId: string) {
   return `${prefix}-${nodeId}`;
@@ -299,6 +299,13 @@ function resolveVariableColor(doc: Doc, id: string | undefined, variableRuntime?
   });
 }
 
+function resolveVariableNumber(doc: Doc, id: string | undefined, variableRuntime?: VariableRuntime) {
+  return resolveBoundVariableNumber(doc, id, {
+    mode: variableRuntime?.mode,
+    variableOverrides: variableRuntime?.variableOverrides,
+  });
+}
+
 
 function resolveNumberOverride(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -359,11 +366,9 @@ function pickFill(doc: Doc, node: Node, variableRuntime?: VariableRuntime): stri
 
 /** I5: 세그먼트별 fills에서 fill 문자열 반환 (gradient/image는 nodeId-segIdx 사용) */
 function pickFillFromFills(
-  doc: Doc,
   nodeId: string,
   fills: Fill[],
   segmentIndex: number,
-  variableRuntime?: VariableRuntime,
 ): string {
   if (!fills.length) return "transparent";
   const fill = fills[0];
@@ -398,11 +403,14 @@ function pickStroke(doc: Doc, node: Node, variableRuntime?: VariableRuntime): {
   };
 }
 
-function resolveTextStyle(doc: Doc, node: Node): TextStyle | null {
+function resolveTextStyle(doc: Doc, node: Node, variableRuntime?: VariableRuntime): TextStyle | null {
   const token = findStyleToken(doc, node.text?.styleRef, "text");
   const baseStyle = token && token.value && typeof token.value === "object" ? (token.value as TextStyle) : node.text?.style ?? null;
   if (!baseStyle) return null;
-  return resolveBoundNodeTextStyle(doc, node.text, baseStyle);
+  return resolveBoundNodeTextStyle(doc, node.text, baseStyle, {
+    mode: variableRuntime?.mode,
+    variableOverrides: variableRuntime?.variableOverrides,
+  });
 }
 
 function resolveTextTokens(doc: Doc, value: string, variableRuntime?: VariableRuntime) {
@@ -439,10 +447,29 @@ function resolveTextTokens(doc: Doc, value: string, variableRuntime?: VariableRu
   });
 }
 
-function resolveEffects(doc: Doc, node: Node) {
+function resolveEffects(doc: Doc, node: Node, variableRuntime?: VariableRuntime) {
   const token = findStyleToken(doc, node.style.effectStyleId, "effect");
-  if (token && Array.isArray(token.value)) return token.value as NonNullable<Node["style"]>["effects"];
-  return node.style.effects ?? [];
+  const effects = token && Array.isArray(token.value)
+    ? (token.value as NonNullable<Node["style"]>["effects"])
+    : (node.style.effects ?? []);
+  return effects.map((effect) => {
+    if (effect.type === "shadow") {
+      return {
+        ...effect,
+        x: resolveVariableNumber(doc, effect.xRef, variableRuntime) ?? effect.x,
+        y: resolveVariableNumber(doc, effect.yRef, variableRuntime) ?? effect.y,
+        blur: resolveVariableNumber(doc, effect.blurRef, variableRuntime) ?? effect.blur,
+        color: resolveVariableColor(doc, effect.colorRef, variableRuntime) ?? effect.color,
+      };
+    }
+    if (effect.type === "blur") {
+      return {
+        ...effect,
+        blur: resolveVariableNumber(doc, effect.blurRef, variableRuntime) ?? effect.blur,
+      };
+    }
+    return { ...effect };
+  });
 }
 
 function renderShape(
@@ -594,7 +621,7 @@ function renderShape(
               <path
                 key={i}
                 d={seg.d.trim() || defaultPath}
-                fill={pickFillFromFills(doc, node.id, seg.fills, i, variableRuntime)}
+                fill={pickFillFromFills(node.id, seg.fills, i)}
                 stroke={stroke.color}
                 strokeWidth={Math.max(1, stroke.width)}
                 strokeDasharray={stroke.dash.join(" ")}
@@ -666,8 +693,8 @@ function renderShape(
               variableOverrides: variableRuntime?.variableOverrides,
             });
       const textValue = typeof rawText === "string" ? rawText : rawText != null && typeof rawText === "object" ? "" : String(rawText ?? "");
-      const text = resolveTextTokens(doc, textValue);
-      const style = resolveTextStyle(doc, node) ?? {
+      const text = resolveTextTokens(doc, textValue, variableRuntime);
+      const style = resolveTextStyle(doc, node, variableRuntime) ?? {
         fontFamily: DEFAULT_FONT_FAMILY,
         fontSize: 16,
         fontWeight: 500,
@@ -864,17 +891,11 @@ function renderShape(
     case "video": {
       const media = node.type === "video" ? node.video : node.image;
       const href = normalizeImageSrc(media?.src);
-      const fit = media?.fit ?? "cover";
-      const scale = media?.scale ?? 1;
-      const offsetX = media?.offsetX ?? 0;
-      const offsetY = media?.offsetY ?? 0;
-      const preserve = fit === "contain" ? "xMidYMid meet" : fit === "fill" ? "none" : "xMidYMid slice";
       const fw = frame.w;
       const fh = frame.h;
       const clipId = `rt-media-clip-${node.id}`;
       const radius = typeof node.style.radius === "number" ? node.style.radius : 0;
-      const crop = media?.crop;
-      const cropRect = crop && crop.w > 0 && crop.h > 0 ? { x: crop.x * fw, y: crop.y * fh, w: crop.w * fw, h: crop.h * fh } : null;
+      const layout = resolveNodeMediaLayout(fw, fh, media);
       const brightness = media?.brightness ?? 1;
       const contrast = media?.contrast ?? 1;
       const needBcFilter = Math.abs(brightness - 1) > 0.01 || Math.abs(contrast - 1) > 0.01;
@@ -886,10 +907,10 @@ function renderShape(
             href={href}
             fw={fw}
             fh={fh}
-            offsetX={offsetX}
-            offsetY={offsetY}
-            scale={scale}
-            fit={fit}
+            offsetX={layout.imageX}
+            offsetY={layout.imageY}
+            scale={layout.imageWidth / fw}
+            fit={media?.fit ?? "cover"}
             radius={radius}
             brightness={brightness}
             contrast={contrast}
@@ -924,7 +945,7 @@ function renderShape(
         <g>
           <defs>
             <clipPath id={clipId}>
-              <rect x={cropRect?.x ?? 0} y={cropRect?.y ?? 0} width={cropRect?.w ?? fw} height={cropRect?.h ?? fh} rx={radius} ry={radius} />
+              <rect x={layout.clipX} y={layout.clipY} width={layout.clipWidth} height={layout.clipHeight} rx={radius} ry={radius} />
             </clipPath>
             {needBcFilter ? (
               <filter id={bcFilterId}>
@@ -937,14 +958,13 @@ function renderShape(
             ) : null}
           </defs>
           <MediaImageWithError
-            nodeId={node.id}
             href={href}
             fw={fw}
             fh={fh}
-            offsetX={offsetX}
-            offsetY={offsetY}
-            scale={scale}
-            preserve={preserve}
+            offsetX={layout.imageX}
+            offsetY={layout.imageY}
+            scale={layout.imageWidth / fw}
+            preserve={layout.preserveAspectRatio}
             clipId={clipId}
             filterUrl={bcFilterId ? `url(#${bcFilterId})` : filterId ? `url(#${filterId})` : undefined}
           />
@@ -1011,36 +1031,61 @@ function buildEffectDefs(doc: Doc, prefix: string) {
     const effects = resolveEffects(doc, node);
     if (!effects.length) return;
     const filterId = getEffectFilterId(prefix, node.id);
-    const primitives = effects.map((effect, index) => {
+    let currentInput = "SourceGraphic";
+    const primitives = effects.flatMap((effect, index) => {
+      const resultId = `${filterId}-result-${index}`;
       if (effect.type === "shadow") {
         const opacity = typeof effect.opacity === "number" ? effect.opacity : 0.2;
-        return (
+        const primitive = (
           <feDropShadow
             key={`${filterId}-shadow-${index}`}
+            in={currentInput}
             dx={effect.x}
             dy={effect.y}
             stdDeviation={Math.max(0, effect.blur)}
             floodColor={effect.color}
             floodOpacity={opacity}
+            result={resultId}
           />
         );
+        currentInput = resultId;
+        return [primitive];
       }
       if (effect.type === "blur") {
-        return <feGaussianBlur key={`${filterId}-blur-${index}`} stdDeviation={Math.max(0, effect.blur)} />;
+        const primitive = (
+          <feGaussianBlur
+            key={`${filterId}-blur-${index}`}
+            in={currentInput}
+            stdDeviation={Math.max(0, effect.blur)}
+            result={resultId}
+          />
+        );
+        currentInput = resultId;
+        return [primitive];
       }
       if (effect.type === "noise") {
         const amount = typeof effect.amount === "number" ? effect.amount : 0.4;
-        return (
+        const noiseId = `${filterId}-noise-${index}`;
+        const monoId = `${noiseId}-mono`;
+        const alphaId = `${noiseId}-alpha`;
+        const primitivesForNoise = [
           <feTurbulence
-            key={`${filterId}-noise-${index}`}
+            key={`${noiseId}-turbulence`}
             type="fractalNoise"
-            baseFrequency={amount}
+            baseFrequency={Math.max(0.005, amount * 0.08)}
             numOctaves={2}
-            result="noise"
-          />
-        );
+            result={noiseId}
+          />,
+          <feColorMatrix key={`${noiseId}-mono`} in={noiseId} type="saturate" values="0" result={monoId} />,
+          <feComponentTransfer key={`${noiseId}-alpha`} in={monoId} result={alphaId}>
+            <feFuncA type="linear" slope={Math.max(0.05, Math.min(1, amount)) * 0.45} />
+          </feComponentTransfer>,
+          <feBlend key={`${noiseId}-blend`} in={currentInput} in2={alphaId} mode="soft-light" result={resultId} />,
+        ];
+        currentInput = resultId;
+        return primitivesForNoise;
       }
-      return null;
+      return [];
     });
     defs.push(
       <filter key={filterId} id={filterId} x="-50%" y="-50%" width="200%" height="200%">
@@ -1064,20 +1109,34 @@ function buildImageFillPatternDefs(doc: Doc) {
         if (!isImageFill(fill)) return;
         const src = normalizeImageSrc(fill.src);
         if (!src) return;
-        const preserveAspectRatio =
-          fill.fit === "cover" ? "xMidYMid slice" : fill.fit === "contain" ? "xMidYMid meet" : "none";
+        const layout = resolveImageFillLayout(fill, MEDIA_PATTERN_BOX);
+        const clipId = `${IMAGE_FILL_PATTERN_PREFIX}-${node.id}-seg-${i}-clip`;
         defs.push(
           <pattern
             key={`${IMAGE_FILL_PATTERN_PREFIX}-${node.id}-seg-${i}`}
             id={`${IMAGE_FILL_PATTERN_PREFIX}-${node.id}-seg-${i}`}
             patternUnits="objectBoundingBox"
-            patternContentUnits="objectBoundingBox"
             x={0}
             y={0}
             width={1}
             height={1}
+            viewBox={`0 0 ${MEDIA_PATTERN_BOX} ${MEDIA_PATTERN_BOX}`}
           >
-            <image href={src} xlinkHref={src} x={0} y={0} width={1} height={1} preserveAspectRatio={preserveAspectRatio} />
+            <defs>
+              <clipPath id={clipId}>
+                <rect x={layout.clipX} y={layout.clipY} width={layout.clipWidth} height={layout.clipHeight} />
+              </clipPath>
+            </defs>
+            <image
+              href={src}
+              xlinkHref={src}
+              x={layout.imageX}
+              y={layout.imageY}
+              width={layout.imageWidth}
+              height={layout.imageHeight}
+              preserveAspectRatio={layout.preserveAspectRatio}
+              clipPath={`url(#${clipId})`}
+            />
           </pattern>,
         );
       });
@@ -1088,20 +1147,34 @@ function buildImageFillPatternDefs(doc: Doc) {
     if (!isImageFill(fill)) return;
     const src = normalizeImageSrc(fill.src);
     if (!src) return;
-    const preserveAspectRatio =
-      fill.fit === "cover" ? "xMidYMid slice" : fill.fit === "contain" ? "xMidYMid meet" : "none";
+    const layout = resolveImageFillLayout(fill, MEDIA_PATTERN_BOX);
+    const clipId = `${IMAGE_FILL_PATTERN_PREFIX}-${node.id}-clip`;
     defs.push(
       <pattern
         key={`${IMAGE_FILL_PATTERN_PREFIX}-${node.id}`}
         id={`${IMAGE_FILL_PATTERN_PREFIX}-${node.id}`}
         patternUnits="objectBoundingBox"
-        patternContentUnits="objectBoundingBox"
         x={0}
         y={0}
         width={1}
         height={1}
+        viewBox={`0 0 ${MEDIA_PATTERN_BOX} ${MEDIA_PATTERN_BOX}`}
       >
-        <image href={src} xlinkHref={src} x={0} y={0} width={1} height={1} preserveAspectRatio={preserveAspectRatio} />
+        <defs>
+          <clipPath id={clipId}>
+            <rect x={layout.clipX} y={layout.clipY} width={layout.clipWidth} height={layout.clipHeight} />
+          </clipPath>
+        </defs>
+        <image
+          href={src}
+          xlinkHref={src}
+          x={layout.imageX}
+          y={layout.imageY}
+          width={layout.imageWidth}
+          height={layout.imageHeight}
+          preserveAspectRatio={layout.preserveAspectRatio}
+          clipPath={`url(#${clipId})`}
+        />
       </pattern>,
     );
   });
@@ -1193,6 +1266,10 @@ function isInputName(value: string) {
     name.includes("input") ||
     name.includes("textfield") ||
     name.includes("text field") ||
+    name === "email" ||
+    name === "password" ||
+    name === "display_name" ||
+    name === "catalog-search" ||
     name.includes("upload") ||
     name.includes("file") ||
     name.includes("업로드") ||
@@ -1541,7 +1618,6 @@ function renderCheckboxMark(frame: Node["frame"], color: string) {
 
 /** NOCODE 3: 컬렉션 바인딩 — /api/app/[pageId]/[model] fetch 후 행별 반복 렌더 */
 function CollectionBound({
-  doc,
   appPageId,
   binding,
   firstChildId,
@@ -1549,9 +1625,8 @@ function CollectionBound({
   variableRuntime,
   renderChildWithRuntime,
 }: {
-  doc: Doc;
   appPageId: string;
-  binding: NodeDataBinding;
+  binding: CollectionNodeDataBinding;
   firstChildId: string;
   rowHeight: number;
   variableRuntime?: VariableRuntime;
@@ -1565,12 +1640,8 @@ function CollectionBound({
     }),
     [variableRuntime?.globalState, variableRuntime?.variableOverrides],
   );
-  const bindingKey = useMemo(() => JSON.stringify({ binding, overrides }), [binding, overrides]);
   useEffect(() => {
     let cancelled = false;
-    if (!binding.collectionId) return () => {
-      cancelled = true;
-    };
     const decision = buildBindingDecision(binding, overrides);
     const baseUrl = `/api/app/${appPageId}/${binding.collectionId}`;
     const request = decision.mode === "query"
@@ -1591,7 +1662,7 @@ function CollectionBound({
     return () => {
       cancelled = true;
     };
-  }, [appPageId, binding.collectionId, bindingKey]);
+  }, [appPageId, binding, overrides]);
 
   if (items.length === 0) return null;
   return (
@@ -1608,7 +1679,13 @@ function CollectionBound({
 /** A1: whileHover 지연 시 액션 실행 예약; mouseLeave 시 취소 */
 export type WhileHoverCallbacks = {
   onEnter: (interaction: PrototypeInteraction, nodeId: string, pageId: string) => void;
-  onLeave: () => void;
+  onLeave: (nodeId: string) => void;
+};
+
+export type PrototypePointerCallbacks = {
+  onPointerDown: (nodeId: string, pointerId: number, clientX: number, clientY: number) => void;
+  onPointerMove: (nodeId: string, pointerId: number, clientX: number, clientY: number) => boolean;
+  onPointerEnd: (nodeId: string, pointerId: number) => boolean;
 };
 
 function renderNodeTree(
@@ -1640,6 +1717,7 @@ function renderNodeTree(
   instanceContext?: string,
   /** A1: whileHover 트리거 지연·취소용 */
   whileHoverCallbacks?: WhileHoverCallbacks,
+  prototypePointerCallbacks?: PrototypePointerCallbacks,
   tooltipState?: { hoveredId: string | null; setHoveredId: React.Dispatch<React.SetStateAction<string | null>> },
   activeTooltipGroupId?: string | null,
   /** C1: 팀 라이브러리 Doc 조회. 인스턴스가 instanceLibraryId 있을 때 사용 */
@@ -1834,6 +1912,7 @@ function renderNodeTree(
         appPageId,
         instanceContext,
         whileHoverCallbacks,
+        prototypePointerCallbacks,
         tooltipState,
         nextTooltipGroupId,
         getLibraryDoc,
@@ -1841,7 +1920,6 @@ function renderNodeTree(
     return (
       <g key={node.id} transform={`translate(${frame.x} ${frame.y})`}>
         <CollectionBound
-          doc={doc}
           appPageId={appPageId}
           binding={binding}
           firstChildId={firstChildId}
@@ -1886,6 +1964,7 @@ function renderNodeTree(
       appPageId,
       instanceContextOverride ?? childInstanceContext,
       whileHoverCallbacks,
+      prototypePointerCallbacks,
       tooltipState,
       nextTooltipGroupId,
       getLibraryDoc,
@@ -2167,12 +2246,13 @@ function renderNodeTree(
         }
       }
     : undefined;
-  const handleMouseEnter = hoverInteraction
-    ? () => handleTrigger(hoverInteraction, "hover")
-    : whileHoverInteraction && whileHoverCallbacks
-      ? () => whileHoverCallbacks.onEnter(whileHoverInteraction!, node.id, pageId)
-      : undefined;
-  const handleMouseLeave = whileHoverInteraction && whileHoverCallbacks ? () => whileHoverCallbacks.onLeave() : undefined;
+  const handleMouseEnter = hoverInteraction || (whileHoverInteraction && whileHoverCallbacks)
+    ? () => {
+        if (hoverInteraction) handleTrigger(hoverInteraction, "hover");
+        if (whileHoverInteraction && whileHoverCallbacks) whileHoverCallbacks.onEnter(whileHoverInteraction, node.id, pageId);
+      }
+    : undefined;
+  const handleMouseLeave = whileHoverInteraction && whileHoverCallbacks ? () => whileHoverCallbacks.onLeave(node.id) : undefined;
   const handleTooltipEnter = isTooltipGroup && tooltipState ? () => tooltipState.setHoveredId(node.id) : undefined;
   const handleTooltipLeave = isTooltipGroup && tooltipState ? () => tooltipState.setHoveredId((prev) => (prev === node.id ? null : prev)) : undefined;
   const mergedMouseEnter = handleMouseEnter || handleTooltipEnter
@@ -2195,21 +2275,53 @@ function renderNodeTree(
         handleTrigger(onPressInteraction, "onPress");
       }
     : undefined;
-  const handlePointerDown = onDragStartInteraction
+  const handlePointerDown = onDragStartInteraction || onDragEndInteraction
     ? (event: React.PointerEvent<SVGGElement>) => {
         event.stopPropagation();
-        handleTrigger(onDragStartInteraction, "onDragStart");
+        prototypePointerCallbacks?.onPointerDown(node.id, event.pointerId, event.clientX, event.clientY);
+        if (typeof event.currentTarget.setPointerCapture === "function") {
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            // Ignore capture failures in unsupported environments.
+          }
+        }
       }
     : undefined;
-  const handlePointerUp = onDragEndInteraction
+  const handlePointerMove = onDragStartInteraction || onDragEndInteraction
+    ? (event: React.PointerEvent<SVGGElement>) => {
+        if (prototypePointerCallbacks?.onPointerMove(node.id, event.pointerId, event.clientX, event.clientY) && onDragStartInteraction) {
+          handleTrigger(onDragStartInteraction, "onDragStart");
+        }
+      }
+    : undefined;
+  const handlePointerUp = onDragStartInteraction || onDragEndInteraction
     ? (event: React.PointerEvent<SVGGElement>) => {
         event.stopPropagation();
-        handleTrigger(onDragEndInteraction, "onDragEnd");
+        const wasDragging = prototypePointerCallbacks?.onPointerEnd(node.id, event.pointerId) ?? false;
+        if (wasDragging && onDragEndInteraction) {
+          handleTrigger(onDragEndInteraction, "onDragEnd");
+        }
+        if (typeof event.currentTarget.releasePointerCapture === "function") {
+          try {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          } catch {
+            // Ignore capture failures in unsupported environments.
+          }
+        }
       }
     : undefined;
-  const handlePointerLeave = onDragEndInteraction
+  const handlePointerLeave = onDragStartInteraction || onDragEndInteraction
     ? (event: React.PointerEvent<SVGGElement>) => {
-        handleTrigger(onDragEndInteraction, "onDragEnd");
+        const wasDragging = prototypePointerCallbacks?.onPointerEnd(node.id, event.pointerId) ?? false;
+        if (wasDragging && onDragEndInteraction) {
+          handleTrigger(onDragEndInteraction, "onDragEnd");
+        }
+      }
+    : undefined;
+  const handlePointerCancel = onDragStartInteraction || onDragEndInteraction
+    ? (event: React.PointerEvent<SVGGElement>) => {
+        prototypePointerCallbacks?.onPointerEnd(node.id, event.pointerId);
       }
     : undefined;
   const cursor =
@@ -2223,7 +2335,7 @@ function renderNodeTree(
         ? "pointer"
         : undefined;
   const blendMode = node.style.blendMode && node.style.blendMode !== "normal" ? node.style.blendMode : undefined;
-  const filterId = resolveEffects(doc, node).length ? getEffectFilterId("rt-effect", node.id) : undefined;
+  const filterId = resolveEffects(doc, node, variableRuntime).length ? getEffectFilterId("rt-effect", node.id) : undefined;
   const isCheckboxBox = role?.type === "checkbox" && role.role === "box";
   const isToggleTrack = role?.type === "toggle" && role.role === "track";
   const isToggleKnob = role?.type === "toggle" && role.role === "knob";
@@ -2459,7 +2571,27 @@ function renderNodeTree(
     </>
   );
 
-  const pointerEventsValue = isFilePlaceholder ? "none" : !interactive ? undefined : isDisabledControl ? "none" : "all";
+  const parentNode = node.parentId ? doc.nodes[node.parentId] : null;
+  const parentClickInteraction = Boolean(
+    parentNode?.prototype?.interactions?.some((interaction) => interaction.trigger === "click"),
+  );
+  const parentRootRole = parentNode ? controlRoles?.[parentNode.id] ?? controlRootMap?.[parentNode.id] : undefined;
+  const passPointerEventsToParent =
+    node.type === "text" &&
+    Boolean(parentNode) &&
+    (parentClickInteraction ||
+      parentRootRole?.type === "choice" ||
+      parentRootRole?.type === "checkbox" ||
+      parentRootRole?.type === "toggle");
+  const pointerEventsValue = passPointerEventsToParent
+    ? "none"
+    : isFilePlaceholder
+      ? "none"
+      : !interactive
+        ? undefined
+        : isDisabledControl
+          ? "none"
+          : "all";
   return (
     <g
       key={node.id}
@@ -2476,8 +2608,10 @@ function renderNodeTree(
       onFocus={handleFocus}
       onBlur={handleBlur}
       onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerLeave}
+      onPointerCancel={handlePointerCancel}
       tabIndex={interactive && (isTooltipGroup || isSkipLink || isKeyboardFocusable) ? 0 : undefined}
       onKeyDown={handleKeyDown}
       aria-label={skipLabel}
@@ -2581,26 +2715,51 @@ export default function RuntimeRenderer({
     }),
     [activeSubmitButtonFill, activeSubmitButtonTextFill],
   );
-  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const dragTracksRef = useRef<Map<string, { pointerId: number; startX: number; startY: number; dragging: boolean }>>(new Map());
   const [hoveredTooltipGroupId, setHoveredTooltipGroupId] = useState<string | null>(null);
   const tooltipTimeoutRef = useRef<number | null>(null);
   const tooltipTimeoutMs = resolveTooltipTimeout(variableRuntime);
   const handleWhileHoverEnter = useCallback<WhileHoverCallbacks["onEnter"]>(
     (interaction, nodeId, pageId) => {
-      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      const existing = hoverTimeoutsRef.current.get(nodeId);
+      if (existing) {
+        clearTimeout(existing);
+        hoverTimeoutsRef.current.delete(nodeId);
+      }
       const delay = interaction.hoverDelayMs ?? 0;
-      hoverTimeoutRef.current = setTimeout(() => {
-        hoverTimeoutRef.current = null;
+      const timeout = setTimeout(() => {
+        hoverTimeoutsRef.current.delete(nodeId);
         onNavigate?.({ pageId, nodeId, trigger: "whileHover", action: interaction.action });
       }, delay);
+      hoverTimeoutsRef.current.set(nodeId, timeout);
     },
     [onNavigate],
   );
-  const handleWhileHoverLeave = useCallback<WhileHoverCallbacks["onLeave"]>(() => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
+  const handleWhileHoverLeave = useCallback<WhileHoverCallbacks["onLeave"]>((nodeId) => {
+    const existing = hoverTimeoutsRef.current.get(nodeId);
+    if (existing) {
+      clearTimeout(existing);
+      hoverTimeoutsRef.current.delete(nodeId);
     }
+  }, []);
+  const handlePrototypePointerDown = useCallback<PrototypePointerCallbacks["onPointerDown"]>((nodeId, pointerId, clientX, clientY) => {
+    dragTracksRef.current.set(nodeId, { pointerId, startX: clientX, startY: clientY, dragging: false });
+  }, []);
+  const handlePrototypePointerMove = useCallback<PrototypePointerCallbacks["onPointerMove"]>((nodeId, pointerId, clientX, clientY) => {
+    const track = dragTracksRef.current.get(nodeId);
+    if (!track || track.pointerId !== pointerId || track.dragging) return false;
+    const dx = clientX - track.startX;
+    const dy = clientY - track.startY;
+    if (Math.hypot(dx, dy) < 6) return false;
+    dragTracksRef.current.set(nodeId, { ...track, dragging: true });
+    return true;
+  }, []);
+  const handlePrototypePointerEnd = useCallback<PrototypePointerCallbacks["onPointerEnd"]>((nodeId, pointerId) => {
+    const track = dragTracksRef.current.get(nodeId);
+    if (!track || track.pointerId !== pointerId) return false;
+    dragTracksRef.current.delete(nodeId);
+    return track.dragging;
   }, []);
   const whileHoverCallbacks = useMemo<WhileHoverCallbacks>(
     () => ({
@@ -2609,6 +2768,20 @@ export default function RuntimeRenderer({
     }),
     [handleWhileHoverEnter, handleWhileHoverLeave],
   );
+  const prototypePointerCallbacks = useMemo<PrototypePointerCallbacks>(
+    () => ({
+      onPointerDown: handlePrototypePointerDown,
+      onPointerMove: handlePrototypePointerMove,
+      onPointerEnd: handlePrototypePointerEnd,
+    }),
+    [handlePrototypePointerDown, handlePrototypePointerMove, handlePrototypePointerEnd],
+  );
+
+  useEffect(() => () => {
+    hoverTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
+    hoverTimeoutsRef.current.clear();
+    dragTracksRef.current.clear();
+  }, []);
 
   useEffect(() => {
     if (!interactive) return;
@@ -2660,6 +2833,7 @@ export default function RuntimeRenderer({
           appPageId,
           undefined,
           whileHoverCallbacks,
+          prototypePointerCallbacks,
           { hoveredId: hoveredTooltipGroupId, setHoveredId: setHoveredTooltipGroupId },
           null,
           getLibraryDoc,

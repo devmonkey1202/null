@@ -89,7 +89,9 @@ export type BindingDecision =
   | { mode: "list"; params: URLSearchParams }
   | { mode: "query"; payload: QueryInput };
 
-export function buildBindingDecision(binding: NodeDataBinding, overrides?: OverrideBag): BindingDecision {
+export type CollectionNodeDataBinding = Extract<NodeDataBinding, { type: "collection" }>;
+
+export function buildBindingDecision(binding: CollectionNodeDataBinding, overrides?: OverrideBag): BindingDecision {
   const overrideBag = overrides ?? {};
   const limit = resolveLimit(overrideBag, binding.limit);
   const offset = resolveOffset(overrideBag, binding.offset);

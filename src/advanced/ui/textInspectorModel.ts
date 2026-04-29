@@ -16,6 +16,19 @@ export const TEXT_PATH_PRESETS = {
   line: "M 12 40 L 208 40",
 } as const;
 
+export const OPEN_TYPE_FEATURE_PRESETS = [
+  { tag: "liga", label: "Ligatures" },
+  { tag: "kern", label: "Kerning" },
+  { tag: "smcp", label: "Small Caps" },
+  { tag: "calt", label: "Contextual" },
+  { tag: "onum", label: "Oldstyle" },
+  { tag: "tnum", label: "Tabular" },
+  { tag: "zero", label: "Slashed Zero" },
+  { tag: "ss01", label: "Stylistic 01" },
+] as const;
+
+export type OpenTypeFeatureTag = (typeof OPEN_TYPE_FEATURE_PRESETS)[number]["tag"];
+
 function cloneTextRange(range: TextRange): TextRange {
   return {
     start: range.start,
@@ -48,6 +61,55 @@ function cleanStyleBindings(bindings: TextStyleVariableBindings | undefined) {
   if (!bindings) return undefined;
   const next = Object.fromEntries(Object.entries(bindings).filter(([, value]) => Boolean(value))) as TextStyleVariableBindings;
   return Object.keys(next).length ? next : undefined;
+}
+
+export function parseFontFeatureSettings(value: string | undefined) {
+  const source = value?.trim();
+  const features = new Map<string, number>();
+  if (!source) return features;
+  const pattern = /"([A-Za-z0-9]{4})"\s*([+-]?\d+(?:\.\d+)?)?/g;
+  let match: RegExpExecArray | null = null;
+  while ((match = pattern.exec(source))) {
+    const tag = match[1]?.trim();
+    if (!tag) continue;
+    const rawValue = match[2];
+    features.set(tag, rawValue == null ? 1 : Number(rawValue));
+  }
+  return features;
+}
+
+export function stringifyFontFeatureSettings(features: Map<string, number>) {
+  return Array.from(features.entries())
+    .filter(([, value]) => Number.isFinite(value) && value !== 0)
+    .map(([tag, value]) => `"${tag}" ${value}`)
+    .join(", ") || undefined;
+}
+
+export function hasTextStyleOpenTypeFeature(style: Partial<TextStyle> | null | undefined, tag: string) {
+  const features = parseFontFeatureSettings(style?.fontFeatureSettings);
+  return (features.get(tag) ?? 0) !== 0;
+}
+
+export function toggleNodeTextOpenTypeFeature(
+  text: NodeText | undefined,
+  tag: string,
+  enabled?: boolean,
+): NodeText {
+  const base = ensureNodeText(text);
+  const features = parseFontFeatureSettings(base.style.fontFeatureSettings);
+  const nextEnabled = enabled ?? !hasTextStyleOpenTypeFeature(base.style, tag);
+  if (nextEnabled) {
+    features.set(tag, 1);
+  } else {
+    features.delete(tag);
+  }
+  return {
+    ...base,
+    style: {
+      ...base.style,
+      fontFeatureSettings: stringifyFontFeatureSettings(features),
+    },
+  };
 }
 
 function cleanTextPath(textPath: TextPath | undefined): TextPath | undefined {

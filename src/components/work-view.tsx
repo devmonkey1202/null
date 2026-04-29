@@ -79,7 +79,6 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
   const [contentV2, setContentV2] = useState<CanvasContentV2 | null>(null);
   const [doc, setDoc] = useState<CanvasDocument>({ ...DEFAULT_CANVAS, nodes: [...DEFAULT_CANVAS.nodes] });
   const [advancedDoc, setAdvancedDoc] = useState<SerializableDoc | null>(null);
-  const [advancedSize, setAdvancedSize] = useState<{ width: number; height: number } | null>(null);
   const [advancedPageId, setAdvancedPageId] = useState<string | null>(null);
   const [runtimeState, setRuntimeState] = useState<Record<string, unknown>>({});
   const setRuntimeStatePatch = useCallback((patch: Record<string, unknown>) => {
@@ -136,6 +135,7 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
 
   const [pageLoadError, setPageLoadError] = useState<"not_found" | "error" | null>(null);
   const [pageLoading, setPageLoading] = useState(true);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [spikes, setSpikes] = useState<Spike[] | null>(null);
   const [spikesBlocked, setSpikesBlocked] = useState(false);
   const [stats, setStats] = useState<{
@@ -178,11 +178,18 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
 
   const [tick, setTick] = useState(0);
   const progress = useMemo(() => ((tick * TICK_MS) % LOOP_MS) / LOOP_MS, [tick]);
+  const advancedSize = useMemo(
+    () => (advancedDoc ? getAdvancedCanvasSize(advancedDoc, advancedPageId) : null),
+    [advancedDoc, advancedPageId],
+  );
 
   useEffect(() => {
     let cancelled = false;
-    setPageLoadError(null);
-    setPageLoading(true);
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setPageLoadError(null);
+      setPageLoading(true);
+    });
 
     fetch(`/api/pages/${pageId}`)
       .then((res) => {
@@ -218,12 +225,10 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
           setContentV2(null);
           setAdvancedDoc(advanced);
           setAdvancedPageId(startPageId);
-          setAdvancedSize(getAdvancedCanvasSize(advanced, startPageId));
           return;
         }
 
         setAdvancedDoc(null);
-        setAdvancedSize(null);
         setAdvancedPageId(null);
         const normalized = normalizeContentToV2(rawContent);
         setContentV2(normalized);
@@ -246,17 +251,16 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
   useEffect(() => {
     if (!contentV2) return;
     const scene = pickScene(contentV2, sceneParam);
-    setDoc(toDocument(scene));
+    Promise.resolve().then(() => {
+      setDoc(toDocument(scene));
+    });
   }, [contentV2, sceneParam]);
 
   useEffect(() => {
-    setRuntimeState({});
+    Promise.resolve().then(() => {
+      setRuntimeState({});
+    });
   }, [pageId, sceneParam]);
-
-  useEffect(() => {
-    if (!advancedDoc) return;
-    setAdvancedSize(getAdvancedCanvasSize(advancedDoc, advancedPageId));
-  }, [advancedDoc, advancedPageId]);
 
   useEffect(() => {
     if (standalone) return;
@@ -422,7 +426,7 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [pageId, standalone, toast]);
+  }, [pageId, socketQuery, standalone, toast]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -435,6 +439,11 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
 
   useEffect(() => {
     const interval = setInterval(() => setTick((prev) => prev + 1), TICK_MS);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -582,10 +591,11 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
     };
   }, [standalone]);
 
-  const remainingMs = expiresAt ? new Date(expiresAt).getTime() - Date.now() : 0;
+  const remainingMs = expiresAt ? new Date(expiresAt).getTime() - nowMs : 0;
   const isExpired = remainingMs <= 0;
   const displayTitle = title || (anonNumber ? `익명 작품 #${anonNumber}` : "익명 작품");
   const presenceLabel = viewerCount <= 1 ? "현재 관람자 1명" : `현재 관람자 ${viewerCount}명`;
+  const advancedPages = advancedDoc?.pages ?? [];
   const canvasWidth = advancedSize?.width ?? doc.width;
   const canvasHeight = advancedSize?.height ?? doc.height;
   const replayEnabled = stats?.replay_enabled ?? false;
@@ -704,42 +714,61 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
 
   if (standalone) {
     return (
-      <div className="min-h-screen overflow-auto bg-white">
-        <div className="flex min-h-full w-full items-start justify-center p-0">
-              {pageLoading ? (
-                <div
-                  className="relative min-h-[400px] w-full max-w-[375px] animate-pulse rounded-[14px] bg-[#EAEAEA]"
-                  aria-busy="true"
-                  aria-label="로딩 중"
-                />
-              ) : (
-            <div
-              ref={canvasRef}
-              className="relative"
-              style={{ width: canvasWidth, height: canvasHeight }}
-            >
-              {advancedDoc ? (
-                <div className="absolute inset-0">
-                  <AdvancedRuntimePlayer
-                    doc={advancedDoc}
-                    initialPageId={advancedPageId ?? undefined}
-                    initialQueryParams={initialQueryParams}
-                    appPageId={pageId}
-                    onPageChange={onAdvancedPageChange}
-                    className="relative h-full w-full"
-                    fitToContent
-                  />
-                </div>
-              ) : (
-                <CanvasRender
-                  doc={doc}
-                  interactive
-                  runtime={{ state: runtimeState, setState: setRuntimeStatePatch, onAction: onCanvasAction }}
-                  className="absolute inset-0 shadow-none"
-                />
-              )}
+      <div className="min-h-screen overflow-auto bg-[#F8FAFC]">
+        <div className="flex min-h-full w-full flex-col items-center justify-start px-4 py-6">
+          {advancedPages.length > 1 ? (
+            <div className="mb-4 flex w-full max-w-[1680px] flex-wrap gap-2 rounded-[18px] border border-[#E2E8F0] bg-white/90 p-3 shadow-[0_10px_28px_rgba(15,23,42,0.06)] backdrop-blur">
+              {advancedPages.map((page) => {
+                const active = page.id === advancedPageId;
+                return (
+                  <button
+                    key={page.id}
+                    type="button"
+                    onClick={() => setAdvancedPageId(page.id)}
+                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                      active
+                        ? "bg-[#1D4ED8] text-white shadow-[0_8px_20px_rgba(29,78,216,0.28)]"
+                        : "border border-[#E2E8F0] bg-white text-[#334155] hover:border-[#BFDBFE] hover:text-[#1D4ED8]"
+                    }`}
+                  >
+                    {page.name}
+                  </button>
+                );
+              })}
             </div>
-          )}
+          ) : null}
+          <div className="flex min-h-full w-full items-start justify-center p-0">
+            {pageLoading ? (
+              <div
+                className="relative min-h-[400px] w-full max-w-[375px] animate-pulse rounded-[14px] bg-[#EAEAEA]"
+                aria-busy="true"
+                aria-label="로딩 중"
+              />
+            ) : (
+              <div ref={canvasRef} className="relative" style={{ width: canvasWidth, height: canvasHeight }}>
+                {advancedDoc ? (
+                  <div className="absolute inset-0">
+                    <AdvancedRuntimePlayer
+                      doc={advancedDoc}
+                      initialPageId={advancedPageId ?? undefined}
+                      initialQueryParams={initialQueryParams}
+                      appPageId={pageId}
+                      onPageChange={onAdvancedPageChange}
+                      className="relative h-full w-full"
+                      fitToContent
+                    />
+                  </div>
+                ) : (
+                  <CanvasRender
+                    doc={doc}
+                    interactive
+                    runtime={{ state: runtimeState, setState: setRuntimeStatePatch, onAction: onCanvasAction }}
+                    className="absolute inset-0 shadow-none"
+                  />
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -855,6 +884,31 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
             <PageActions pageId={pageId} initialUpvotes={upvotes} />
           </div>
         </header>
+
+        {advancedPages.length > 1 ? (
+          <section className="rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 py-3 shadow-[0_2px_8px_rgba(0,0,0,0.03)]">
+            <div className="mb-2 text-[11px] font-semibold text-[#64748B]">페이지 전환</div>
+            <div className="flex flex-wrap gap-2">
+              {advancedPages.map((page) => {
+                const active = page.id === advancedPageId;
+                return (
+                  <button
+                    key={page.id}
+                    type="button"
+                    onClick={() => setAdvancedPageId(page.id)}
+                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                      active
+                        ? "bg-[#1D4ED8] text-white shadow-[0_8px_20px_rgba(29,78,216,0.18)]"
+                        : "border border-[#E2E8F0] bg-white text-[#334155] hover:border-[#BFDBFE] hover:text-[#1D4ED8]"
+                    }`}
+                  >
+                    {page.name}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
 
         <section className="rounded-[14px] border border-[#EAEAEA] bg-white px-4 py-3 text-xs text-[#666666] shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
           <div className="flex flex-wrap items-center gap-3">

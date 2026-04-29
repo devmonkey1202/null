@@ -47,6 +47,7 @@ import type {
   Variable,
   VariableType,
   TextStyleVariableBindings,
+  BlendMode,
 } from "@/advanced/doc/scene";
 import { createNode, createDoc, serializeDoc as sceneSerializeDoc, DEFAULT_TEXT_STYLE } from "@/advanced/doc/scene";
 import { parseGridTrackSizingInput } from "@/advanced/layout/autoLayoutGrid";
@@ -596,46 +597,72 @@ function convertStrokes(
     });
 }
 
-function convertEffects(effects: FigmaEffect[] | undefined): Effect[] {
+function convertEffects(effects: FigmaEffect[] | undefined, context?: FigmaImportContext): Effect[] {
   if (!effects || effects.length === 0) return [];
   const out: Effect[] = [];
   for (const e of effects) {
     if ("visible" in e && e.visible === false) continue;
     if (e.type === "DROP_SHADOW") {
       const offset = "offset" in e ? e.offset : undefined;
+      const bindings = e.boundVariables;
       out.push({
         type: "shadow",
         x: offset?.x ?? 0,
         y: offset?.y ?? 0,
         blur: e.radius ?? 0,
         color: rgbaToHex(e.color),
-        opacity: 1,
+        opacity: typeof e.color?.a === "number" ? e.color.a : 1,
+        xRef: resolveImportedVariableRef(bindings?.offsetX, context, "number"),
+        yRef: resolveImportedVariableRef(bindings?.offsetY, context, "number"),
+        blurRef: resolveImportedVariableRef(bindings?.radius, context, "number"),
+        colorRef: resolveImportedVariableRef(bindings?.color, context, "color"),
       });
     } else if (e.type === "INNER_SHADOW" || (e as FigmaEffect & { type?: string }).type === "INNER_SHADOW") {
       const offset = "offset" in e ? e.offset : undefined;
       const color = "color" in e ? rgbaToHex(e.color) : "#000000";
+      const bindings = ("boundVariables" in e ? e.boundVariables : undefined) as
+        | { color?: FigmaVariableAlias; radius?: FigmaVariableAlias; offsetX?: FigmaVariableAlias; offsetY?: FigmaVariableAlias }
+        | undefined;
       out.push({
         type: "shadow",
         x: offset?.x ?? 0,
         y: offset?.y ?? 0,
         blur: e.radius ?? 0,
         color,
-        opacity: 1,
+        opacity: "color" in e && typeof e.color?.a === "number" ? e.color.a : 1,
+        xRef: resolveImportedVariableRef(bindings?.offsetX, context, "number"),
+        yRef: resolveImportedVariableRef(bindings?.offsetY, context, "number"),
+        blurRef: resolveImportedVariableRef(bindings?.radius, context, "number"),
+        colorRef: resolveImportedVariableRef(bindings?.color, context, "color"),
       });
     } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
-      out.push({ type: "blur", blur: e.radius ?? 0 });
+      out.push({
+        type: "blur",
+        blur: e.radius ?? 0,
+        blurRef: resolveImportedVariableRef(e.boundVariables?.radius, context, "number"),
+      });
     }
   }
   return out;
 }
 
-const BLEND_MAP: Record<string, "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten"> = {
+const BLEND_MAP: Record<string, BlendMode> = {
   NORMAL: "normal",
   MULTIPLY: "multiply",
   SCREEN: "screen",
   OVERLAY: "overlay",
   DARKEN: "darken",
   LIGHTEN: "lighten",
+  COLOR_BURN: "color-burn",
+  COLOR_DODGE: "color-dodge",
+  HARD_LIGHT: "hard-light",
+  SOFT_LIGHT: "soft-light",
+  DIFFERENCE: "difference",
+  EXCLUSION: "exclusion",
+  HUE: "hue",
+  SATURATION: "saturation",
+  COLOR: "color",
+  LUMINOSITY: "luminosity",
 };
 
 function convertStrokeCap(cap: string | undefined): NodeStyle["strokeCap"] {
@@ -675,7 +702,7 @@ function convertExportSettings(
 function convertStyle(fNode: FigmaNode, context?: FigmaImportContext): Partial<NodeStyle> {
   const fills = convertFills(fNode.fills, context);
   const strokes = convertStrokes(fNode.strokes, fNode.strokeWeight, fNode.strokeAlign, fNode.strokeDashes);
-  const effects = convertEffects(fNode.effects);
+  const effects = convertEffects(fNode.effects, context);
   const opacity = fNode.opacity ?? 1;
   const blendMode = BLEND_MAP[fNode.blendMode ?? "NORMAL"] ?? "normal";
 

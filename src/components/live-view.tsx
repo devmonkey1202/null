@@ -58,7 +58,7 @@ function getAdvancedCanvasSize(doc: SerializableDoc | null, pageId?: string | nu
 }
 
 export default function LiveView({ pageId }: { pageId: string }) {
-  const [contentV2, setContentV2] = useState<CanvasContentV2 | null>(null);
+  const [, setContentV2] = useState<CanvasContentV2 | null>(null);
   const [doc, setDoc] = useState<CanvasDocument>({ ...DEFAULT_CANVAS, nodes: [...DEFAULT_CANVAS.nodes] });
   const [advancedDoc, setAdvancedDoc] = useState<SerializableDoc | null>(null);
   const [advancedPageId, setAdvancedPageId] = useState<string | null>(null);
@@ -156,6 +156,7 @@ export default function LiveView({ pageId }: { pageId: string }) {
     () => (advancedDoc ? getAdvancedCanvasSize(advancedDoc, advancedPageId) : null),
     [advancedDoc, advancedPageId],
   );
+  const advancedPages = advancedDoc?.pages ?? [];
 
   useEffect(() => {
     let cancelled = false;
@@ -444,6 +445,31 @@ export default function LiveView({ pageId }: { pageId: string }) {
             <PageActions pageId={pageId} initialUpvotes={upvotes} />
           </div>
         </header>
+
+        {advancedPages.length > 1 ? (
+          <section className="rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 py-3 shadow-[0_2px_8px_rgba(0,0,0,0.03)]">
+            <div className="mb-2 text-[11px] font-semibold text-[#64748B]">페이지 전환</div>
+            <div className="flex flex-wrap gap-2">
+              {advancedPages.map((page) => {
+                const active = page.id === advancedPageId;
+                return (
+                  <button
+                    key={page.id}
+                    type="button"
+                    onClick={() => setAdvancedPageId(page.id)}
+                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                      active
+                        ? "bg-[#1D4ED8] text-white shadow-[0_8px_20px_rgba(29,78,216,0.18)]"
+                        : "border border-[#E2E8F0] bg-white text-[#334155] hover:border-[#BFDBFE] hover:text-[#1D4ED8]"
+                    }`}
+                  >
+                    {page.name}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
 
         <section className="relative w-full overflow-auto rounded-[14px] border border-[#EAEAEA] bg-white shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
           {pageLoading ? (

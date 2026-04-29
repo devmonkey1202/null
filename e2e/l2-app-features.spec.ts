@@ -1,7 +1,7 @@
 ﻿import { test, expect, APIRequestContext } from "@playwright/test";
 import { createHmac } from "crypto";
 
-const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
+const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3101";
 
 async function initAnon(request: APIRequestContext): Promise<string> {
   const ip = `127.0.0.${Math.floor(Math.random() * 200) + 20}`;
@@ -37,7 +37,6 @@ test.describe.serial("L2 App feature scenarios", () => {
   let formWorkflowId = "";
   let webhookWorkflowId = "";
   let appToken = "";
-  let appUserId = "";
   const webhookSecret = "l2_webhook_secret_123456";
 
   test.beforeAll(async ({ request }) => {
@@ -98,7 +97,6 @@ test.describe.serial("L2 App feature scenarios", () => {
     expect(registerRes.ok()).toBeTruthy();
     const registerData = await registerRes.json();
     appToken = registerData?.token ?? "";
-    appUserId = registerData?.user?.id ?? "";
     expect(appToken).toBeTruthy();
 
     const loginRes = await request.post(`${BASE}/api/app/${pageId}/auth/login`, {
@@ -180,6 +178,7 @@ test.describe.serial("L2 App feature scenarios", () => {
     const plugin = {
       id: "l2-plugin",
       name: "L2 Plugin",
+      permissions: ["network"],
       actions: [
         { id: "open-home", label: "Open Home", type: "openUrl", url: "https://example.com" },
       ],
@@ -187,7 +186,7 @@ test.describe.serial("L2 App feature scenarios", () => {
 
     const addRes = await request.post(`${BASE}/api/app/${pageId}/plugins`, {
       headers,
-      data: JSON.stringify({ plugin }),
+      data: JSON.stringify({ plugin, consent: true }),
     });
     expect(addRes.ok()).toBeTruthy();
 
@@ -200,6 +199,7 @@ test.describe.serial("L2 App feature scenarios", () => {
     const updateRes = await request.put(`${BASE}/api/app/${pageId}/plugins`, {
       headers,
       data: JSON.stringify({
+        consent: true,
         plugins: [
           {
             ...plugin,

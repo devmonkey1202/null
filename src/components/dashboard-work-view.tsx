@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ReportBuilderPanel } from "@/components/dashboard/report-builder-panel";
 import { HeatmapGrid, MetricCard, ScrollDepthBars } from "@/components/dashboard/report-widgets";
 import NullSpinner from "@/components/null-spinner";
+import { withAnonHeaders } from "@/lib/anon-client";
 
 type PageData = {
   page: {
@@ -251,6 +252,14 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
         return "미확인";
     }
   };
+
+  const fetch = useCallback((input: string, init?: RequestInit) => {
+    return globalThis.fetch(input, {
+      ...init,
+      credentials: "include",
+      headers: withAnonHeaders(init?.headers),
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || !pageId) return;
@@ -603,13 +612,6 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
     if (data?.page) fetchHostingSettings();
   }, [data?.page, fetchHostingSettings]);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setHostingStatus(null);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setHostingStatusMessage(null);
-  }, [hostingSettings.customDomain]);
-
   const fetchMobileSettings = useCallback(() => {
     if (!pageId) return;
     setMobileLoading(true);
@@ -719,8 +721,8 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
   );
 
   const saveAppUserRole = useCallback(
-    (userId: string) => {
-      const role = appUserRoles[userId];
+    (userId: string, nextRole?: string) => {
+      const role = (nextRole ?? appUserRoles[userId] ?? "").trim();
       if (!role) return;
       setAppUsersSaving((prev) => ({ ...prev, [userId]: true }));
       setAppUsersMessage(null);
@@ -947,14 +949,14 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-[#0a0a0a]">
+      <div className="dashboard-work-shell min-h-screen bg-white">
         <div className="mx-auto max-w-lg px-6 py-24 text-center">
-          <p className="text-[#a1a1a1]">
+          <p className="text-[#5a6472]">
             {error === "not_found" ? "작품을 찾을 수 없습니다." : "일시적인 오류입니다."}
           </p>
           <Link
             href="/dashboard"
-            className="mt-6 inline-block rounded-full border border-[#333] bg-transparent px-5 py-2.5 text-sm font-medium text-white hover:border-white/30 hover:bg-white/5"
+            className="mt-6 inline-block rounded-full border border-black/10 bg-white px-5 py-2.5 text-sm font-medium text-[#111111] hover:bg-black/[0.04]"
           >
             대시보드로 돌아가기
           </Link>
@@ -965,7 +967,7 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
 
   if (!data) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#0a0a0a]">
+      <div className="dashboard-work-shell flex min-h-screen items-center justify-center bg-white">
         <NullSpinner />
       </div>
     );
@@ -978,21 +980,42 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
   const summary = analytics?.summary;
   const daily = analytics?.daily ?? [];
   const maxVisits = daily.length ? Math.max(1, ...daily.map((d) => d.visits)) : 1;
+  const totalVisits = summary?.visits ?? p.total_visits;
+  const totalClicks = summary?.clicks ?? p.total_clicks;
+  const averageDurationSeconds = Math.round((summary?.avg_duration_ms ?? p.avg_duration_ms) / 1000);
+  const bounceRatePercent = Math.round((summary?.bounce_rate ?? p.bounce_rate ?? 0) * 100);
+  const liveExpiresLabel = p.live_expires_at
+    ? new Date(p.live_expires_at).toLocaleString("ko-KR", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "미설정";
+  const dashboardSignals = [
+    totalVisits === 0 ? "아직 유입이 없습니다. 공개 후 라이브와 공개 URL을 함께 확인해 주세요." : null,
+    totalVisits > 0 && totalClicks === 0 ? "유입은 있지만 클릭이 없습니다. 첫 화면 CTA와 상단 메시지를 먼저 점검해 주세요." : null,
+    bounceRatePercent >= 80 ? `이탈률이 ${bounceRatePercent}%로 높습니다. 첫 화면과 메시지 구조를 우선 점검해 주세요.` : null,
+    stats?.visits_60s ? `최근 60초 방문 ${stats.visits_60s}건이 감지되었습니다.` : null,
+    stats?.clicks_10s ? `최근 10초 클릭 ${stats.clicks_10s}건이 감지되었습니다.` : null,
+    isLive && !isDeployed ? "라이브는 열려 있지만 배포 URL은 아직 비활성 상태입니다." : null,
+    !isLive ? "아직 라이브를 시작하지 않았습니다. 공개 흐름 테스트 전 라이브 시작 여부를 먼저 확인해 주세요." : null,
+  ].filter(Boolean) as string[];
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white">
-      <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
+    <div className="dashboard-work-shell min-h-screen bg-white text-[#151515]">
+      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
         {/* Header */}
-        <header className="mb-10">
+        <header className="mb-8 rounded-[24px] border border-black/[0.08] bg-white/[0.88] p-5 shadow-[0_18px_54px_rgba(15,23,42,0.07)] backdrop-blur-xl sm:p-6">
           <Link
             href="/dashboard"
-            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[#737373] transition hover:text-white"
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[#5a6472] transition hover:text-[#111111]"
           >
             <span aria-hidden>←</span> 대시보드
           </Link>
-          <div className="mt-4 flex flex-wrap items-start justify-between gap-6">
+          <div className="mt-4 grid gap-5 lg:grid-cols-[1fr_auto] lg:items-end">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
+              <h1 className="text-3xl font-semibold tracking-tight text-[#111111] sm:text-[40px]">{title}</h1>
               <div className="mt-3 flex flex-wrap gap-2">
                 {isLive && (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 py-1 text-xs font-medium text-red-400">
@@ -1012,13 +1035,13 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
                 )}
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
               {!isLive && (
                 <button
                   type="button"
                   onClick={publishLive}
                   disabled={publishing}
-                  className="rounded-full border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-500/20 disabled:opacity-60"
+                  className="rounded-full border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
                 >
                   {publishing ? "라이브 시작 중…" : "라이브 시작"}
                 </button>
@@ -1036,7 +1059,7 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
                 type="button"
                 onClick={() => toggleDeploy(!isDeployed)}
                 disabled={deploying}
-                className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
+                className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
               >
                 {deploying ? "배포 처리 중…" : isDeployed ? "배포 해제" : "배포"}
               </button>
@@ -1053,14 +1076,14 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
               )}
               <a
                 href={`/editor/advanced?pageId=${pageId}`}
-                className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+                className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-[#111111] hover:bg-black/[0.04]"
               >
                 수정
               </a>
               {stats?.replay_enabled && (
                 <a
                   href={`/replay/${pageId}`}
-                  className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+                  className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-[#111111] hover:bg-black/[0.04]"
                 >
                   리플레이
                 </a>
@@ -1076,30 +1099,30 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
         </header>
 
         {/* Report template §31.7 + Period + Export */}
-        <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+        <div className="mb-8 grid gap-3 rounded-[22px] border border-black/[0.08] bg-white/78 p-3 shadow-[0_14px_44px_rgba(15,23,42,0.045)] backdrop-blur-xl xl:grid-cols-[auto_1fr] xl:items-center">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex gap-1 rounded-full bg-white/5 p-1">
+            <div className="flex gap-1 rounded-full border border-black/[0.08] bg-white/75 p-1">
               {(["overview", "conversion", "churn"] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
                   onClick={() => setReportTemplate(t)}
                   className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                    reportTemplate === t ? "bg-white text-black" : "text-white/90 hover:text-white"
+                    reportTemplate === t ? "bg-[#111111] text-white" : "text-[#5a6472] hover:text-[#111111]"
                   }`}
                 >
                   {t === "overview" ? "종합" : t === "conversion" ? "전환" : "이탈"}
                 </button>
               ))}
             </div>
-            <div className="flex gap-1 rounded-full bg-white/5 p-1">
+            <div className="flex gap-1 rounded-full border border-black/[0.08] bg-white/75 p-1">
             {(["today", "7d", "30d"] as const).map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setPeriod(p)}
                 className={`rounded-full px-4 py-2 text-sm font-medium transition ${
-                  period === p ? "bg-white text-black" : "text-white/90 hover:text-white"
+                  period === p ? "bg-[#111111] text-white" : "text-[#5a6472] hover:text-[#111111]"
                 }`}
               >
                 {p === "today" ? "오늘" : p === "7d" ? "7일" : "30일"}
@@ -1107,12 +1130,12 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
             ))}
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 xl:justify-end">
             <button
               type="button"
               onClick={downloadCsv}
               disabled={exporting}
-              className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10 disabled:opacity-50"
+              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium text-[#111111] hover:bg-black/[0.04] disabled:opacity-50"
             >
               {exporting ? "내보내는 중…" : "CSV 내보내기"}
             </button>
@@ -1120,21 +1143,21 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
               type="button"
               onClick={downloadEventsCsv}
               disabled={exportingEvents}
-              className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10 disabled:opacity-50"
+              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium text-[#111111] hover:bg-black/[0.04] disabled:opacity-50"
             >
               {exportingEvents ? "내보내는 중…" : "이벤트 로그 내보내기"}
             </button>
             <button
               type="button"
               onClick={downloadSnapshot}
-              className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium text-[#111111] hover:bg-black/[0.04]"
             >
               스냅샷 다운로드
             </button>
             <button
               type="button"
               onClick={() => window.print()}
-              className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium text-[#111111] hover:bg-black/[0.04]"
             >
               인쇄/PDF
             </button>
@@ -1152,7 +1175,7 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
                   }
                 }
               }}
-              className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium text-[#111111] hover:bg-black/[0.04]"
             >
               {copied ? "복사됨" : "공유 링크 복사"}
             </button>
@@ -1160,6 +1183,72 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
         </div>
 
         {/* §31.7 리포트 빌더: 카드/차트/표/퍼널/히트맵/리플레이 링크 등 구성 */}
+        <section className="mb-8 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+          <article className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.16)]">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#737373]">
+              Operations Snapshot
+            </div>
+            <h2 className="mt-2 text-lg font-semibold text-white">지금 이 프로젝트에서 먼저 봐야 할 상태</h2>
+            <p className="sr-only">
+              공개 상태, 배포 여부, 최근 방문/클릭, 리플레이 가능 여부를 먼저 확인하고 아래 리포트 블록으로
+              내려가면 됩니다.
+            </p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <DashboardSnapshotCard
+                label="공개 상태"
+                value={isLive ? "LIVE" : p.status.toUpperCase()}
+                sub={isLive ? `만료 ${liveExpiresLabel}` : "아직 라이브 전"}
+              />
+              <DashboardSnapshotCard
+                label="배포 상태"
+                value={isDeployed ? "배포됨" : "미배포"}
+                sub={isDeployed ? "공개 URL 접근 가능" : "배포 후 공개 URL 활성화"}
+              />
+              <DashboardSnapshotCard
+                label="최근 요약"
+                value={`${totalVisits} / ${totalClicks}`}
+                sub="방문 / 클릭"
+              />
+              <DashboardSnapshotCard
+                label="평균 체류 / 이탈"
+                value={`${averageDurationSeconds}초 / ${bounceRatePercent}%`}
+                sub="현재 선택 기간 기준"
+              />
+            </div>
+          </article>
+
+          <article className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.16)]">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#737373]">
+              Investigate
+            </div>
+            <h2 className="mt-2 text-lg font-semibold text-white">즉시 이동</h2>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <DashboardRoutePill href={`/dashboard`}>대시보드 목록</DashboardRoutePill>
+              <DashboardRoutePill href={`/editor/advanced?pageId=${pageId}`}>편집</DashboardRoutePill>
+              <DashboardRoutePill href={`/validate/${pageId}`}>검증</DashboardRoutePill>
+              <DashboardRoutePill href={`/p/${pageId}`}>공개</DashboardRoutePill>
+              {isLive ? <DashboardRoutePill href={`/live/${pageId}`}>라이브</DashboardRoutePill> : null}
+              {stats?.replay_enabled ? <DashboardRoutePill href={`/replay/${pageId}`}>리플레이</DashboardRoutePill> : null}
+            </div>
+
+            <div className="mt-5 space-y-2">
+              {dashboardSignals.slice(0, 4).map((signal) => (
+                <div
+                  key={signal}
+                  className="rounded-xl border border-white/8 bg-black/20 px-3 py-2 text-sm leading-5 text-[#d4d4d4]"
+                >
+                  {signal}
+                </div>
+              ))}
+              {dashboardSignals.length === 0 ? (
+                <div className="rounded-xl border border-white/8 bg-black/20 px-3 py-2 text-sm leading-5 text-[#a3a3a3]">
+                  현재 눈에 띄는 경고 신호는 없습니다. 아래 리포트 블록에서 세부 흐름을 확인해 주세요.
+                </div>
+              ) : null}
+            </div>
+          </article>
+        </section>
+
         <ReportBuilderPanel
           open={reportBuilderOpen}
           blockIds={REPORT_BLOCK_IDS}
@@ -1965,7 +2054,10 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
                     />
                     <button
                       type="button"
-                      onClick={() => saveAppUserRole(u.id)}
+                      onClick={(event) => {
+                        const roleInput = event.currentTarget.parentElement?.querySelector('input[type="text"]') as HTMLInputElement | null;
+                        saveAppUserRole(u.id, roleInput?.value ?? u.role);
+                      }}
                       disabled={appUsersSaving[u.id]}
                       className="rounded border border-white/20 px-2 py-1 text-[11px] text-white/90 hover:bg-white/10 disabled:opacity-50"
                     >
@@ -1997,7 +2089,11 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
               <input
                 type="text"
                 value={hostingSettings.customDomain ?? ""}
-                onChange={(e) => setHostingSettings((prev) => ({ ...prev, customDomain: e.target.value }))}
+                onChange={(e) => {
+                  setHostingSettings((prev) => ({ ...prev, customDomain: e.target.value }));
+                  setHostingStatus(null);
+                  setHostingStatusMessage(null);
+                }}
                 placeholder="example.com"
                 className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white placeholder:text-[#525252] focus:border-white/20 focus:outline-none"
               />
@@ -2047,13 +2143,13 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
                   <div className="mt-3 grid gap-2 text-[11px] text-[#a3a3a3]">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>TXT 이름</span>
-                      <code className="rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
+                      <code className="max-w-full break-all rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
                         {hostingSettings.verification.record_name}
                       </code>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <span>TXT 값</span>
-                      <code className="rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
+                      <code className="max-w-full break-all rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
                         {hostingSettings.verification.record_value}
                       </code>
                     </div>
@@ -2113,7 +2209,7 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
                   <span>TXT 인증</span>
                   <span>{matchLabel(hostingStatus.dns?.verification?.matched)}</span>
                   {hostingStatus.dns?.verification?.records?.length ? (
-                    <code className="rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
+                    <code className="max-w-full break-all rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
                       {(hostingStatus.dns?.verification?.records ?? []).join(", ").slice(0, 200)}
                     </code>
                   ) : (
@@ -2123,21 +2219,21 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <span>A 레코드</span>
                   <span>{matchLabel(hostingStatus.dns?.a?.matched)}</span>
-                  <code className="rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
+                  <code className="max-w-full break-all rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
                     {(hostingStatus.dns?.a?.records ?? []).join(", ") || "없음"}
                   </code>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span>AAAA 레코드</span>
                   <span>{matchLabel(hostingStatus.dns?.aaaa?.matched)}</span>
-                  <code className="rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
+                  <code className="max-w-full break-all rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
                     {(hostingStatus.dns?.aaaa?.records ?? []).join(", ") || "없음"}
                   </code>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span>CNAME</span>
                   <span>{matchLabel(hostingStatus.dns?.cname?.matched)}</span>
-                  <code className="rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
+                  <code className="max-w-full break-all rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
                     {(hostingStatus.dns?.cname?.records ?? []).join(", ") || "없음"}
                   </code>
                 </div>
@@ -2169,9 +2265,9 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
             >
               {hostingSaving ? "저장 중…" : "저장"}
             </button>
-            <div className="flex items-center gap-2 text-xs text-[#a3a3a3]">
-              <span>현재 배포 URL</span>
-              <code className="rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-xs text-[#a3a3a3]">
+              <span className="shrink-0">현재 배포 URL</span>
+              <code className="min-w-0 flex-1 break-all rounded-lg bg-white/5 px-2 py-1 text-[11px] text-[#a3a3a3]">
                 {typeof window !== "undefined" ? window.location.origin : ""}/p/{pageId}
               </code>
             </div>
@@ -2302,8 +2398,8 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
         {isDeployed && (
           <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
             <p className="text-[11px] text-[#525252]">배포 URL</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <code className="rounded-lg bg-white/5 px-3 py-2 text-sm text-[#a3a3a3]">
+            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+              <code className="min-w-0 flex-1 break-all rounded-lg bg-white/5 px-3 py-2 text-sm text-[#a3a3a3]">
                 {typeof window !== "undefined" ? window.location.origin : ""}/p/{pageId}
               </code>
               <button
@@ -2324,5 +2420,40 @@ export default function DashboardWorkView({ pageId }: { pageId: string }) {
         )}
       </div>
     </div>
+  );
+}
+
+function DashboardSnapshotCard({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string | number;
+  sub: string;
+}) {
+  return (
+    <div className="rounded-xl border border-white/8 bg-black/20 px-4 py-3">
+      <div className="text-[11px] text-[#737373]">{label}</div>
+      <div className="mt-2 text-lg font-semibold tracking-tight text-white">{value}</div>
+      <div className="mt-1 text-[11px] text-[#525252]">{sub}</div>
+    </div>
+  );
+}
+
+function DashboardRoutePill({
+  href,
+  children,
+}: {
+  href: string;
+  children: string;
+}) {
+  return (
+    <a
+      href={href}
+      className="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/10"
+    >
+      {children}
+    </a>
   );
 }

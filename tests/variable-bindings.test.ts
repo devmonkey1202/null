@@ -29,6 +29,17 @@ describe("variable bindings", () => {
     expect(resolveVariableValue(doc, "color_accent")).toBe("#93c5fd");
   });
 
+  it("resolves overrides written by variable name", () => {
+    const doc = createDoc();
+    doc.variables = [{ id: "ops_release_count", name: "ops_release_count", type: "string", value: "0" }];
+
+    expect(
+      resolveVariableValue(doc, "ops_release_count", {
+        variableOverrides: { ops_release_count: "3" },
+      }),
+    ).toBe("3");
+  });
+
   it("applies text content and style bindings", () => {
     const doc = createDoc();
     doc.variables = [
@@ -58,6 +69,19 @@ describe("variable bindings", () => {
         fontSize: "font_size",
       }),
     ).toMatchObject({ fontSize: 22 });
+  });
+
+  it("resolves plain text that matches a variable name", () => {
+    const doc = createDoc();
+    doc.variables = [{ id: "app_user_email", name: "$app_user.email", type: "string", value: "member@null.local" }];
+
+    const node = createNode("text");
+    node.text = {
+      ...(node.text ?? { value: "", style: { ...DEFAULT_TEXT_STYLE } }),
+      value: "$app_user.email",
+    };
+
+    expect(resolveNodeTextValue(doc, node.text)).toBe("member@null.local");
   });
 
   it("resolves gradient stop colors from color refs", () => {

@@ -13,8 +13,13 @@ import {
 } from "@/advanced/doc/scene";
 import {
   getWebImportViewport,
+  mergeWebImportQueryWithTheme,
+  normalizeWebImportLanguage,
+  normalizeWebImportQuery,
+  normalizeWebImportTheme,
   normalizePublicWebImportUrl,
   type WebImportSource,
+  type WebImportTheme,
   type WebImportViewportId,
 } from "@/lib/webImportShared";
 
@@ -47,6 +52,12 @@ type PublicWebFetchResult = {
   html: string;
 };
 
+type WebImportFetchOptions = {
+  language?: string;
+  query?: string;
+  theme?: WebImportTheme | "";
+};
+
 type WebHtmlToNullDocInput = {
   url: string;
   html: string;
@@ -55,6 +66,9 @@ type WebHtmlToNullDocInput = {
   fileName?: string;
   sourceKind?: WebImportSource["kind"];
   title?: string;
+  language?: string;
+  query?: string;
+  theme?: WebImportTheme | "";
 };
 
 type WebFileToNullDocInput = {
@@ -70,10 +84,31 @@ type HtmlCodeToNullDocInput = {
   title?: string;
 };
 
+type CaptureWebToNullDocInput = {
+  payloadText: string;
+  captureKind: "private-page-capture" | "local-page-capture";
+  viewportId?: WebImportViewportId;
+};
+
+type WebCapturePayload = {
+  url: string;
+  html: string;
+  title?: string;
+  css?: string;
+};
+
 type WebHtmlToNullDocResult = {
   doc: Doc;
   importSource: WebImportSource;
   blockCount: number;
+};
+
+type PublicUrlToNullDocInput = {
+  url: string;
+  viewportId?: WebImportViewportId;
+  language?: string;
+  query?: string;
+  theme?: WebImportTheme | "";
 };
 
 function makeInteractionId(prefix: string) {
@@ -82,6 +117,39 @@ function makeInteractionId(prefix: string) {
 
 function cleanText(raw: string | null | undefined) {
   return (raw ?? "").replace(/\s+/g, " ").trim();
+}
+
+function parseWebCapturePayload(payloadText: string): WebCapturePayload {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch {
+    throw new Error("캡처 payload가 올바른 JSON이 아닙니다.");
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error("캡처 payload가 올바르지 않습니다.");
+  }
+  const url = typeof (payload as { url?: unknown }).url === "string" ? (payload as { url: string }).url.trim() : "";
+  const html = typeof (payload as { html?: unknown }).html === "string" ? (payload as { html: string }).html : "";
+  const title = typeof (payload as { title?: unknown }).title === "string" ? (payload as { title: string }).title.trim() : undefined;
+  const css = typeof (payload as { css?: unknown }).css === "string" ? (payload as { css: string }).css : undefined;
+  if (!url) {
+    throw new Error("캡처 payload에 URL이 없습니다.");
+  }
+  if (!html.trim()) {
+    throw new Error("캡처 payload에 HTML이 없습니다.");
+  }
+  return { url, html, title, css };
+}
+
+function buildConfiguredImportUrl(rawUrl: string, query?: string, theme?: WebImportTheme | "") {
+  const normalized = normalizePublicWebImportUrl(rawUrl);
+  const parsed = new URL(normalized);
+  const normalizedQuery = mergeWebImportQueryWithTheme(query, theme);
+  if (normalizedQuery) {
+    parsed.search = normalizedQuery;
+  }
+  return parsed.toString();
 }
 
 function isIpv4Private(hostname: string) {
@@ -323,8 +391,9 @@ function resolveAssetUrl(src: string, baseUrl: string, assetMap?: Map<string, st
   }
 }
 
-async function fetchPublicWebDocument(rawUrl: string) {
-  const normalizedUrl = normalizePublicWebImportUrl(rawUrl);
+async function fetchPublicWebDocument(rawUrl: string, options: WebImportFetchOptions = {}) {
+  const normalizedUrl = buildConfiguredImportUrl(rawUrl, options.query, options.theme);
+  const normalizedLanguage = normalizeWebImportLanguage(options.language);
   let current = normalizedUrl;
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
     await assertPublicImportUrl(current);
@@ -337,6 +406,7 @@ async function fetchPublicWebDocument(rawUrl: string) {
           "user-agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
           accept: "text/html,application/xhtml+xml",
+          ...(normalizedLanguage ? { "accept-language": normalizedLanguage } : {}),
         },
         signal: controller.signal,
       });
@@ -600,8 +670,13 @@ function buildImportDoc({
   addNode(doc, rootFrame, page.rootId);
 
   const sourceParts = [
-    source.kind === "public-url" ? new URL(source.finalUrl ?? source.normalizedUrl ?? source.url).hostname : source.fileName ?? source.kind,
+    source.kind === "public-url" || source.kind === "public-url-batch"
+      ? new URL(source.finalUrl ?? source.normalizedUrl ?? source.url).hostname
+      : source.fileName ?? source.kind,
     viewport.label,
+    source.language ? `lang=${source.language}` : null,
+    source.query ? `query=${source.query}` : null,
+    source.urls?.length && source.kind === "public-url-batch" ? `${source.urls.length} URLs` : null,
     source.url,
   ].filter(Boolean);
   addNode(
@@ -683,6 +758,143 @@ function buildImportDoc({
   return doc;
 }
 
+function collectSubtreeNodeIds(doc: Doc, rootId: string) {
+  const ids: string[] = [];
+  const stack = [rootId];
+  while (stack.length) {
+    const currentId = stack.pop()!;
+    ids.push(currentId);
+    const current = doc.nodes[currentId];
+    if (!current) continue;
+    for (let index = current.children.length - 1; index >= 0; index -= 1) {
+      stack.push(current.children[index]!);
+    }
+  }
+  return ids;
+}
+
+function appendImportedFrameToDoc(targetDoc: Doc, importedDoc: Doc, frameId: string, x: number, y: number) {
+  const pageRootId = targetDoc.pages[0]!.rootId;
+  const rootNode = importedDoc.nodes[frameId];
+  if (!rootNode) return;
+  const subtreeIds = collectSubtreeNodeIds(importedDoc, frameId);
+  for (const nodeId of subtreeIds) {
+    const original = importedDoc.nodes[nodeId];
+    if (!original) continue;
+    const cloned = JSON.parse(JSON.stringify(original)) as typeof original;
+    if (nodeId === frameId) {
+      cloned.parentId = pageRootId;
+      cloned.frame = { ...cloned.frame, x, y };
+    }
+    targetDoc.nodes[nodeId] = cloned;
+  }
+  targetDoc.nodes[pageRootId]!.children = [...targetDoc.nodes[pageRootId]!.children, frameId];
+}
+
+export async function publicUrlBatchToNullDoc({
+  urls,
+  viewportId,
+  language,
+  query,
+  theme,
+}: {
+  urls: string[];
+  viewportId?: WebImportViewportId;
+  language?: string;
+  query?: string;
+  theme?: WebImportTheme | "";
+}) {
+  const normalizedUrls = Array.from(
+    new Set(
+      urls
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => normalizePublicWebImportUrl(value)),
+    ),
+  );
+  if (!normalizedUrls.length) {
+    throw new Error("가져올 URL을 하나 이상 입력해 주세요.");
+  }
+
+  const importedDocs: Array<Awaited<ReturnType<typeof publicUrlToNullDoc>>> = [];
+  for (const url of normalizedUrls) {
+    importedDocs.push(
+      await publicUrlToNullDoc({
+        url,
+        viewportId,
+        language,
+        query,
+        theme,
+      }),
+    );
+  }
+
+  const doc = createDoc();
+  const page = doc.pages[0];
+  const pageNode = doc.nodes[page.rootId];
+  const resolvedViewport = getWebImportViewport(viewportId).id;
+  const normalizedLanguage = normalizeWebImportLanguage(language) || undefined;
+  const normalizedQuery = normalizeWebImportQuery(query) || undefined;
+  const normalizedTheme = normalizeWebImportTheme(theme) || undefined;
+  page.name = `웹 일괄 가져오기 (${normalizedUrls.length})`;
+  pageNode.name = page.name;
+  pageNode.frame = { ...pageNode.frame, x: 0, y: 0, w: 12000, h: 8000 };
+  pageNode.style = {
+    ...pageNode.style,
+    fills: [{ type: "solid", color: "#FAFAF8" }],
+    strokes: [{ color: "#E5E7EB", width: 1, align: "inside" }],
+  };
+
+  const summary = makeTextNode("웹 일괄 가져오기 정보", `총 ${normalizedUrls.length}개 URL · ${getWebImportViewport(resolvedViewport).label}`, {
+    fontSize: 16,
+    fontWeight: 600,
+    color: "#111827",
+  });
+  summary.frame = { ...summary.frame, x: 320, y: 96, w: 1600, h: 32 };
+  summary.layoutSizing = { width: "fixed", height: "hug" };
+  addNode(doc, summary, page.rootId);
+
+  let cursorX = 320;
+  let cursorY = 160;
+  let rowHeight = 0;
+  for (const imported of importedDocs) {
+    const importedPageRootId = imported.doc.pages[0]!.rootId;
+    const importFrame = imported.doc.nodes[importedPageRootId]?.children
+      .map((id) => imported.doc.nodes[id])
+      .find((node) => node?.type === "frame");
+    if (!importFrame) continue;
+    if (cursorX + importFrame.frame.w > 11200) {
+      cursorX = 320;
+      cursorY += rowHeight + 120;
+      rowHeight = 0;
+    }
+    appendImportedFrameToDoc(doc, imported.doc, importFrame.id, cursorX, cursorY);
+    cursorX += importFrame.frame.w + 120;
+    rowHeight = Math.max(rowHeight, importFrame.frame.h);
+  }
+
+  const importSource: WebImportSource = {
+    kind: "public-url-batch",
+    url: normalizedUrls[0]!,
+    urls: normalizedUrls,
+    normalizedUrl: normalizedUrls[0]!,
+    finalUrl: importedDocs[0]?.importSource.finalUrl ?? normalizedUrls[0]!,
+    viewportId: resolvedViewport,
+    title: page.name,
+    language: normalizedLanguage,
+    query: normalizedQuery,
+    theme: normalizedTheme,
+    importedAt: new Date().toISOString(),
+  };
+  doc.imports = { web: importSource };
+
+  return {
+    doc,
+    importSource,
+    blockCount: importedDocs.reduce((sum, imported) => sum + imported.blockCount, 0),
+  };
+}
+
 export function webHtmlToNullDoc({
   url,
   html,
@@ -691,9 +903,15 @@ export function webHtmlToNullDoc({
   fileName,
   sourceKind = "public-url",
   title: forcedTitle,
+  language,
+  query,
+  theme,
 }: WebHtmlToNullDocInput): WebHtmlToNullDocResult {
   const normalizedUrl = sourceKind === "public-url" ? normalizePublicWebImportUrl(url) : url;
   const resolvedViewport = getWebImportViewport(viewportId).id;
+  const normalizedLanguage = normalizeWebImportLanguage(language) || undefined;
+  const normalizedQuery = normalizeWebImportQuery(query) || undefined;
+  const normalizedTheme = normalizeWebImportTheme(theme) || undefined;
   const dom = new JSDOM(html, { url: finalUrl ?? normalizedUrl });
   const document = dom.window.document;
   const title =
@@ -709,12 +927,15 @@ export function webHtmlToNullDoc({
   const blocks = collectBlocks(dom, finalUrl ?? normalizedUrl);
   const importSource: WebImportSource = {
     kind: sourceKind,
-    url,
+    url: sourceKind === "public-url" ? normalizedUrl : url,
     normalizedUrl: sourceKind === "public-url" ? normalizedUrl : undefined,
     finalUrl: finalUrl ?? normalizedUrl,
     viewportId: resolvedViewport,
     title,
     fileName,
+    language: normalizedLanguage,
+    query: normalizedQuery,
+    theme: normalizedTheme,
     importedAt: new Date().toISOString(),
   };
   return {
@@ -738,6 +959,22 @@ export function htmlCodeToNullDoc({
     finalUrl: `${IMPORT_BASE_URL}inline.html`,
     sourceKind: "html-code",
     title,
+  });
+}
+
+export function captureWebToNullDoc({
+  payloadText,
+  captureKind,
+  viewportId,
+}: CaptureWebToNullDocInput): WebHtmlToNullDocResult {
+  const payload = parseWebCapturePayload(payloadText);
+  return webHtmlToNullDoc({
+    url: payload.url,
+    html: injectCssIntoHtml(payload.html, payload.css ?? ""),
+    viewportId,
+    finalUrl: payload.url,
+    sourceKind: captureKind,
+    title: payload.title,
   });
 }
 
@@ -778,15 +1015,18 @@ export async function webFileToNullDoc({
 export async function publicUrlToNullDoc({
   url,
   viewportId,
-}: {
-  url: string;
-  viewportId?: WebImportViewportId;
-}) {
-  const fetched = await fetchPublicWebDocument(url);
+  language,
+  query,
+  theme,
+}: PublicUrlToNullDocInput) {
+  const fetched = await fetchPublicWebDocument(url, { language, query, theme });
   return webHtmlToNullDoc({
     url: fetched.normalizedUrl,
     html: fetched.html,
     viewportId,
     finalUrl: fetched.finalUrl,
+    language,
+    query,
+    theme,
   });
 }

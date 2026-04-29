@@ -74,6 +74,7 @@ export function summarizePrototypeAction(doc: Doc, pageId: string, action: Proto
   if (action.type === "apiCall") return action.url?.trim() ? `api call -> ${action.method ?? "GET"} ${action.url.trim()}` : "api call";
   if (action.type === "nativeCall") return action.name?.trim() ? `native -> ${action.name.trim()}` : "native call";
   if (action.type === "appAuth") return `auth -> ${action.action}`;
+  if (action.type === "service") return `service -> ${action.action}`;
   return (action as { type: string }).type;
 }
 
@@ -139,6 +140,20 @@ export function diagnosePrototypeInteraction(
 
   if (action.type === "url" && !action.url?.trim()) {
     issues.push({ severity: "warn", message: "url missing" });
+  }
+
+  if (action.type === "service") {
+    if (!action.action?.trim()) {
+      issues.push({ severity: "warn", message: "service action missing" });
+    }
+    if (
+      (action.action === "reservation.transition" ||
+        action.action === "crm.lead.move" ||
+        action.action === "document.decide") &&
+      !action.stateTransition?.to?.trim()
+    ) {
+      issues.push({ severity: "warn", message: "service target state missing" });
+    }
   }
 
   if (

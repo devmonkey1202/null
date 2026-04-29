@@ -8,6 +8,7 @@ import { substituteAlertTemplate } from "@/lib/alert-template";
 import { parseJsonBody } from "@/lib/validation";
 import { logPageAudit } from "@/lib/page-audit";
 import { cloneDevToProd, computeDeployHash, setProdVersionMeta } from "@/lib/app-env";
+import { recordServiceReleaseSnapshot } from "@/lib/service-operations";
 
 type Params = { pageId: string };
 
@@ -132,6 +133,17 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     },
     actor: { userId: page.owner.id, anonId: anonUserId },
   });
+
+  await recordServiceReleaseSnapshot({
+    pageId,
+    environmentKey: "prod",
+    versionId: updated.current_version_id ?? page.current_version_id ?? null,
+    deployHash: deployMeta?.deployHash ?? null,
+    deployUrl: deploy ? deployUrl : null,
+    deployed: deploy,
+    note: deploy ? "page_deploy" : "page_undeploy",
+    actor: { userId: page.owner.id, anonId: anonUserId },
+  }).catch(() => {});
 
   return NextResponse.json({
     ok: true,

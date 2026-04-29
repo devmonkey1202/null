@@ -4,7 +4,6 @@ import { pathDataToBounds, translatePathD } from "./pathData";
 import { applyEditableVectorPathModels, buildEditableVectorPathModels, createEditableVectorPathModel, replaceEditableVectorPathModelPath, vectorNetworkFromEditableVectorPathModels } from "./vectorEditModel";
 import {
   pathDataFromVectorPathId,
-  primaryPathDataFromShape,
   segmentsFromVectorNetwork,
   withDerivedVectorNetwork,
 } from "./vectorNetwork";

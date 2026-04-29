@@ -13,14 +13,18 @@ import {
   ensureNodeText,
   flipTextPathSide,
   getTextRangePreview,
+  hasTextStyleOpenTypeFeature,
   nudgeTextPathOffset,
   patchTextRange,
   patchTextRangeStyle,
+  parseFontFeatureSettings,
   removeTextRange,
   resolveTextMeasurementStyle,
   setNodeTextValue,
+  stringifyFontFeatureSettings,
   setTextPath,
   setTextRangeFill,
+  toggleNodeTextOpenTypeFeature,
 } from "../src/advanced/ui/textInspectorModel";
 
 describe("textInspectorModel", () => {
@@ -180,5 +184,29 @@ describe("textInspectorModel", () => {
         italic: true,
       }),
     );
+  });
+
+  it("parses, stringifies, and toggles OpenType feature settings", () => {
+    const parsed = parseFontFeatureSettings('"liga" 1, "ss01" 1, "kern" 0');
+    expect(parsed.get("liga")).toBe(1);
+    expect(parsed.get("ss01")).toBe(1);
+    expect(parsed.get("kern")).toBe(0);
+
+    const stringified = stringifyFontFeatureSettings(parsed);
+    expect(stringified).toBe('"liga" 1, "ss01" 1');
+
+    const withFeature = toggleNodeTextOpenTypeFeature(
+      {
+        value: "Feature",
+        style: { ...DEFAULT_TEXT_STYLE },
+      },
+      "smcp",
+      true,
+    );
+    expect(hasTextStyleOpenTypeFeature(withFeature.style, "smcp")).toBe(true);
+
+    const cleared = toggleNodeTextOpenTypeFeature(withFeature, "smcp", false);
+    expect(hasTextStyleOpenTypeFeature(cleared.style, "smcp")).toBe(false);
+    expect(cleared.style.fontFeatureSettings).toBeUndefined();
   });
 });

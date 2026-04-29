@@ -6,6 +6,7 @@ import { resolveAnonUserId } from "@/lib/anon";
 import { apiErrorJson } from "@/lib/api-error";
 import { parseJsonBody } from "@/lib/validation";
 import { logPageAudit } from "@/lib/page-audit";
+import { recordServiceBackupSnapshot } from "@/lib/service-operations";
 
 type Params = { pageId: string };
 
@@ -73,6 +74,23 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
     meta: { counts: { versions: versions.length, records: records.length, secrets: secrets.length } },
     actor: { userId: userId ?? null, anonId: anonId ?? null },
   });
+
+  await recordServiceBackupSnapshot({
+    pageId,
+    kind: "export",
+    backupVersion: 1,
+    counts: {
+      versions: versions.length,
+      settings: settings.length,
+      collections: collections.length,
+      records: records.length,
+      secrets: secrets.length,
+      workflows: workflows.length,
+      app_users: appUsers.length,
+    },
+    note: "page_backup_export",
+    actor: { userId: userId ?? null, anonId: anonId ?? null },
+  }).catch(() => {});
 
   return NextResponse.json({
     ok: true,
@@ -428,6 +446,23 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     meta: { restored: true },
     actor: { userId: userId ?? null, anonId: anonId ?? null },
   });
+
+  await recordServiceBackupSnapshot({
+    pageId,
+    kind: "restore",
+    backupVersion: 1,
+    counts: {
+      versions: versions.length,
+      settings: settings.length,
+      collections: collections.length,
+      records: records.length,
+      secrets: secrets.length,
+      workflows: workflows.length,
+      app_users: appUsers.length,
+    },
+    note: "page_backup_restore",
+    actor: { userId: userId ?? null, anonId: anonId ?? null },
+  }).catch(() => {});
 
   return NextResponse.json({ ok: true });
 }

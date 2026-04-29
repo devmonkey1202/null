@@ -41,7 +41,23 @@ const DEFAULT_NODE_NAMES: Record<NodeType, string> = {
   table: "테이블",
 };
 
-export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
+export type BlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "darken"
+  | "lighten"
+  | "color-burn"
+  | "color-dodge"
+  | "hard-light"
+  | "soft-light"
+  | "difference"
+  | "exclusion"
+  | "hue"
+  | "saturation"
+  | "color"
+  | "luminosity";
 
 export type GradientStop = { offset: number; color: string; colorRef?: string };
 
@@ -49,7 +65,17 @@ export type Fill =
   | { type: "solid"; color: string; opacity?: number }
   | { type: "linear"; from: string; to: string; angle: number; opacity?: number; stops?: GradientStop[] }
   | { type: "radial"; from: string; to: string; opacity?: number; stops?: GradientStop[]; cx?: number; cy?: number; r?: number }
-  | { type: "image"; src: string; fit: "cover" | "contain" | "fill" };
+  | {
+      type: "image";
+      src: string;
+      fit: "cover" | "contain" | "fill";
+      scale?: number;
+      offsetX?: number;
+      offsetY?: number;
+      crop?: { x: number; y: number; w: number; h: number };
+      focalX?: number;
+      focalY?: number;
+    };
 
 export type Stroke = {
   color: string;
@@ -59,9 +85,27 @@ export type Stroke = {
 };
 
 export type Effect =
-  | { type: "shadow"; x: number; y: number; blur: number; color: string; opacity?: number }
-  | { type: "blur"; blur: number }
-  | { type: "noise"; amount?: number };
+  | {
+      type: "shadow";
+      x: number;
+      y: number;
+      blur: number;
+      color: string;
+      opacity?: number;
+      xRef?: string;
+      yRef?: string;
+      blurRef?: string;
+      colorRef?: string;
+    }
+  | {
+      type: "blur";
+      blur: number;
+      blurRef?: string;
+    }
+  | {
+      type: "noise";
+      amount?: number;
+    };
 
 /** I5 Vector network: path 세그먼트별 d와 fills */
 export type PathSegment = { d: string; fills: Fill[] };
@@ -121,6 +165,12 @@ function cloneFill(fill: Fill): Fill {
       stops: fill.stops?.map((stop) => ({ ...stop })),
     };
   }
+  if (fill.type === "image") {
+    return {
+      ...fill,
+      crop: fill.crop ? { ...fill.crop } : undefined,
+    };
+  }
   return { ...fill };
 }
 
@@ -141,6 +191,119 @@ function cloneTextRanges(ranges: TextRange[] | undefined): TextRange[] | undefin
 
 function cloneTextPath(textPath: TextPath | undefined): TextPath | undefined {
   return textPath ? { ...textPath } : undefined;
+}
+
+function cloneJsonValue<T>(value: T): T {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "object") return value;
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function cloneNodeDataBindingFilters(filters: NodeDataBindingFilter[] | undefined): NodeDataBindingFilter[] | undefined {
+  return filters?.map((filter) => ({ ...filter, value: cloneJsonValue(filter.value) }));
+}
+
+function cloneServiceActionBindings(bindings: ServiceActionBinding[] | undefined): ServiceActionBinding[] | undefined {
+  return bindings?.map((binding) => ({
+    ...binding,
+    value: cloneJsonValue(binding.value),
+  }));
+}
+
+function cloneServiceDataSourceBinding(binding: ServiceDataSourceBinding | undefined): ServiceDataSourceBinding | undefined {
+  return binding
+    ? {
+        ...binding,
+        fields: binding.fields ? [...binding.fields] : undefined,
+        filters: cloneNodeDataBindingFilters(binding.filters),
+        search: binding.search ? { ...binding.search, fields: binding.search.fields ? [...binding.search.fields] : undefined } : undefined,
+        params: binding.params ? { ...binding.params } : undefined,
+      }
+    : undefined;
+}
+
+function cloneServiceStateTransitionBinding(
+  binding: ServiceStateTransitionBinding | undefined,
+): ServiceStateTransitionBinding | undefined {
+  return binding ? { ...binding, from: binding.from ? [...binding.from] : undefined } : undefined;
+}
+
+function cloneServiceFieldBinding(binding: ServiceFieldBinding | undefined): ServiceFieldBinding | undefined {
+  return binding ? { ...binding, fallbackValue: cloneJsonValue(binding.fallbackValue) } : undefined;
+}
+
+function cloneNodeServiceBinding(binding: NodeServiceBinding | undefined): NodeServiceBinding | undefined {
+  return binding
+    ? {
+        field: cloneServiceFieldBinding(binding.field),
+        dataSource: cloneServiceDataSourceBinding(binding.dataSource),
+        stateTransition: cloneServiceStateTransitionBinding(binding.stateTransition),
+      }
+    : undefined;
+}
+
+function cloneNodeDataBinding(binding: NodeDataBinding | undefined): NodeDataBinding | undefined {
+  if (!binding) return undefined;
+  if (binding.type === "service") {
+    return {
+      ...binding,
+      fields: binding.fields ? [...binding.fields] : undefined,
+      filters: cloneNodeDataBindingFilters(binding.filters),
+      search: binding.search ? { ...binding.search, fields: binding.search.fields ? [...binding.search.fields] : undefined } : undefined,
+      params: binding.params ? { ...binding.params } : undefined,
+    };
+  }
+  return {
+    ...binding,
+    fields: binding.fields ? [...binding.fields] : undefined,
+    filters: cloneNodeDataBindingFilters(binding.filters),
+    search: binding.search ? { ...binding.search, fields: binding.search.fields ? [...binding.search.fields] : undefined } : undefined,
+  };
+}
+
+function clonePrototypeAction(action: PrototypeAction): PrototypeAction {
+  if (action.type === "apiCall") {
+    return {
+      ...action,
+      headers: action.headers ? { ...action.headers } : undefined,
+      body: action.body ? cloneJsonValue(action.body) : undefined,
+      onSuccess: action.onSuccess ? clonePrototypeAction(action.onSuccess) : undefined,
+      onError: action.onError ? clonePrototypeAction(action.onError) : undefined,
+      condition: action.condition ? { ...action.condition } : undefined,
+    };
+  }
+  if (action.type === "nativeCall") {
+    return {
+      ...action,
+      args: cloneJsonValue(action.args),
+      onSuccess: action.onSuccess ? clonePrototypeAction(action.onSuccess) : undefined,
+      onError: action.onError ? clonePrototypeAction(action.onError) : undefined,
+      condition: action.condition ? { ...action.condition } : undefined,
+    };
+  }
+  if (action.type === "service") {
+    return {
+      ...action,
+      bindings: cloneServiceActionBindings(action.bindings),
+      dataSource: cloneServiceDataSourceBinding(action.dataSource),
+      stateTransition: cloneServiceStateTransitionBinding(action.stateTransition),
+      transition: action.transition ? { ...action.transition } : undefined,
+      condition: action.condition ? { ...action.condition } : undefined,
+    };
+  }
+  return {
+    ...action,
+    transition: "transition" in action && action.transition ? { ...action.transition } : undefined,
+    condition: "condition" in action && action.condition ? { ...action.condition } : undefined,
+  } as PrototypeAction;
+}
+
+function clonePrototypeInteraction(interaction: PrototypeInteraction): PrototypeInteraction {
+  return {
+    ...interaction,
+    action: clonePrototypeAction(interaction.action),
+    scrollTriggerConfig: interaction.scrollTriggerConfig ? { ...interaction.scrollTriggerConfig } : undefined,
+  };
 }
 
 export type NodeShape = {
@@ -341,6 +504,89 @@ export type PrototypeCondition = {
   value: string | number | boolean;
 };
 
+export type ServiceActionKind =
+  | "auth.login"
+  | "auth.register"
+  | "auth.logout"
+  | "operations.release.record"
+  | "operations.runbook.generate"
+  | "todo.create"
+  | "note.save"
+  | "kanban.column.create"
+  | "kanban.card.create"
+  | "reservation.create"
+  | "reservation.transition"
+  | "ticket.create"
+  | "ticket.reply"
+  | "crm.lead.move"
+  | "document.submit"
+  | "document.decide"
+  | "billing.checkout"
+  | "billing.invoice.pay"
+  | "policy.evaluate";
+
+export type ServiceBindingSource = "field" | "literal" | "variable" | "globalState";
+
+export type ServiceActionBinding = {
+  target: string;
+  source: ServiceBindingSource;
+  fieldKey?: string;
+  variableId?: string;
+  globalStateKey?: string;
+  value?: string | number | boolean | Record<string, unknown> | unknown[] | null;
+  required?: boolean;
+};
+
+export type ServiceDataSourceKind =
+  | "auth.session"
+  | "notifications.feed"
+  | "chat.messages"
+  | "todo.list"
+  | "note.current"
+  | "kanban.columns"
+  | "reservations.list"
+  | "tickets.list"
+  | "crm.leads"
+  | "documents.list"
+  | "billing.invoices"
+  | "policy.rules"
+  | "operations.releases";
+
+export type ServiceDataSourceBinding = {
+  source: ServiceDataSourceKind;
+  fields?: string[];
+  limit?: number;
+  offset?: number;
+  orderBy?: string;
+  orderDir?: "asc" | "desc";
+  filters?: NodeDataBindingFilter[];
+  search?: { q?: string; fields?: string[] };
+  params?: Record<string, string | number | boolean>;
+};
+
+export type ServiceStateMachineKind = "reservation" | "ticket" | "crmLead" | "document" | "billingInvoice";
+
+export type ServiceStateTransitionBinding = {
+  machine: ServiceStateMachineKind;
+  to: string;
+  from?: string[];
+  recordIdField?: string;
+  statusField?: string;
+};
+
+export type ServiceFieldBinding = {
+  key: string;
+  valueType?: "string" | "number" | "boolean" | "json" | "email" | "password" | "message" | "id";
+  required?: boolean;
+  fallbackValue?: string | number | boolean | Record<string, unknown> | unknown[] | null;
+};
+
+export type NodeServiceBinding = {
+  field?: ServiceFieldBinding;
+  dataSource?: ServiceDataSourceBinding;
+  stateTransition?: ServiceStateTransitionBinding;
+};
+
 export type PrototypeAction =
   | { type: "navigate"; targetPageId: string; transition?: PrototypeTransition; delayMs?: number; condition?: PrototypeCondition }
   | { type: "back"; transition?: PrototypeTransition; delayMs?: number; condition?: PrototypeCondition }
@@ -354,7 +600,18 @@ export type PrototypeAction =
   | { type: "setVariant"; variantId: string; targetNodeId?: string; delayMs?: number; condition?: PrototypeCondition }
   | { type: "apiCall"; url: string; method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; headers?: Record<string, string>; body?: Record<string, unknown>; responseVariable?: string; errorVariable?: string; onSuccess?: PrototypeAction; onError?: PrototypeAction; delayMs?: number; condition?: PrototypeCondition }
   | { type: "nativeCall"; name: string; args?: Record<string, unknown> | string; responseVariable?: string; errorVariable?: string; onSuccess?: PrototypeAction; onError?: PrototypeAction; delayMs?: number; condition?: PrototypeCondition }
-  | { type: "appAuth"; action: "login" | "register" | "logout"; nextPageId?: string; delayMs?: number; condition?: PrototypeCondition };
+  | { type: "appAuth"; action: "login" | "register" | "logout"; nextPageId?: string; delayMs?: number; condition?: PrototypeCondition }
+  | {
+      type: "service";
+      action: ServiceActionKind;
+      bindings?: ServiceActionBinding[];
+      dataSource?: ServiceDataSourceBinding;
+      stateTransition?: ServiceStateTransitionBinding;
+      nextPageId?: string;
+      transition?: PrototypeTransition;
+      delayMs?: number;
+      condition?: PrototypeCondition;
+    };
 
 export type PrototypeInteraction = {
   id: string;
@@ -411,6 +668,20 @@ export type NodeDataBinding =
       orderDir?: "asc" | "desc";
       filters?: NodeDataBindingFilter[];
       search?: { q?: string; fields?: string[] };
+      editable?: boolean;
+      allowDelete?: boolean;
+    }
+  | {
+      type: "service";
+      source: ServiceDataSourceKind;
+      fields?: string[];
+      limit?: number;
+      offset?: number;
+      orderBy?: string;
+      orderDir?: "asc" | "desc";
+      filters?: NodeDataBindingFilter[];
+      search?: { q?: string; fields?: string[] };
+      params?: Record<string, string | number | boolean>;
       editable?: boolean;
       allowDelete?: boolean;
     };
@@ -515,6 +786,8 @@ export type NodeImage = {
   offsetX?: number;
   offsetY?: number;
   scale?: number;
+  focalX?: number;
+  focalY?: number;
   poster?: string;
   autoplay?: boolean;
   loop?: boolean;
@@ -551,6 +824,7 @@ export type NodeOverrides = {
   clipContent?: boolean;
   shape?: NodeShape;
   data?: NodeDataBinding;
+  service?: NodeServiceBinding;
   prototype?: NodePrototype;
   isMask?: boolean;
   overflowScrolling?: "none" | "vertical" | "horizontal" | "both";
@@ -584,6 +858,7 @@ export interface Node {
   clipContent?: boolean;
   shape?: NodeShape;
   data?: NodeDataBinding;
+  service?: NodeServiceBinding;
   componentId?: string;
   instanceOf?: string;
   publishedKey?: string;
@@ -718,6 +993,12 @@ export type BranchEntry = {
 
 export type BranchReviewStatus = "open" | "approved" | "merged" | "closed";
 
+export type BranchReviewActorRole = "owner" | "admin" | "member" | "viewer";
+
+export type BranchReviewAction = "approve" | "close" | "resolve" | "merge";
+
+export type BranchReviewPermissions = Record<BranchReviewAction, BranchReviewActorRole[]>;
+
 export type BranchReviewItem = {
   id: string;
   branchName: string;
@@ -727,6 +1008,9 @@ export type BranchReviewItem = {
   status: BranchReviewStatus;
   summary: BranchDiffSummary;
   resolutions?: Record<string, BranchMergeResolution>;
+  createdByRole?: BranchReviewActorRole;
+  requiredRole?: BranchReviewActorRole;
+  permissions?: BranchReviewPermissions;
 };
 
 export interface Doc {
@@ -953,7 +1237,7 @@ export function cloneDoc(doc: Doc): Doc {
           frame: { ...node.frame },
           style: {
             ...node.style,
-            fills: [...node.style.fills],
+            fills: cloneFills(node.style.fills) ?? [],
             strokes: [...node.style.strokes],
             effects: [...node.style.effects],
             radius: typeof node.style.radius === "object" && node.style.radius ? { ...node.style.radius } : node.style.radius,
@@ -971,8 +1255,8 @@ export function cloneDoc(doc: Doc): Doc {
                 styleBindings: node.text.styleBindings ? { ...node.text.styleBindings } : undefined,
               }
             : undefined,
-          image: node.image ? { ...node.image } : undefined,
-          video: node.video ? { ...node.video } : undefined,
+          image: node.image ? { ...node.image, crop: node.image.crop ? { ...node.image.crop } : undefined } : undefined,
+          video: node.video ? { ...node.video, crop: node.video.crop ? { ...node.video.crop } : undefined } : undefined,
           shape: node.shape
             ? {
                 ...node.shape,
@@ -1030,7 +1314,8 @@ export function cloneDoc(doc: Doc): Doc {
           layoutPositioning: node.layoutPositioning,
           gridChild: node.gridChild ? { ...node.gridChild } : undefined,
           constraints: node.constraints ? { ...node.constraints } : undefined,
-          data: node.data ? { ...node.data } : undefined,
+          data: cloneNodeDataBinding(node.data),
+          service: cloneNodeServiceBinding(node.service),
           table: node.table ? { ...node.table } : undefined,
           variants: node.variants?.map((variant) => ({
             ...variant,
@@ -1046,7 +1331,7 @@ export function cloneDoc(doc: Doc): Doc {
                 style: node.overrides.style
                   ? {
                       ...node.overrides.style,
-                      fills: [...node.overrides.style.fills],
+                      fills: cloneFills(node.overrides.style.fills) ?? [],
                       strokes: [...node.overrides.style.strokes],
                       effects: [...node.overrides.style.effects],
                       radius:
@@ -1068,8 +1353,12 @@ export function cloneDoc(doc: Doc): Doc {
                       styleBindings: node.overrides.text.styleBindings ? { ...node.overrides.text.styleBindings } : undefined,
                     }
                   : undefined,
-                image: node.overrides.image ? { ...node.overrides.image } : undefined,
-                video: node.overrides.video ? { ...node.overrides.video } : undefined,
+                image: node.overrides.image
+                  ? { ...node.overrides.image, crop: node.overrides.image.crop ? { ...node.overrides.image.crop } : undefined }
+                  : undefined,
+                video: node.overrides.video
+                  ? { ...node.overrides.video, crop: node.overrides.video.crop ? { ...node.overrides.video.crop } : undefined }
+                  : undefined,
                 instanceOf: node.overrides.instanceOf,
                 instanceLibraryId: node.overrides.instanceLibraryId,
                 variantId: node.overrides.variantId,
@@ -1129,7 +1418,8 @@ export function cloneDoc(doc: Doc): Doc {
                 layoutPositioning: node.overrides.layoutPositioning,
                 gridChild: node.overrides.gridChild ? { ...node.overrides.gridChild } : undefined,
                 constraints: node.overrides.constraints ? { ...node.overrides.constraints } : undefined,
-                data: node.overrides.data ? { ...node.overrides.data } : undefined,
+                data: cloneNodeDataBinding(node.overrides.data),
+                service: cloneNodeServiceBinding(node.overrides.service),
                 slotContents: node.overrides.slotContents ? { ...node.overrides.slotContents } : undefined,
                 dev: node.overrides.dev
                   ? {
@@ -1140,14 +1430,7 @@ export function cloneDoc(doc: Doc): Doc {
                   : undefined,
                 prototype: node.overrides.prototype
                   ? {
-                      interactions: node.overrides.prototype.interactions.map((interaction) => ({
-                        ...interaction,
-                        action: (() => {
-                          const a = interaction.action;
-                          const t = "transition" in a && a.transition ? { ...a.transition } : undefined;
-                          return { ...a, transition: t } as PrototypeAction;
-                        })(),
-                      })),
+                      interactions: node.overrides.prototype.interactions.map(clonePrototypeInteraction),
                     }
                   : undefined,
               }
@@ -1161,14 +1444,7 @@ export function cloneDoc(doc: Doc): Doc {
             : undefined,
           prototype: node.prototype
             ? {
-                interactions: node.prototype.interactions.map((interaction) => ({
-                  ...interaction,
-                  action: (() => {
-                    const a = interaction.action;
-                    const t = "transition" in a && a.transition ? { ...a.transition } : undefined;
-                    return { ...a, transition: t } as PrototypeAction;
-                  })(),
-                })),
+                interactions: node.prototype.interactions.map(clonePrototypeInteraction),
               }
             : undefined,
         },

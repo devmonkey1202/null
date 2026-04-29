@@ -67,7 +67,6 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const tab = url.searchParams.get("tab") ?? "new";
-    const liveOnly = url.searchParams.get("live_only") === "1";
     const endingSoon = url.searchParams.get("ending_soon") === "1";
     const q = url.searchParams.get("q")?.trim() ?? "";
     const limit = Math.min(Math.max(1, parseInt(url.searchParams.get("limit") ?? "60", 10)), 100);

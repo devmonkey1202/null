@@ -8,7 +8,13 @@ export type VariableBindingOptions = {
 function findVariable(doc: Doc, variableOrId: string | Variable | undefined) {
   if (!variableOrId) return null;
   if (typeof variableOrId !== "string") return variableOrId;
-  return doc.variables.find((item) => item.id === variableOrId) ?? null;
+  const raw = variableOrId.trim();
+  if (!raw) return null;
+  return (
+    doc.variables.find((item) => item.id === raw) ??
+    doc.variables.find((item) => item.name === raw) ??
+    null
+  );
 }
 
 function resolveNumericBinding(value: string | number | boolean | undefined) {
@@ -34,6 +40,9 @@ function resolveVariableValueInternal(
   if (stack.has(variable.id)) return undefined;
   if (options?.variableOverrides && variable.id in options.variableOverrides) {
     return options.variableOverrides[variable.id];
+  }
+  if (options?.variableOverrides && variable.name in options.variableOverrides) {
+    return options.variableOverrides[variable.name];
   }
 
   const nextStack = new Set(stack);
@@ -69,6 +78,14 @@ export function resolveVariableColor(
 ) {
   const resolved = resolveVariableValue(doc, variableId, options);
   return typeof resolved === "string" ? resolved : null;
+}
+
+export function resolveVariableNumber(
+  doc: Doc,
+  variableId: string | undefined,
+  options?: VariableBindingOptions,
+) {
+  return resolveNumericBinding(resolveVariableValue(doc, variableId, options));
 }
 
 export function resolveGradientStopColor(
@@ -148,6 +165,17 @@ export function resolveNodeTextValue(
   const bound = resolveVariableValue(doc, text.valueRef, options);
   if (typeof bound === "string" || typeof bound === "number" || typeof bound === "boolean") {
     return String(bound);
+  }
+  if (typeof text.value === "string" && text.value.trim()) {
+    const implicit = findVariable(doc, text.value.trim());
+    const implicitValue = resolveVariableValue(doc, implicit ?? undefined, options);
+    if (
+      typeof implicitValue === "string" ||
+      typeof implicitValue === "number" ||
+      typeof implicitValue === "boolean"
+    ) {
+      return String(implicitValue);
+    }
   }
   return text.value;
 }

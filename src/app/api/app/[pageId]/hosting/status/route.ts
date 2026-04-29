@@ -79,7 +79,6 @@ async function checkTls(domain: string) {
             return;
           }
           const validTo = new Date(cert.valid_to);
-          const validFrom = new Date(cert.valid_from);
           const now = new Date();
           const daysRemaining = Math.floor((validTo.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
           resolve({

@@ -3,7 +3,7 @@
   steps?: PermissionAction[];
 };
 
-const PERMISSION_LABELS: Record<string, string> = {
+export const PERMISSION_LABELS: Record<string, string> = {
   editor: "편집기 조작",
   export: "내보내기",
   network: "외부 네트워크",
@@ -14,24 +14,28 @@ const PERMISSION_LABELS: Record<string, string> = {
   secrets_read: "비밀키 접근",
 };
 
-function actionPermissionLabel(type: string): string | null {
+export const ALL_PLUGIN_PERMISSION_KEYS = Object.keys(PERMISSION_LABELS);
+
+function actionPermissionKeys(type: string): string[] {
   switch (type) {
     case "align":
     case "distribute":
-      return "편집기 조작";
+      return ["editor"];
     case "exportTokens":
     case "exportSelectionPng":
     case "exportSelectionSvg":
-      return "내보내기";
+      return ["export"];
     case "toggleGrid":
     case "togglePixelGrid":
     case "toggleAudit":
     case "togglePerformance":
-      return "UI 변경";
+      return ["ui"];
     case "openUrl":
-      return "외부 네트워크";
+      return ["network"];
+    case "importWeb":
+      return ["editor", "network"];
     default:
-      return null;
+      return [];
   }
 }
 
@@ -49,11 +53,9 @@ function summarizePermissions(actions: PermissionAction[], declared?: string[]) 
         walk(action.steps);
         return;
       }
-      const label = actionPermissionLabel(action.type);
-      if (label) {
-        const key = Object.entries(PERMISSION_LABELS).find(([, value]) => value === label)?.[0];
-        if (key) permissions.add(key);
-      }
+      actionPermissionKeys(action.type).forEach((key) => {
+        if (PERMISSION_LABELS[key]) permissions.add(key);
+      });
     });
   };
   walk(actions);

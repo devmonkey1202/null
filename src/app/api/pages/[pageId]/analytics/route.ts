@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { resolveAnonUserId, ensureAnonUser } from "@/lib/anon";
+import { resolveAnonUserId } from "@/lib/anon";
 import { expireStalePages } from "@/lib/expire";
 import { apiErrorJson } from "@/lib/api-error";
 

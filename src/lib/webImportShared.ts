@@ -17,14 +17,31 @@ export const WEB_IMPORT_VIEWPORTS: Record<WebImportViewportId, WebImportViewport
 
 export const WEB_IMPORT_VIEWPORT_OPTIONS = WEB_IMPORT_VIEWPORT_IDS.map((id) => WEB_IMPORT_VIEWPORTS[id]);
 
+export const WEB_IMPORT_THEME_OPTIONS = ["", "light", "dark"] as const;
+
+export type WebImportTheme = Exclude<(typeof WEB_IMPORT_THEME_OPTIONS)[number], "">;
+
 export type WebImportSource = {
-  kind: "public-url" | "html-code" | "html-file" | "archive-file" | "mhtml-file";
+  kind:
+    | "public-url"
+    | "public-url-batch"
+    | "private-page-capture"
+    | "local-page-capture"
+    | "screenshot-file"
+    | "html-code"
+    | "html-file"
+    | "archive-file"
+    | "mhtml-file";
   url: string;
+  urls?: string[];
   normalizedUrl?: string;
   finalUrl?: string;
   viewportId: WebImportViewportId;
   title?: string;
   fileName?: string;
+  language?: string;
+  query?: string;
+  theme?: WebImportTheme;
   importedAt: string;
 };
 
@@ -51,4 +68,43 @@ export function normalizePublicWebImportUrl(raw: string) {
   }
   parsed.hash = "";
   return parsed.toString();
+}
+
+export function normalizeWebImportQuery(raw: string | null | undefined) {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("?")) return trimmed;
+  const params = new URLSearchParams(trimmed);
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : `?${trimmed}`;
+}
+
+export function normalizeWebImportLanguage(raw: string | null | undefined) {
+  return (raw ?? "").trim();
+}
+
+export function normalizeWebImportTheme(raw: string | null | undefined): WebImportTheme | "" {
+  const normalized = (raw ?? "").trim().toLowerCase();
+  if (normalized === "light" || normalized === "dark") {
+    return normalized;
+  }
+  return "";
+}
+
+export function mergeWebImportQueryWithTheme(
+  rawQuery: string | null | undefined,
+  rawTheme: string | null | undefined,
+) {
+  const normalizedQuery = normalizeWebImportQuery(rawQuery);
+  const normalizedTheme = normalizeWebImportTheme(rawTheme);
+  const params = new URLSearchParams(normalizedQuery.startsWith("?") ? normalizedQuery.slice(1) : normalizedQuery);
+  if (normalizedTheme) {
+    params.set("theme", normalizedTheme);
+  }
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : "";
+}
+
+export function buildWebCaptureSnippet() {
+  return String.raw`(async()=>{const payload={url:location.href,title:document.title,html:document.documentElement.outerHTML};const text=JSON.stringify(payload);try{await navigator.clipboard.writeText(text);alert("NULL capture payload copied.");}catch(error){prompt("Copy NULL capture payload",text);}})();`;
 }

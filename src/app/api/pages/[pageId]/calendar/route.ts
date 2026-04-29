@@ -32,9 +32,9 @@ export const GET = withErrorHandler(async (req: Request, context: { params: Prom
   const toRaw = searchParams.get("to");
   const from = fromRaw ? new Date(fromRaw) : null;
   const to = toRaw ? new Date(toRaw) : null;
-  if (fromRaw && (Number.isNaN(from!.getTime()) || from!.getTime() <= 0))
+  if (fromRaw && (Number.isNaN(from!.getTime()) || from!.getTime() < 0))
     return apiErrorJson("invalid_from", 400);
-  if (toRaw && (Number.isNaN(to!.getTime()) || to!.getTime() <= 0))
+  if (toRaw && (Number.isNaN(to!.getTime()) || to!.getTime() < 0))
     return apiErrorJson("invalid_to", 400);
 
   const where: { page_id: string; start_at?: { gte?: Date; lte?: Date } } = { page_id: pageId };

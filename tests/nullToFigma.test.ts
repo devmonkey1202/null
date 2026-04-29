@@ -592,4 +592,93 @@ describe("nullToFigma", () => {
       ]),
     );
   });
+
+  it("roundtrips advanced prototype triggers and interactive component variant actions", () => {
+    const doc = createDoc();
+    const component = createNode("component", {
+      id: "proto_component",
+      name: "Prototype Component",
+      parentId: doc.root,
+      frame: { x: 0, y: 0, w: 160, h: 56, rotation: 0 },
+    });
+    const variantDefaultRoot = createNode("frame", {
+      id: "variant_default_root",
+      name: "Default Root",
+      parentId: component.id,
+      frame: { x: 0, y: 0, w: 160, h: 56, rotation: 0 },
+    });
+    const variantHoverRoot = createNode("frame", {
+      id: "variant_hover_root",
+      name: "Hover Root",
+      parentId: component.id,
+      frame: { x: 0, y: 0, w: 160, h: 56, rotation: 0 },
+    });
+    component.children = [variantDefaultRoot.id, variantHoverRoot.id];
+    component.variants = [
+      { id: "variant_default", name: "Default", rootId: variantDefaultRoot.id, props: { State: "Default" } },
+      { id: "variant_hover", name: "Hover", rootId: variantHoverRoot.id, props: { State: "Hover" } },
+    ];
+    addNode(doc, component, doc.root);
+    addNode(doc, variantDefaultRoot, component.id);
+    addNode(doc, variantHoverRoot, component.id);
+
+    const instance = createNode("instance", {
+      id: "proto_instance",
+      name: "Prototype Instance",
+      parentId: doc.pages[0]!.rootId,
+      frame: { x: 20, y: 20, w: 160, h: 56, rotation: 0 },
+      instanceOf: component.id,
+      variantId: "variant_default",
+      prototype: {
+        interactions: [
+          { id: "ia_hover_delay", trigger: "whileHover", hoverDelayMs: 180, action: { type: "setVariant", variantId: "variant_hover", targetNodeId: "proto_instance" } },
+          { id: "ia_press", trigger: "onPress", action: { type: "setVariant", variantId: "variant_hover", targetNodeId: "proto_instance" } },
+          { id: "ia_drag_start", trigger: "onDragStart", action: { type: "setVariant", variantId: "variant_hover", targetNodeId: "proto_instance" } },
+          { id: "ia_drag_end", trigger: "onDragEnd", action: { type: "setVariant", variantId: "variant_default", targetNodeId: "proto_instance" } },
+        ],
+      },
+    });
+    addNode(doc, instance, doc.pages[0]!.rootId);
+
+    const { exported, imported } = importExportedDoc(doc);
+    const exportedInstance = walkFigma(exported.file.document).find((node) => node.name === "Prototype Instance");
+    const importedInstance = Object.values(imported.nodes).find((node) => node.name === "Prototype Instance");
+
+    expect(exportedInstance?.sharedPluginData?.NULL?.prototype).toBeTruthy();
+    expect(exportedInstance?.interactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ trigger: { type: "ON_HOVER" } }),
+        expect.objectContaining({ trigger: { type: "ON_PRESS" } }),
+        expect.objectContaining({ trigger: { type: "ON_DRAG" } }),
+      ]),
+    );
+
+    expect(importedInstance?.id).toBeTruthy();
+    expect(importedInstance?.prototype?.interactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "ia_hover_delay",
+          trigger: "whileHover",
+          hoverDelayMs: 180,
+          action: expect.objectContaining({ type: "setVariant", targetNodeId: importedInstance?.id, variantId: "variant_hover" }),
+        }),
+        expect.objectContaining({
+          id: "ia_press",
+          trigger: "onPress",
+          action: expect.objectContaining({ type: "setVariant", targetNodeId: importedInstance?.id, variantId: "variant_hover" }),
+        }),
+        expect.objectContaining({
+          id: "ia_drag_start",
+          trigger: "onDragStart",
+          action: expect.objectContaining({ type: "setVariant", targetNodeId: importedInstance?.id, variantId: "variant_hover" }),
+        }),
+        expect.objectContaining({
+          id: "ia_drag_end",
+          trigger: "onDragEnd",
+          action: expect.objectContaining({ type: "setVariant", targetNodeId: importedInstance?.id, variantId: "variant_default" }),
+        }),
+      ]),
+    );
+    expect(imported.pages.some((page) => page.name === doc.pages[0]!.name)).toBe(true);
+  });
 });

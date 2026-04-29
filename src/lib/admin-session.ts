@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { cookies } from "next/headers";
 import type { AdminRole } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { shouldUseSecureCookiesFromHeaders } from "@/lib/cookie-security";
 
 /**
  * Admin UI session (v1)
@@ -77,10 +78,11 @@ export async function createAdminSession() {
   });
 
   const jar = await cookies();
+  const secure = await shouldUseSecureCookiesFromHeaders();
   jar.set(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure,
     path: "/",
     expires: expiresAt,
   });

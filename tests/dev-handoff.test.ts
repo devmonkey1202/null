@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addNode, createDoc, createNode, type Doc, type Node, type StyleToken, type Variable } from "@/advanced/doc/scene";
+import { addNode, createDoc, createNode, type Doc, type StyleToken, type Variable } from "@/advanced/doc/scene";
 import {
   buildComponentPlaygroundPreview,
   buildSpecDiffSections,

@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
+const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3101";
 
 async function initAnon(request: typeof test extends (name: string, fn: (args: infer A) => void) => void ? A["request"] : never): Promise<string> {
   const ip = `127.0.0.${Math.floor(Math.random() * 200) + 20}`;

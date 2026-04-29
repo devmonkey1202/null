@@ -96,7 +96,7 @@ export default function ThemeToggle({ className = "" }: { className?: string }) 
         type="button"
         aria-pressed={false}
         title="테마 전환"
-        className={`rounded-full border border-[#EAEAEA] bg-white px-3 py-1 text-[11px] font-medium text-[#666666] hover:bg-[#F0F0F0] ${className}`}
+        className={`rounded-full border border-black/[0.08] bg-white/75 px-3 py-2 text-[12px] font-semibold text-[#525866] shadow-[inset_0_1px_0_rgba(255,255,255,0.86)] backdrop-blur-xl transition hover:bg-black/[0.04] ${className}`}
       >
         테마
       </button>
@@ -109,7 +109,7 @@ export default function ThemeToggle({ className = "" }: { className?: string }) 
       onClick={toggle}
       aria-pressed={effective === "dark"}
       title={title}
-      className={`rounded-full border border-[#EAEAEA] bg-white px-3 py-1 text-[11px] font-medium text-[#666666] hover:bg-[#F0F0F0] ${className}`}
+      className={`rounded-full border border-black/[0.08] bg-white/75 px-3 py-2 text-[12px] font-semibold text-[#525866] shadow-[inset_0_1px_0_rgba(255,255,255,0.86)] backdrop-blur-xl transition hover:bg-black/[0.04] ${className}`}
     >
       {label}
     </button>

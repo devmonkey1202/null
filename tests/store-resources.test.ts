@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { addNode, createDoc, createNode } from "@/advanced/doc/scene";
+import { createDefaultStoreGovernanceState, upsertApprovalRequest } from "@/advanced/ui/storeGovernanceModel";
 import { buildResourceHubEntries } from "@/advanced/ui/resourceHub";
 import { applyStoreWidgetUpdate, createStoreWidgetPayload } from "@/advanced/ui/widgetStore";
 import { listStorePlugins } from "@/lib/plugin-store";
@@ -49,6 +50,17 @@ describe("store resources", () => {
   it("builds a searchable resource hub across libraries, plugins, and widgets", () => {
     const pluginCatalog = listStorePlugins().plugins;
     const widgetCatalog = listStoreWidgets().widgets;
+    const governance = upsertApprovalRequest(createDefaultStoreGovernanceState(), {
+      id: "req_widget",
+      type: "widget",
+      storeId: "widget-team-board",
+      status: "approved",
+      requestedAt: "2026-03-20T00:01:00.000Z",
+      updatedAt: "2026-03-20T00:02:00.000Z",
+      requestedByUserId: "user_1",
+      decidedByUserId: "admin_1",
+      note: null,
+    });
     const entries = buildResourceHubEntries({
       query: "team",
       libraries: [
@@ -75,10 +87,13 @@ describe("store resources", () => {
       storeWidgets: widgetCatalog,
       savedPluginStoreIds: ["store-export-pack"],
       savedWidgetStoreIds: ["widget-team-board"],
+      storeApprovalRequests: governance.requests,
+      storeGovernancePolicy: governance.policy,
     });
 
     expect(entries.map((entry) => entry.id)).toEqual(["widget-team-board"]);
     expect(entries[0]?.saved).toBe(true);
     expect(entries[0]?.type).toBe("widget-store");
+    expect(entries[0]?.status).toBe("approved");
   });
 });

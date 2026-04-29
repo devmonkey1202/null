@@ -147,6 +147,13 @@ export type FigmaDropShadowEffect = {
   radius: number;
   spread?: number;
   visible: boolean;
+  boundVariables?: {
+    color?: FigmaVariableAlias;
+    radius?: FigmaVariableAlias;
+    offsetX?: FigmaVariableAlias;
+    offsetY?: FigmaVariableAlias;
+    spread?: FigmaVariableAlias;
+  };
 };
 
 export type FigmaInnerShadowEffect = {
@@ -156,12 +163,22 @@ export type FigmaInnerShadowEffect = {
   radius: number;
   spread?: number;
   visible: boolean;
+  boundVariables?: {
+    color?: FigmaVariableAlias;
+    radius?: FigmaVariableAlias;
+    offsetX?: FigmaVariableAlias;
+    offsetY?: FigmaVariableAlias;
+    spread?: FigmaVariableAlias;
+  };
 };
 
 export type FigmaBlurEffect = {
   type: "LAYER_BLUR" | "BACKGROUND_BLUR";
   radius: number;
   visible: boolean;
+  boundVariables?: {
+    radius?: FigmaVariableAlias;
+  };
 };
 
 export type FigmaEffect = FigmaDropShadowEffect | FigmaInnerShadowEffect | FigmaBlurEffect;

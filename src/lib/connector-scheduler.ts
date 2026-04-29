@@ -1,10 +1,10 @@
 import { prisma } from "@/lib/db";
 import { matchesCron } from "@/lib/cron";
 import { getConnectorTemplate, type ConnectorConfig, type ConnectorTemplate } from "@/lib/connectors";
+import { executeServiceAction } from "@/lib/service-runtime";
 
 type SchedulerDeps = {
   db?: typeof prisma;
-  fetcher?: typeof fetch;
 };
 
 type SyncResult = {
@@ -29,16 +29,28 @@ async function performSync(
   pageId: string,
   connector: ConnectorConfig,
   template: ConnectorTemplate | null,
-  fetcher: typeof fetch,
 ): Promise<SyncResult> {
   if (!template?.sync?.endpoint || !connector.config?.baseUrl) {
     return { connectorId: connector.id, status: "success" };
   }
   const endpoint = template.sync.endpoint.replace("{baseUrl}", connector.config.baseUrl);
   try {
-    const res = await fetcher(endpoint, { method: "GET" });
-    if (!res.ok) {
-      return { connectorId: connector.id, status: "error", message: `sync_failed_${res.status}` };
+    const result = await executeServiceAction(
+      {
+        type: "http_request",
+        url: endpoint,
+        method: "GET",
+        timeoutMs: 15_000,
+        retries: 1,
+        retryOn: [429, 500, 502, 503, 504],
+      },
+      {
+        pageId,
+        metadata: { connectorId: connector.id, templateId: template.id },
+      },
+    );
+    if (!result.ok) {
+      return { connectorId: connector.id, status: "error", message: result.error ?? "sync_failed" };
     }
     return { connectorId: connector.id, status: "success" };
   } catch (err) {
@@ -48,7 +60,6 @@ async function performSync(
 
 export async function runConnectorSchedules(now: Date, deps: SchedulerDeps = {}) {
   const db = deps.db ?? prisma;
-  const fetcher = deps.fetcher ?? fetch;
   const rows = await db.pageSetting.findMany({
     where: { key: CONNECTOR_SETTING_KEY },
     select: { page_id: true, value: true },
@@ -63,7 +74,7 @@ export async function runConnectorSchedules(now: Date, deps: SchedulerDeps = {})
     for (const connector of list) {
       const template = getConnectorTemplate(connector.templateId);
       if (isConnectorDue(connector, now)) {
-        const result = await performSync(row.page_id, connector, template, fetcher);
+        const result = await performSync(row.page_id, connector, template);
         pageResults.push(result);
         connector.lastSyncedAt = now.toISOString();
         connector.lastSyncStatus = result.status;
@@ -89,7 +100,6 @@ export async function runConnectorSchedules(now: Date, deps: SchedulerDeps = {})
 
 export async function runConnectorSyncForPage(pageId: string, deps: SchedulerDeps = {}) {
   const db = deps.db ?? prisma;
-  const fetcher = deps.fetcher ?? fetch;
   const row = await db.pageSetting.findUnique({
     where: { page_id_key: { page_id: pageId, key: CONNECTOR_SETTING_KEY } },
     select: { value: true },
@@ -102,7 +112,7 @@ export async function runConnectorSyncForPage(pageId: string, deps: SchedulerDep
 
   for (const connector of list) {
     const template = getConnectorTemplate(connector.templateId);
-    const result = await performSync(pageId, connector, template, fetcher);
+    const result = await performSync(pageId, connector, template);
     connector.lastSyncedAt = now.toISOString();
     connector.lastSyncStatus = result.status;
     results.push(result);

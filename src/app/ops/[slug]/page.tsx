@@ -11,5 +11,5 @@ export default async function AdminOpsPage({
   if (!secret || slug !== secret) {
     notFound();
   }
-  return <AdminConsole />;
+  return <AdminConsole slug={slug} />;
 }

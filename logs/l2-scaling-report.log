@@ -1,8 +1,0 @@
-# L2 Scaling Scenario Report (simulation)
-ts=2026-03-06T12:24:38.830Z
-note=simulated metrics for sizing guidance
-config={"minInstances":2,"maxInstances":12,"targetCpuUtilization":0.6,"maxQueueDepth":200,"queueBackend":"redis","sessionStore":"redis","cacheStore":"redis","workerConcurrency":12}
-low: cpu=0.25 queue=10 -> desired=2 reason=stable
-medium: cpu=0.6 queue=90 -> desired=3 reason=stable
-cpu_spike: cpu=0.92 queue=40 -> desired=7 reason=cpu_pressure
-queue_spike: cpu=0.4 queue=180 -> desired=4 reason=stable

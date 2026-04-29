@@ -1,4 +1,15 @@
-import { cloneDoc, type BranchDiffSummary, type BranchEntry, type BranchMergeResolution, type BranchReviewItem, type Doc, type Node } from "../doc/scene";
+import {
+  cloneDoc,
+  type BranchDiffSummary,
+  type BranchEntry,
+  type BranchMergeResolution,
+  type BranchReviewAction,
+  type BranchReviewActorRole,
+  type BranchReviewItem,
+  type BranchReviewPermissions,
+  type Doc,
+  type Node,
+} from "../doc/scene";
 import { makeRuntimeId } from "./AdvancedEditor.utils";
 
 function cloneNode<T>(value: T): T {
@@ -54,13 +65,6 @@ function normalizeNodeForDiff(node: Node) {
   };
 }
 
-function collectSubtree(doc: Doc, nodeId: string, out: Set<string>) {
-  const node = doc.nodes[nodeId];
-  if (!node || out.has(nodeId)) return;
-  out.add(nodeId);
-  node.children.forEach((childId) => collectSubtree(doc, childId, out));
-}
-
 function copySubtreeIntoResult(result: Doc, sourceDoc: Doc, nodeId: string, visited = new Set<string>()) {
   if (visited.has(nodeId)) return;
   const source = sourceDoc.nodes[nodeId];
@@ -82,6 +86,39 @@ function rebuildChildren(doc: Doc) {
     const parent = doc.nodes[node.parentId];
     if (parent) parent.children.push(node.id);
   });
+}
+
+const BRANCH_REVIEW_ROLE_ORDER: BranchReviewActorRole[] = ["viewer", "member", "admin", "owner"];
+
+function roleLevel(role: BranchReviewActorRole) {
+  return BRANCH_REVIEW_ROLE_ORDER.indexOf(role);
+}
+
+export function branchReviewRolesAtLeast(requiredRole: BranchReviewActorRole) {
+  return BRANCH_REVIEW_ROLE_ORDER.filter((role) => roleLevel(role) >= roleLevel(requiredRole));
+}
+
+export function getDefaultBranchReviewRequiredRole(role: BranchReviewActorRole | null | undefined): BranchReviewActorRole {
+  return role === "owner" ? "owner" : "admin";
+}
+
+export function createBranchReviewPermissions(requiredRole: BranchReviewActorRole = "admin"): BranchReviewPermissions {
+  return {
+    approve: branchReviewRolesAtLeast(requiredRole),
+    close: branchReviewRolesAtLeast(requiredRole),
+    resolve: branchReviewRolesAtLeast("member"),
+    merge: branchReviewRolesAtLeast(requiredRole),
+  };
+}
+
+export function canBranchReviewAction(
+  review: BranchReviewItem,
+  role: BranchReviewActorRole | null | undefined,
+  action: BranchReviewAction,
+) {
+  const currentRole = role ?? "viewer";
+  const permissions = review.permissions ?? createBranchReviewPermissions(review.requiredRole ?? "admin");
+  return permissions[action].includes(currentRole);
 }
 
 export function buildBranchDiffSummary(currentDoc: Doc, branchDoc: Doc): BranchDiffSummary {
@@ -144,7 +181,14 @@ export function removeBranchEntry(doc: Doc, branchName: string) {
   return next;
 }
 
-export function createBranchReview(branchName: string, versionId: string, summary: BranchDiffSummary, now = new Date().toISOString()): BranchReviewItem {
+export function createBranchReview(
+  branchName: string,
+  versionId: string,
+  summary: BranchDiffSummary,
+  now = new Date().toISOString(),
+  createdByRole: BranchReviewActorRole = "member",
+  requiredRole: BranchReviewActorRole = getDefaultBranchReviewRequiredRole(createdByRole),
+): BranchReviewItem {
   const resolutions = Object.fromEntries(summary.conflicts.map((nodeId) => [nodeId, "branch" as BranchMergeResolution]));
   return {
     id: makeRuntimeId("review"),
@@ -155,6 +199,9 @@ export function createBranchReview(branchName: string, versionId: string, summar
     status: "open",
     summary,
     resolutions,
+    createdByRole,
+    requiredRole,
+    permissions: createBranchReviewPermissions(requiredRole),
   };
 }
 
@@ -195,6 +242,21 @@ export function setBranchReviewStatus(doc: Doc, reviewId: string, status: Branch
       ? {
           ...review,
           status,
+          updatedAt: new Date().toISOString(),
+        }
+      : review,
+  );
+  return next;
+}
+
+export function setBranchReviewRequiredRole(doc: Doc, reviewId: string, requiredRole: BranchReviewActorRole) {
+  const next = cloneDoc(doc);
+  next.branchReviews = (next.branchReviews ?? []).map((review) =>
+    review.id === reviewId
+      ? {
+          ...review,
+          requiredRole,
+          permissions: createBranchReviewPermissions(requiredRole),
           updatedAt: new Date().toISOString(),
         }
       : review,

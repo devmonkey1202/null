@@ -3,8 +3,8 @@ import { test, expect } from "@playwright/test";
 test.describe("webhook flow", () => {
   test("alerts test/notify send to mock webhook", async ({ request }) => {
     const anonUserId = `anon_webhook_${Date.now()}`;
-    const port = process.env.PORT ?? "3000";
-    const baseURL = process.env.PLAYWRIGHT_TEST_BASE_URL ?? `http://localhost:${port}`;
+    const port = process.env.PLAYWRIGHT_TEST_PORT ?? "3101";
+    const baseURL = process.env.PLAYWRIGHT_TEST_BASE_URL ?? `http://127.0.0.1:${port}`;
 
     const ip = `127.0.0.${Math.floor(Math.random() * 200) + 20}`;
     const createRes = await request.post("/api/pages", {

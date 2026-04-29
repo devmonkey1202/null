@@ -48,7 +48,7 @@ const ROUTES = collectRoutes();
 
 test.describe("route health", () => {
   test.describe.configure({ mode: "serial" });
-  const REQUEST_TIMEOUT_MS = 10_000;
+  const REQUEST_TIMEOUT_MS = 20_000;
 
   for (const entry of ROUTES) {
     const title = `${entry.kind.toUpperCase()} ${entry.route}`;

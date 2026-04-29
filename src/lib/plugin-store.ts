@@ -130,7 +130,8 @@ export function getStorePlugin(storeId: string) {
 }
 
 export function toManifest(storePlugin: StorePlugin): PluginManifest {
-  const { storeId, category: _category, ...manifest } = storePlugin;
+  const { storeId, category, ...manifest } = storePlugin;
+  void category;
   const digest = storePlugin.digest ?? computeDigest(manifest);
   return {
     ...manifest,

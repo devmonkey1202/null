@@ -12,6 +12,7 @@ export type PluginAction =
   | (PluginActionBase & { type: "macro"; steps: PluginAction[] })
   | (PluginActionBase & { type: "align" | "distribute" | "exportTokens" | "exportSelectionPng" | "exportSelectionSvg" | "toggleGrid" | "togglePixelGrid" | "toggleAudit" | "togglePerformance" })
   | (PluginActionBase & { type: "openUrl"; url: string })
+  | (PluginActionBase & { type: "importWeb" })
   | (PluginActionBase & { type: string });
 
 export type PluginManifest = {
@@ -67,6 +68,7 @@ const ALLOWED_PLUGIN_ACTIONS = new Set([
   "toggleAudit",
   "togglePerformance",
   "openUrl",
+  "importWeb",
 ]);
 
 const ALLOWED_PERMISSIONS = new Set([
@@ -80,7 +82,7 @@ const ALLOWED_PERMISSIONS = new Set([
   "secrets_read",
 ]);
 
-const ACTION_PERMISSION: Record<string, string | null> = {
+const ACTION_PERMISSION: Record<string, string | string[] | null> = {
   align: "editor",
   distribute: "editor",
   exportTokens: "export",
@@ -91,6 +93,7 @@ const ACTION_PERMISSION: Record<string, string | null> = {
   toggleAudit: "ui",
   togglePerformance: "ui",
   openUrl: "network",
+  importWeb: ["editor", "network"],
   macro: null,
 };
 
@@ -116,7 +119,12 @@ function normalizePluginAction(
   if (typeof input.id !== "string" || typeof input.label !== "string" || typeof input.type !== "string") return null;
   if (!ALLOWED_PLUGIN_ACTIONS.has(input.type)) return null;
   const requiredPermission = ACTION_PERMISSION[input.type] ?? null;
-  if (requiredPermission && !permissions.has(requiredPermission)) return null;
+  const requiredPermissions = Array.isArray(requiredPermission)
+    ? requiredPermission
+    : requiredPermission
+      ? [requiredPermission]
+      : [];
+  if (requiredPermissions.some((permission) => !permissions.has(permission))) return null;
   if (budget.count >= MAX_PLUGIN_ACTIONS) return null;
 
   const action: PluginAction = {

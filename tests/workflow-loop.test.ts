@@ -5,6 +5,9 @@ const prismaMock = vi.hoisted(() => ({
   appWorkflow: {
     findUnique: vi.fn(),
   },
+  appSecret: {
+    findMany: vi.fn(),
+  },
   appWorkflowLog: {
     create: vi.fn(),
     update: vi.fn(),
@@ -23,6 +26,7 @@ import { executeWorkflow } from "@/lib/app-workflow";
 describe("workflow loop optimization", () => {
   beforeEach(() => {
     prismaMock.appWorkflow.findUnique.mockReset();
+    prismaMock.appSecret.findMany.mockReset();
     prismaMock.appWorkflowLog.create.mockReset();
     prismaMock.appWorkflowLog.update.mockReset();
     prismaMock.appRecord.create.mockReset();

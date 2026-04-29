@@ -21,13 +21,14 @@ import {
   updateShipment,
   getCartSnapshot,
 } from "@/lib/commerce";
+import { canAccessPublishedPage } from "@/lib/page-access";
 
 type Params = { pageId: string };
 
 async function getAccess(pageId: string, req: Request) {
   const page = await prisma.page.findUnique({
     where: { id: pageId, is_deleted: false },
-    select: { id: true, owner_id: true, status: true, is_hidden: true },
+    select: { id: true, owner_id: true, status: true, is_hidden: true, live_expires_at: true, deployed_at: true },
   });
   if (!page) return { page: null as null, isOwner: false, appUser: null as null, anonId: null as string | null, userId: null as string | null };
   const anonId = await resolveAnonUserId(req);
@@ -53,7 +54,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
   const { page, isOwner, appUser } = await getAccess(pageId, req);
   if (!page) return apiErrorJson("not_found", 404);
 
-  if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
+  if (!canAccessPublishedPage(page, isOwner)) return apiErrorJson("not_found", 404);
 
   if (action === "catalog") {
     const catalog = await getCommerceCatalog(pageId);
@@ -173,7 +174,10 @@ export async function POST(req: Request, context: { params: Promise<Params> }) {
     const cartId = typeof body.cart_id === "string" ? body.cart_id : "";
     if (!cartId) return apiErrorJson("cart_id_required", 400);
     const result = await createOrderFromCart(pageId, cartId, actor);
-    if (!result.ok) return apiErrorJson(result.error, 400, (result as any).detail ?? undefined);
+    if (!result.ok) {
+      const detail = "detail" in result ? result.detail : undefined;
+      return apiErrorJson(result.error, 400, detail ? { detail } : undefined);
+    }
     return NextResponse.json({ ok: true, order_id: result.orderId });
   }
 

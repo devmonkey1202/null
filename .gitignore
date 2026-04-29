@@ -19,6 +19,7 @@
 
 # next.js
 /.next/
+/.next-e2e/
 /out/
 
 # production
@@ -30,6 +31,15 @@
 # misc
 .DS_Store
 *.pem
+.codex_code_files.txt
+/logs
+/.null_storage
+/public/design-preview/
+/tmp*
+/.tmp*
+/prod-start-*.log
+/server-e2e.log
+/dev-restart.log
 
 # debug
 npm-debug.log*

@@ -12,6 +12,25 @@ export type PageForAsset = {
   collab_invite_enabled: boolean;
 };
 
+export type PublishedPageState = Pick<
+  PageForAsset,
+  "is_hidden" | "status" | "live_expires_at" | "deployed_at"
+>;
+
+export function isPublishedPageAccessible(page: PublishedPageState): boolean {
+  if (page.is_hidden) return false;
+  const isLive = page.status === "live";
+  const isDeployed = page.deployed_at != null;
+  if (!isLive && !isDeployed) return false;
+  if (isLive && page.live_expires_at && page.live_expires_at <= new Date()) return false;
+  return true;
+}
+
+export function canAccessPublishedPage(page: PublishedPageState, isOwner: boolean): boolean {
+  if (isOwner) return true;
+  return isPublishedPageAccessible(page);
+}
+
 /**
  * 페이지가 "참여 가능"(채팅/할일 등 자산 기능 사용)인지 판단.
  * - 소유자: 항상 허용
@@ -25,12 +44,7 @@ export function canParticipateOnPage(
 ): boolean {
   if (allowInvite) return true;
   if (page.owner_id === viewerUserId) return true;
-  if (page.is_hidden) return false;
-  const isLive = page.status === "live";
-  const isDeployed = page.deployed_at != null;
-  if (!isLive && !isDeployed) return false;
-  if (isLive && page.live_expires_at && page.live_expires_at <= new Date()) return false;
-  return true;
+  return isPublishedPageAccessible(page);
 }
 
 const pageSelect = {

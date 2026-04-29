@@ -1,4 +1,4 @@
-import type { Frame, Node, NodeType } from "../doc/scene";
+import type { Frame, Node } from "../doc/scene";
 
 export type Tool =
   | "select"

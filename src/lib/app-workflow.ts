@@ -5,7 +5,7 @@
 
 import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
-import { executeServerlessNode } from "@/lib/serverless-executor";
+import { executeServiceAction } from "@/lib/service-runtime";
 
 export type WorkflowTrigger =
   | { type: "record_created"; collection: string }
@@ -14,6 +14,8 @@ export type WorkflowTrigger =
   | { type: "form_submitted"; formName: string }
   | { type: "schedule"; cron: string }
   | { type: "webhook"; path: string }
+  | { type: "service_event"; eventType?: string; topic?: string; stream?: string; entityType?: string }
+  | { type: "state_transition"; machine: string; from?: string; to?: string; entityType?: string }
   | { type: "user_registered" }
   | { type: "user_logged_in" };
 
@@ -128,57 +130,41 @@ function guardStep(ctx: WorkflowContext) {
 }
 
 async function executeApiCallStep(step: Extract<WorkflowStep, { type: "api_call" }>, ctx: WorkflowContext) {
-  const url = interpolate(step.url, ctx);
   const headers: Record<string, string> = {};
   if (step.headers) {
     for (const [k, v] of Object.entries(step.headers)) {
       headers[k] = interpolate(v, ctx);
     }
   }
-  const body = step.body && typeof step.body === "object"
-    ? JSON.stringify(interpolateObj(step.body as Record<string, unknown>, ctx))
-    : typeof step.body === "string" ? interpolate(step.body, ctx) : undefined;
-  const maxRetries = Math.max(0, Math.min(Number(step.retries ?? 0), 5));
-  const retryDelayMs = Math.max(0, Math.min(Number(step.retryDelayMs ?? 1000), 30_000));
-  const timeoutMs = Math.max(0, Math.min(Number(step.timeoutMs ?? 0), 30_000));
-  const retryOn = Array.isArray(step.retryOn) && step.retryOn.length
-    ? step.retryOn
-    : [429, 500, 502, 503, 504];
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = timeoutMs > 0 ? new AbortController() : undefined;
-    let timeoutId: NodeJS.Timeout | null = null;
-    if (controller && timeoutMs > 0) {
-      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    }
-    try {
-      const res = await fetch(url, {
-        method: step.method ?? "GET",
-        headers,
-        body: step.method !== "GET" ? body : undefined,
-        signal: controller?.signal,
-      });
-      const resData = await res.json().catch(() => res.text().catch(() => null));
-      ctx.variables["$api_response"] = resData;
-      ctx.variables["$api_status"] = res.status;
-      if (!retryOn.includes(res.status) || attempt >= maxRetries) {
-        if (!res.ok && retryOn.includes(res.status)) {
-          throw new Error(`api_call_failed_${res.status}`);
-        }
-        break;
-      }
-    } catch (err) {
-      lastError = err;
-      if (attempt >= maxRetries) {
-        throw err;
-      }
-      await new Promise((r) => setTimeout(r, retryDelayMs));
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
-  }
-  if (lastError) {
-    ctx.variables["$api_error"] = lastError instanceof Error ? lastError.message : String(lastError);
+  const body =
+    step.body && typeof step.body === "object"
+      ? interpolateObj(step.body as Record<string, unknown>, ctx)
+      : typeof step.body === "string"
+        ? interpolate(step.body, ctx)
+        : step.body;
+  const result = await executeServiceAction(
+    {
+      type: "http_request",
+      url: interpolate(step.url, ctx),
+      method: step.method ?? "GET",
+      headers,
+      body,
+      retries: step.retries,
+      retryDelayMs: step.retryDelayMs,
+      timeoutMs: step.timeoutMs,
+      retryOn: step.retryOn,
+    },
+    {
+      pageId: ctx.pageId,
+      variables: ctx.variables,
+      triggerData: ctx.triggerData,
+    },
+  );
+  ctx.variables["$api_response"] = result.data ?? null;
+  ctx.variables["$api_status"] = result.statusCode ?? null;
+  if (!result.ok) {
+    ctx.variables["$api_error"] = result.error ?? "api_call_failed";
+    throw new Error(result.error ?? "api_call_failed");
   }
 }
 
@@ -253,21 +239,25 @@ async function executeStepOnce(step: WorkflowStep, ctx: WorkflowContext): Promis
       ctx.logs.push(interpolate(step.message, ctx));
       break;
     case "serverless_node": {
-      const inputs = interpolateDeep(step.inputs, ctx);
-      const result = await executeServerlessNode({
-        pageId: ctx.pageId,
-        code: step.code,
-        inputs,
-        secrets: step.secrets,
-        timeoutMs: step.timeoutMs,
-        memoryMb: step.memoryMb,
-        variables: ctx.variables,
-        triggerData: ctx.triggerData,
-      });
+      const result = await executeServiceAction(
+        {
+          type: "serverless_node",
+          code: step.code,
+          inputs: interpolateDeep(step.inputs, ctx),
+          secrets: step.secrets,
+          timeoutMs: step.timeoutMs,
+          memoryMb: step.memoryMb,
+        },
+        {
+          pageId: ctx.pageId,
+          variables: ctx.variables,
+          triggerData: ctx.triggerData,
+        },
+      );
       if (result.logs?.length) ctx.logs.push(...result.logs);
       if (result.ok) {
         const key = step.responseVariable ?? "$serverless_result";
-        ctx.variables[key] = result.result ?? null;
+        ctx.variables[key] = result.data ?? null;
         break;
       }
       const errKey = step.errorVariable ?? "$serverless_error";
@@ -373,6 +363,13 @@ export async function findMatchingWorkflows(
       if ("collection" in trigger && triggerMeta.collection && trigger.collection !== triggerMeta.collection) return false;
       if ("formName" in trigger && triggerMeta.formName && trigger.formName !== triggerMeta.formName) return false;
       if ("path" in trigger && triggerMeta.path && trigger.path !== triggerMeta.path) return false;
+      if ("eventType" in trigger && trigger.eventType && triggerMeta.eventType && trigger.eventType !== triggerMeta.eventType) return false;
+      if ("topic" in trigger && trigger.topic && triggerMeta.topic && trigger.topic !== triggerMeta.topic) return false;
+      if ("stream" in trigger && trigger.stream && triggerMeta.stream && trigger.stream !== triggerMeta.stream) return false;
+      if ("entityType" in trigger && trigger.entityType && triggerMeta.entityType && trigger.entityType !== triggerMeta.entityType) return false;
+      if ("machine" in trigger && trigger.machine && triggerMeta.machine && trigger.machine !== triggerMeta.machine) return false;
+      if ("from" in trigger && trigger.from && triggerMeta.from && trigger.from !== triggerMeta.from) return false;
+      if ("to" in trigger && trigger.to && triggerMeta.to && trigger.to !== triggerMeta.to) return false;
     }
     return true;
   });

@@ -117,10 +117,6 @@ export function pathDataToAnchors(d: string): { anchors: PathAnchor[]; closed: b
   const tokens = trimmed.replace(/([MLCZ])/gi, " $1 ").split(/\s+/).filter(Boolean);
   let i = 0;
   let closed = false;
-  let lastX = 0;
-  let lastY = 0;
-  let startX = 0;
-  let startY = 0;
 
   const readNum = (): number | null => {
     const t = tokens[i++];
@@ -138,10 +134,6 @@ export function pathDataToAnchors(d: string): { anchors: PathAnchor[]; closed: b
       const x = readNum();
       const y = readNum();
       if (x == null || y == null) break;
-      lastX = x;
-      lastY = y;
-      startX = x;
-      startY = y;
       anchors.push({ x, y });
       continue;
     }
@@ -150,8 +142,6 @@ export function pathDataToAnchors(d: string): { anchors: PathAnchor[]; closed: b
       const x = readNum();
       const y = readNum();
       if (x == null || y == null) break;
-      lastX = x;
-      lastY = y;
       anchors.push({ x, y });
       continue;
     }
@@ -169,16 +159,12 @@ export function pathDataToAnchors(d: string): { anchors: PathAnchor[]; closed: b
         prev.handle2X = x1;
         prev.handle2Y = y1;
       }
-      lastX = x;
-      lastY = y;
       anchors.push({ x, y, handle1X: x2, handle1Y: y2 });
       continue;
     }
 
     if (c === "Z") {
       closed = true;
-      lastX = startX;
-      lastY = startY;
       break;
     }
   }

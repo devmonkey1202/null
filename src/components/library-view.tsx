@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import Countdown from "@/components/countdown";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
 import NullSpinner from "@/components/null-spinner";
+import { withAnonHeaders } from "@/lib/anon-client";
+import { createIntegratedServiceProject } from "@/lib/integrated-service-project-client";
 
 type PageItem = {
   id: string;
@@ -40,20 +42,25 @@ type LibraryResponse = {
 type SortOption = "recent" | "name";
 type StatusFilter = "all" | "live" | "draft" | "expired";
 
+function getProjectTitle(item: PageItem) {
+  return item.title?.trim() || `이름 없는 프로젝트 #${item.anon_number}`;
+}
+
 function formatLastSeen(iso: string | null | undefined) {
   if (!iso) return "-";
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "-";
-  const diff = Date.now() - t;
-  if (diff < 0) return "-";
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}초 전`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}분 전`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}시간 전`;
-  const day = Math.floor(hr / 24);
-  return `${day}일 전`;
+  const time = new Date(iso).getTime();
+  if (!Number.isFinite(time)) return "-";
+  const diff = Date.now() - time;
+  if (diff < 60_000) return `${Math.max(1, Math.floor(diff / 1000))}초 전`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}시간 전`;
+  return `${Math.floor(diff / 86_400_000)}일 전`;
+}
+
+function formatDuration(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return "0초";
+  if (ms < 60_000) return `${Math.round(ms / 1000)}초`;
+  return `${Math.round(ms / 60_000)}분`;
 }
 
 export default function LibraryView() {
@@ -66,57 +73,47 @@ export default function LibraryView() {
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [deployingId, setDeployingId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [creatingSample, setCreatingSample] = useState(false);
 
   const allWorks = useMemo(() => {
     if (!data) return [];
     const list = [
-      ...data.live.map((p) => ({ ...p, _status: "live" as const })),
-      ...data.drafts.map((p) => ({ ...p, _status: "draft" as const })),
-      ...data.history.map((p) => ({ ...p, _status: "expired" as const })),
+      ...data.live.map((item) => ({ ...item, _status: "live" as const })),
+      ...data.drafts.map((item) => ({ ...item, _status: "draft" as const })),
+      ...data.history.map((item) => ({ ...item, _status: "expired" as const })),
     ];
-    const byStatus =
-      statusFilter === "all"
-        ? list
-        : list.filter((p) => p._status === statusFilter);
-    const q = searchQuery.trim().toLowerCase();
-    const byQuery = q
-      ? byStatus.filter(
-          (p) =>
-            (p.title ?? "").toLowerCase().includes(q) ||
-            String(p.anon_number).includes(q)
-        )
+    const byStatus = statusFilter === "all" ? list : list.filter((item) => item._status === statusFilter);
+    const query = searchQuery.trim().toLowerCase();
+    const byQuery = query
+      ? byStatus.filter((item) => getProjectTitle(item).toLowerCase().includes(query) || String(item.anon_number).includes(query))
       : byStatus;
     const sorted = [...byQuery];
     if (sort === "name") {
-      sorted.sort((a, b) =>
-        (a.title ?? "").localeCompare(b.title ?? "", "ko")
-      );
+      sorted.sort((left, right) => getProjectTitle(left).localeCompare(getProjectTitle(right), "ko"));
     } else {
-      sorted.sort((a, b) => {
-        const au = new Date(
-          a._status === "live" ? a.live_expires_at ?? a.updated_at ?? 0 : a.updated_at ?? 0
-        ).getTime();
-        const bu = new Date(
-          b._status === "live" ? b.live_expires_at ?? b.updated_at ?? 0 : b.updated_at ?? 0
-        ).getTime();
-        return bu - au;
+      sorted.sort((left, right) => {
+        const leftTime = new Date(left._status === "live" ? left.live_expires_at ?? left.updated_at ?? 0 : left.updated_at ?? 0).getTime();
+        const rightTime = new Date(right._status === "live" ? right.live_expires_at ?? right.updated_at ?? 0 : right.updated_at ?? 0).getTime();
+        return rightTime - leftTime;
       });
     }
     return sorted;
-  }, [data, statusFilter, searchQuery, sort]);
+  }, [data, searchQuery, sort, statusFilter]);
 
   const fetchLibrary = useCallback(() => {
     const params = new URLSearchParams({ sort });
     if (statusFilter !== "all") params.set("status", statusFilter);
-    fetch(`/api/library?${params}`, { credentials: "include" })
+    fetch(`/api/library?${params}`, {
+      credentials: "include",
+      headers: withAnonHeaders(),
+    })
       .then((res) => {
         if (res.status === 401) {
-          window.location.href =
-            "/login?next=" + encodeURIComponent("/library");
+          window.location.href = "/login?next=" + encodeURIComponent("/library");
           return null;
         }
         if (!res.ok) {
-          setMessage("잠시 후 다시 시도해 주세요.");
+          setMessage("라이브러리를 다시 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
           return null;
         }
         return res.json();
@@ -126,24 +123,41 @@ export default function LibraryView() {
         setData(payload);
         setMessage(null);
       })
-      .catch(() => setMessage("잠시 후 다시 시도해 주세요."));
+      .catch(() => setMessage("라이브러리를 다시 불러오지 못했습니다. 잠시 후 다시 시도해 주세요."));
   }, [sort, statusFilter]);
 
   useEffect(() => {
     fetchLibrary();
   }, [fetchLibrary]);
 
+  async function createValidationSample() {
+    setCreatingSample(true);
+    setMessage(null);
+    try {
+      const result = await createIntegratedServiceProject();
+      window.location.href = result.publicUrl;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "운영 샘플을 만들지 못했습니다.");
+    } finally {
+      setCreatingSample(false);
+    }
+  }
+
   async function publish(pageId: string) {
     setPublishingId(pageId);
     setMessage(null);
     try {
-      const res = await fetch(`/api/pages/${pageId}/publish`, { method: "POST" });
+      const res = await fetch(`/api/pages/${pageId}/publish`, {
+        method: "POST",
+        credentials: "include",
+        headers: withAnonHeaders(),
+      });
       const body = await res.json().catch(() => null);
       if (res.ok) {
-        setMessage("재게시 완료");
+        setMessage("공개를 완료했습니다.");
         fetchLibrary();
       } else {
-        setMessage(body?.error ?? "재게시 실패");
+        setMessage(body?.error ?? "공개를 완료하지 못했습니다.");
       }
     } finally {
       setPublishingId(null);
@@ -157,13 +171,14 @@ export default function LibraryView() {
       const res = await fetch(`/api/pages/${pageId}/duplicate`, {
         method: "POST",
         credentials: "include",
+        headers: withAnonHeaders(),
       });
       const body = await res.json().catch(() => null);
       if (res.ok && body?.pageId) {
-        setMessage("복제됨");
+        setMessage("복제를 완료했습니다.");
         fetchLibrary();
       } else {
-        setMessage(body?.error ?? body?.message ?? "복제 실패");
+        setMessage(body?.error ?? body?.message ?? "복제를 완료하지 못했습니다.");
       }
     } finally {
       setDuplicatingId(null);
@@ -176,85 +191,117 @@ export default function LibraryView() {
     try {
       const res = await fetch(`/api/pages/${pageId}/deploy`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: withAnonHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
         body: JSON.stringify({ deploy }),
       });
-      const data = await res.json().catch(() => ({}));
+      const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMessage((data?.message as string) ?? "배포 처리 실패");
+        setMessage((payload?.message as string) ?? "배포 처리를 완료하지 못했습니다.");
         return;
       }
-      setMessage(deploy ? "배포되었습니다." : "배포가 취소되었습니다.");
+      setMessage(deploy ? "배포했습니다." : "배포를 취소했습니다.");
       fetchLibrary();
     } catch {
-      setMessage("배포 처리 실패");
+      setMessage("배포 처리를 완료하지 못했습니다.");
     } finally {
       setDeployingId(null);
     }
   }
 
-  return (
-    <div className="min-h-screen bg-[#FAFAFA]">
-      <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
-        {/* Header */}
-        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-[#111111]">
-              내 작품
-            </h1>
-            <p className="mt-0.5 text-sm text-[#666666]">
-              퍼블리시·배포한 작품을 한곳에서 관리하고, 작품별 대시보드에서 지표를 확인하세요.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href="/dashboard"
-              className="rounded-xl border border-[#EAEAEA] bg-white px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#FAFAFA]"
-            >
-              대시보드
-            </Link>
-            <a
-              href="/editor/advanced"
-              className="rounded-xl bg-[#111111] px-4 py-2 text-sm font-semibold text-white hover:bg-[#333333]"
-              style={{ color: "#ffffff" }}
-            >
-              새 작품 만들기
-            </a>
-          </div>
-        </header>
+  const totalProjects = (data?.live.length ?? 0) + (data?.drafts.length ?? 0) + (data?.history.length ?? 0);
 
-        {/* Toolbar: search, filter, sort */}
-        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="제목·작품 번호 검색"
-            className="w-full max-w-xs rounded-xl border border-[#EAEAEA] bg-white px-4 py-2.5 text-sm text-[#111111] placeholder:text-[#999999] focus:border-[#111111] focus:outline-none"
-            aria-label="검색"
+  return (
+    <div className="min-h-screen bg-white text-[#151515]">
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        <section className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+          <div className="rounded-[14px] border border-black/[0.08] bg-white/90 p-5 shadow-[0_18px_48px_rgba(15,23,42,0.04)] backdrop-blur-xl sm:p-6">
+            <div className="text-[12px] font-semibold uppercase tracking-[0.24em] text-[#8a7550]">Project Library</div>
+            <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-[#111111] sm:text-[40px]">프로젝트 라이브러리</h1>
+            <p className="sr-only">
+              초안, 라이브, 보관 프로젝트를 한곳에서 정리하는 작업 인벤토리입니다. 여기서는 프로젝트를 찾고,
+              공개 상태를 바꾸고, 대시보드나 편집기로 바로 넘어가는 흐름이 가장 중요합니다.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Link
+                href="/editor/advanced"
+                className="rounded-full bg-[#111111] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#2a2a2a]"
+              >
+                새 프로젝트 만들기
+              </Link>
+              <Link
+                href="/dashboard"
+                className="rounded-full border border-black/10 bg-[#f7f4ed] px-5 py-3 text-sm font-medium text-[#111111] transition hover:bg-[#ede7da]"
+              >
+                운영 대시보드 열기
+              </Link>
+            </div>
+          </div>
+
+          <aside className="rounded-[14px] border border-black/[0.08] bg-white/75 p-5 shadow-[0_18px_48px_rgba(15,23,42,0.035)] backdrop-blur-xl sm:p-6">
+            <div className="text-[12px] font-semibold uppercase tracking-[0.24em] text-[#8a7550]">Optional Sample</div>
+            <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-[#111111]">통합 검증 서비스</h2>
+            <p className="sr-only">
+              일반 프로젝트를 대신하는 기본 템플릿이 아니라, 예약·알림·티켓·운영 상태를 한 번에 시험할 때 쓰는
+              운영 샘플입니다. 필요할 때만 별도로 만드시면 됩니다.
+            </p>
+            <button
+              type="button"
+              onClick={createValidationSample}
+              disabled={creatingSample}
+              className="mt-5 w-full rounded-full border border-black/10 bg-white px-4 py-3 text-sm font-semibold text-[#111111] transition hover:bg-[#f1ece2] disabled:cursor-wait disabled:opacity-70"
+            >
+              {creatingSample ? "운영 샘플을 준비하고 있습니다" : "운영 샘플 만들기"}
+            </button>
+          </aside>
+        </section>
+
+        <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="전체 프로젝트" value={`${totalProjects}`} description="현재 계정이 가진 전체 작업 수" />
+          <MetricCard label="라이브" value={`${data?.live.length ?? 0}`} description="공개 중인 프로젝트 수" />
+          <MetricCard label="초안" value={`${data?.drafts.length ?? 0}`} description="편집 중인 프로젝트 수" />
+          <MetricCard
+            label="오늘 활동"
+            value={`${data?.summary?.today?.visits ?? 0}`}
+            description={`마지막 수집 ${formatLastSeen(data?.summary?.today?.last_seen_at)}`}
           />
+        </section>
+
+        <div className="mt-6 grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div className="grid gap-3">
+            <label className="text-sm font-semibold text-[#111111]" htmlFor="library-search">
+              프로젝트 검색
+            </label>
+            <input
+              id="library-search"
+              type="text"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="프로젝트 제목이나 번호로 찾기"
+              className="w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm text-[#111111] outline-none transition focus:border-black/25"
+              aria-label="프로젝트 검색"
+            />
+          </div>
+
           <div className="flex flex-wrap items-center gap-2">
-            {(["all", "live", "draft", "expired"] as const).map((s) => (
+            {(["all", "live", "draft", "expired"] as const).map((status) => (
               <button
-                key={s}
+                key={status}
                 type="button"
-                onClick={() => setStatusFilter(s)}
-                className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                  statusFilter === s
-                    ? "bg-[#111111] text-white"
-                    : "bg-white text-[#666666] hover:bg-[#F0F0F0]"
+                onClick={() => setStatusFilter(status)}
+                className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                  statusFilter === status ? "bg-[#111111] text-white" : "bg-white text-[#555555] hover:bg-[#f1efe9]"
                 }`}
               >
-                {s === "all" ? "전체" : s === "live" ? "라이브" : s === "draft" ? "초안" : "만료"}
+                {status === "all" ? "전체" : status === "live" ? "라이브" : status === "draft" ? "초안" : "보관"}
               </button>
             ))}
-            <span className="text-[11px] text-[#999999]">|</span>
+            <span className="text-[#b0aba3]">|</span>
             <button
               type="button"
               onClick={() => setSort("recent")}
-              className={`rounded-xl px-3 py-1.5 text-xs font-medium ${
-                sort === "recent" ? "bg-[#111111] text-white" : "bg-white text-[#666666] hover:bg-[#F0F0F0]"
+              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                sort === "recent" ? "bg-[#111111] text-white" : "bg-white text-[#555555] hover:bg-[#f1efe9]"
               }`}
             >
               최신순
@@ -262,8 +309,8 @@ export default function LibraryView() {
             <button
               type="button"
               onClick={() => setSort("name")}
-              className={`rounded-xl px-3 py-1.5 text-xs font-medium ${
-                sort === "name" ? "bg-[#111111] text-white" : "bg-white text-[#666666] hover:bg-[#F0F0F0]"
+              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                sort === "name" ? "bg-[#111111] text-white" : "bg-white text-[#555555] hover:bg-[#f1efe9]"
               }`}
             >
               이름순
@@ -271,25 +318,8 @@ export default function LibraryView() {
           </div>
         </div>
 
-        {/* One-line summary (전체 or 라이브일 때만) */}
-        {(statusFilter === "all" || statusFilter === "live") && data?.summary?.today && (
-          <div className="mb-6 rounded-xl border border-[#EAEAEA] bg-white px-4 py-3 text-xs text-[#666666]">
-            오늘 방문 <strong className="text-[#111111]">{data.summary.today.visits ?? 0}</strong>
-            {" · "}
-            클릭 <strong className="text-[#111111]">
-              {typeof data.summary.today.clicks === "number" ? data.summary.today.clicks : "-"}
-            </strong>
-            {" · "}
-            마지막 활동 {formatLastSeen(data.summary.today.last_seen_at)}
-          </div>
-        )}
-
-        {message && (
-          <div
-            className="mb-4 flex items-center gap-2 rounded-xl border border-[#EAEAEA] bg-white px-4 py-3 text-sm text-[#666666]"
-            role="status"
-            aria-live="polite"
-          >
+        {message ? (
+          <div className="mt-5 flex items-center gap-2 rounded-[18px] border border-black/8 bg-white px-4 py-3 text-sm text-[#635e56]" role="status" aria-live="polite">
             {message}
             <button
               type="button"
@@ -297,190 +327,259 @@ export default function LibraryView() {
                 setMessage(null);
                 fetchLibrary();
               }}
-              className="rounded-lg border border-[#111111] px-3 py-1 text-xs font-medium text-[#111111]"
+              className="rounded-full border border-black/10 px-3 py-1 text-xs font-medium text-[#111111]"
             >
               다시 시도
             </button>
           </div>
-        )}
+        ) : null}
 
-        {/* Unified card grid */}
         {!data ? (
-          <div className="flex justify-center py-16">
+          <div className="flex justify-center py-20">
             <NullSpinner />
           </div>
         ) : allWorks.length === 0 ? (
-          <div className="rounded-2xl border border-[#EAEAEA] bg-white p-12 text-center">
-            <p className="text-[#666666]">
-              {searchQuery.trim() ? "검색 결과가 없습니다." : "작품이 없습니다."}
+          <div className="mt-6 rounded-[28px] border border-black/8 bg-white p-12 text-center shadow-[0_18px_60px_rgba(17,17,17,0.05)]">
+            <p className="text-lg font-semibold text-[#111111]">
+              {searchQuery.trim() ? "검색 결과가 없습니다." : "아직 프로젝트가 없습니다."}
             </p>
-            {!searchQuery.trim() && (
-              <a
-                href="/editor/advanced"
-                className="mt-4 inline-block rounded-xl bg-[#111111] px-4 py-2 text-sm font-medium text-white hover:bg-[#333333]"
-                style={{ color: "#ffffff" }}
-              >
-                새 작품 만들기
-              </a>
-            )}
+            {!searchQuery.trim() ? (
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                <Link
+                  href="/editor/advanced"
+                  className="rounded-full bg-[#111111] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#2a2a2a]"
+                >
+                  새 프로젝트 만들기
+                </Link>
+                <button
+                  type="button"
+                  onClick={createValidationSample}
+                  disabled={creatingSample}
+                  className="rounded-full border border-black/10 bg-[#f7f4ed] px-5 py-3 text-sm font-medium text-[#111111] transition hover:bg-[#ede7da] disabled:opacity-70"
+                >
+                  {creatingSample ? "운영 샘플 준비 중" : "운영 샘플 만들기"}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : (
-          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <ul className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {allWorks.map((item) => (
-              <li key={item.id} className="relative">
-                <article className="flex overflow-hidden rounded-2xl border border-[#EAEAEA] bg-white shadow-sm transition hover:shadow-md">
-                  <div className="flex h-28 w-24 shrink-0 items-center justify-center bg-[#F5F5F5]">
-                    {item.snapshot_thumbnail ? (
-                      <img
-                        src={item.snapshot_thumbnail}
-                        alt={item.title || `익명 작품 #${item.anon_number}`}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <span className="text-2xl text-[#DDDDDD]" aria-hidden>◇</span>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1 py-3 pr-3 pl-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-[#111111]" title={item.title || `익명 작품 #${item.anon_number}`}>
-                        {item.title || `익명 작품 #${item.anon_number}`}
-                      </h2>
-                      <div className="relative shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => setOpenMenuId(openMenuId === item.id ? null : item.id)}
-                          className="rounded-lg p-1 text-[#666666] hover:bg-[#F0F0F0] hover:text-[#111111]"
-                          aria-label="더 보기"
-                        >
-                          ⋯
-                        </button>
-                        {openMenuId === item.id && (
-                          <>
-                            <div
-                              className="fixed inset-0 z-10"
-                              aria-hidden
-                              onClick={() => setOpenMenuId(null)}
-                            />
-                            <div className="absolute right-0 top-full z-20 mt-1 min-w-[140px] rounded-xl border border-[#EAEAEA] bg-white py-1 shadow-lg">
-                              <a
-                                href={`/editor/advanced?pageId=${item.id}`}
-                                className="block px-4 py-2 text-left text-xs text-[#111111] hover:bg-[#FAFAFA]"
-                              >
-                                에디터에서 수정
-                              </a>
-                              {item._status !== "live" && (
-                                <button
-                                  type="button"
-                                  onClick={() => { publish(item.id); setOpenMenuId(null); }}
-                                  disabled={publishingId === item.id}
-                                  className="block w-full px-4 py-2 text-left text-xs text-[#111111] hover:bg-[#FAFAFA] disabled:opacity-60"
-                                >
-                                  {publishingId === item.id ? "재게시 중…" : "재게시"}
-                                </button>
-                              )}
-                              {item._status === "expired" && (
-                                <button
-                                  type="button"
-                                  onClick={() => { duplicate(item.id); setOpenMenuId(null); }}
-                                  disabled={duplicatingId === item.id}
-                                  className="block w-full px-4 py-2 text-left text-xs text-[#111111] hover:bg-[#FAFAFA] disabled:opacity-60"
-                                >
-                                  {duplicatingId === item.id ? "복제 중…" : "복제"}
-                                </button>
-                              )}
-                              {item.deployed_at ? (
-                                <button
-                                  type="button"
-                                  onClick={() => { deployPage(item.id, false); setOpenMenuId(null); }}
-                                  disabled={deployingId === item.id}
-                                  className="block w-full px-4 py-2 text-left text-xs text-[#111111] hover:bg-[#FAFAFA] disabled:opacity-60"
-                                >
-                                  배포 취소
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => { deployPage(item.id, true); setOpenMenuId(null); }}
-                                  disabled={deployingId === item.id}
-                                  className="block w-full px-4 py-2 text-left text-xs text-[#111111] hover:bg-[#FAFAFA] disabled:opacity-60"
-                                >
-                                  {deployingId === item.id ? "배포 중…" : "배포"}
-                                </button>
-                              )}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      {item._status === "live" && (
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-600">
-                          <span className="h-1 w-1 rounded-full bg-red-500" /> 라이브
-                          {item.live_expires_at && (
-                            <>
-                              <span className="text-[#999999]">·</span>
-                              <Countdown expiresAt={item.live_expires_at} />
-                            </>
-                          )}
-                        </span>
-                      )}
-                      {item._status === "draft" && (
-                        <span className="rounded-full bg-[#F0F0F0] px-2 py-0.5 text-[10px] font-medium text-[#666666]">초안</span>
-                      )}
-                      {item._status === "expired" && (
-                        <span className="rounded-full bg-[#F0F0F0] px-2 py-0.5 text-[10px] font-medium text-[#666666]">만료</span>
-                      )}
-                      {item.deployed_at && (
-                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">배포됨</span>
-                      )}
-                    </div>
-                    <p className="mt-1.5 text-[11px] text-[#666666]">
-                      방문 {item.total_visits} · 클릭 {item.total_clicks}
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {item._status === "live" && (
-                        <a
-                          href={`/live/${item.id}`}
-                          className="rounded-lg bg-[#111111] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#333333]"
-                          style={{ color: "#ffffff" }}
-                        >
-                          라이브 보기
-                        </a>
-                      )}
-                      {item.deployed_at && (
-                        <a
-                          href={`/p/${item.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20"
-                        >
-                          배포 URL
-                        </a>
-                      )}
-                      {!item.deployed_at && item._status !== "live" && (
-                        <button
-                          type="button"
-                          onClick={() => deployPage(item.id, true)}
-                          disabled={deployingId === item.id}
-                          className="rounded-lg border border-[#3B82F6] bg-[#3B82F6]/10 px-3 py-1.5 text-xs font-medium text-[#2563eb] hover:bg-[#3B82F6]/20 disabled:opacity-60"
-                        >
-                          {deployingId === item.id ? "배포 중…" : "배포"}
-                        </button>
-                      )}
-                      <Link
-                        href={`/dashboard/${item.id}`}
-                        className="rounded-lg border border-[#EAEAEA] bg-white px-3 py-1.5 text-xs font-medium text-[#111111] hover:bg-[#FAFAFA]"
-                      >
-                        대시보드
-                      </Link>
-                    </div>
-                  </div>
-                </article>
+              <li key={item.id}>
+                <ProjectCard
+                  item={item}
+                  openMenuId={openMenuId}
+                  setOpenMenuId={setOpenMenuId}
+                  publishingId={publishingId}
+                  duplicatingId={duplicatingId}
+                  deployingId={deployingId}
+                  onPublish={publish}
+                  onDuplicate={duplicate}
+                  onDeploy={deployPage}
+                />
               </li>
             ))}
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, description }: { label: string; value: string; description: string }) {
+  return (
+    <article className="rounded-[24px] border border-black/8 bg-white p-5 shadow-[0_14px_44px_rgba(17,17,17,0.05)]">
+      <div className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8a7550]">{label}</div>
+      <div className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-[#111111]">{value}</div>
+      <p className="mt-2 text-sm text-[#635e56]">{description}</p>
+    </article>
+  );
+}
+
+function ProjectCard({
+  item,
+  openMenuId,
+  setOpenMenuId,
+  publishingId,
+  duplicatingId,
+  deployingId,
+  onPublish,
+  onDuplicate,
+  onDeploy,
+}: {
+  item: PageItem & { _status: "live" | "draft" | "expired" };
+  openMenuId: string | null;
+  setOpenMenuId: (value: string | null) => void;
+  publishingId: string | null;
+  duplicatingId: string | null;
+  deployingId: string | null;
+  onPublish: (pageId: string) => Promise<void>;
+  onDuplicate: (pageId: string) => Promise<void>;
+  onDeploy: (pageId: string, deploy: boolean) => Promise<void>;
+}) {
+  const title = getProjectTitle(item);
+  const primaryHref =
+    item._status === "draft" ? `/editor/advanced?pageId=${item.id}` : item._status === "live" ? `/live/${item.id}` : `/dashboard/${item.id}`;
+  const primaryLabel = item._status === "draft" ? "편집하기" : item._status === "live" ? "라이브 보기" : "대시보드";
+
+  return (
+    <article className="group relative rounded-[20px] border border-black/[0.08] bg-white p-3 shadow-[0_14px_42px_rgba(15,23,42,0.045)] transition duration-200 hover:-translate-y-0.5 hover:border-black/[0.14] hover:shadow-[0_24px_60px_rgba(15,23,42,0.09)]">
+      <div className="relative aspect-[16/9] overflow-hidden rounded-[16px] border border-black/[0.07] bg-[linear-gradient(135deg,#f6f7f9_0%,#eef1f5_54%,#ffffff_100%)]">
+        {item.snapshot_thumbnail ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={item.snapshot_thumbnail} alt={title} className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.02]" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_28%_20%,rgba(255,255,255,0.95),transparent_32%),linear-gradient(135deg,#f4f5f7,#e9edf2)]">
+            <span className="rounded-full border border-black/[0.08] bg-white/70 px-3 py-2 text-sm font-semibold text-[#7a8493] shadow-sm backdrop-blur">
+              NULL
+            </span>
+          </div>
+        )}
+        <div className="absolute left-3 top-3 flex flex-wrap gap-2">
+          <StatusBadge status={item._status} />
+          {item.deployed_at ? <StatusTag label="배포됨" tone="green" /> : null}
+        </div>
+        <div className="absolute inset-x-3 bottom-3 rounded-[14px] border border-white/70 bg-white/[0.78] px-3 py-2 shadow-[0_10px_28px_rgba(15,23,42,0.10)] backdrop-blur-xl">
+          <h2 className="truncate text-sm font-semibold text-[#111111]" title={title}>
+            {title}
+          </h2>
+          <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-medium text-[#5a6472]">
+            <span>{item._status === "live" ? "종료 예정" : "최근 수정"} {formatLastSeen(item._status === "live" ? item.live_expires_at : item.updated_at)}</span>
+            <span>#{item.anon_number}</span>
+          </div>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setOpenMenuId(openMenuId === item.id ? null : item.id)}
+        className="absolute right-6 top-6 rounded-full border border-white/70 bg-white/[0.82] px-3 py-1.5 text-xs font-semibold text-[#111111] shadow-[0_8px_24px_rgba(15,23,42,0.08)] backdrop-blur-xl transition hover:bg-white"
+        aria-label="작업 더보기"
+        aria-expanded={openMenuId === item.id}
+      >
+        더보기
+      </button>
+      {openMenuId === item.id ? (
+        <>
+          <div className="fixed inset-0 z-10" aria-hidden onClick={() => setOpenMenuId(null)} />
+          <div className="absolute right-4 top-14 z-20 min-w-[180px] overflow-hidden rounded-[16px] border border-black/[0.08] bg-white py-1 shadow-[0_18px_48px_rgba(15,23,42,0.14)]">
+            <a href={`/editor/advanced?pageId=${item.id}`} className="block px-4 py-2 text-sm text-[#111111] hover:bg-black/[0.04]">
+              편집기에서 열기
+            </a>
+            {item._status !== "live" ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void onPublish(item.id);
+                  setOpenMenuId(null);
+                }}
+                disabled={publishingId === item.id}
+                className="block w-full px-4 py-2 text-left text-sm text-[#111111] hover:bg-black/[0.04] disabled:opacity-60"
+              >
+                {publishingId === item.id ? "공개 중..." : "공개"}
+              </button>
+            ) : null}
+            {item._status === "expired" ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void onDuplicate(item.id);
+                  setOpenMenuId(null);
+                }}
+                disabled={duplicatingId === item.id}
+                className="block w-full px-4 py-2 text-left text-sm text-[#111111] hover:bg-black/[0.04] disabled:opacity-60"
+              >
+                {duplicatingId === item.id ? "복제 중..." : "복제"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                void onDeploy(item.id, !item.deployed_at);
+                setOpenMenuId(null);
+              }}
+              disabled={deployingId === item.id}
+              className="block w-full px-4 py-2 text-left text-sm text-[#111111] hover:bg-black/[0.04] disabled:opacity-60"
+            >
+              {item.deployed_at ? "배포 취소" : deployingId === item.id ? "배포 중..." : "배포"}
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      <div className="px-1 pb-1 pt-3">
+        <div className="grid grid-cols-3 gap-2">
+          <InfoBox label="방문" value={`${item.total_visits}`} />
+          <InfoBox label="클릭" value={`${item.total_clicks}`} />
+          <InfoBox label="체류" value={formatDuration(item.avg_duration_ms)} />
+        </div>
+        <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+          <Link href={primaryHref} className="rounded-full bg-[#111111] px-4 py-2.5 text-center text-sm font-semibold text-white transition hover:bg-[#2a2a2a]">
+            {primaryLabel}
+          </Link>
+          <Link href={`/dashboard/${item.id}`} className="rounded-full border border-black/10 bg-white px-4 py-2.5 text-sm font-semibold text-[#111111] transition hover:bg-black/[0.04]">
+            분석
+          </Link>
+        </div>
+        <div className="mt-2">
+          {item.deployed_at ? (
+            <a
+              href={`/p/${item.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex w-full justify-center rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+            >
+              공개 URL 열기
+            </a>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void onDeploy(item.id, true)}
+              disabled={deployingId === item.id}
+              className="w-full rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-[#111111] transition hover:bg-black/[0.04] disabled:opacity-60"
+            >
+              {deployingId === item.id ? "배포 중..." : "배포하기"}
+            </button>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function StatusBadge({ status }: { status: "live" | "draft" | "expired" }) {
+  if (status === "live") {
+    return <StatusTag label="라이브" tone="dark" />;
+  }
+  if (status === "draft") {
+    return <StatusTag label="초안" tone="warm" />;
+  }
+  return <StatusTag label="보관" tone="gray" />;
+}
+
+function StatusTag({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "dark" | "warm" | "gray" | "green";
+}) {
+  const className =
+    tone === "dark"
+      ? "bg-[#111111] text-white"
+      : tone === "warm"
+        ? "bg-[#eee5d6] text-[#6d5b3a]"
+        : tone === "green"
+          ? "bg-emerald-50 text-emerald-700"
+          : "bg-[#ececec] text-[#5c5c5c]";
+  return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${className}`}>{label}</span>;
+}
+
+function InfoBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[14px] border border-black/[0.06] bg-[#f7f8fa] px-3 py-2">
+      <div className="text-[11px] font-medium text-[#5a6472]">{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold text-[#111111]">{value}</div>
     </div>
   );
 }

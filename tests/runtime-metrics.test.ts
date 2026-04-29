@@ -9,7 +9,7 @@ describe("runtime metrics", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
-    let callbacks: Array<{ type?: string; cb: (list: PerformanceObserverEntryList) => void }> = [];
+    const callbacks: Array<{ type?: string; cb: (list: PerformanceObserverEntryList) => void }> = [];
     class MockPerformanceObserver {
       private cb: (list: PerformanceObserverEntryList) => void;
       private type?: string;

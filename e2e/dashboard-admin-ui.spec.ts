@@ -1,6 +1,6 @@
 ﻿import { test, expect } from "@playwright/test";
 
-const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3100";
+const BASE = process.env.PLAYWRIGHT_TEST_BASE_URL || "http://localhost:3101";
 
 async function createPage(request: import("@playwright/test").APIRequestContext, anonId: string) {
   const headers = { "x-anon-user-id": anonId, "Content-Type": "application/json" };

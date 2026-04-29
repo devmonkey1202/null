@@ -1,6 +1,8 @@
 import type { LibraryRef } from "../doc/scene";
+import type { StoreApprovalRequest, StoreGovernancePolicy } from "./storeGovernanceModel";
 import type { PluginManifest } from "@/lib/app-plugins";
 import type { StorePlugin } from "@/lib/plugin-store";
+import { formatStoreApprovalLabel, getStorePluginGovernanceState, getStoreWidgetGovernanceState } from "@/lib/store-governance-rules";
 import type { StoreWidget } from "@/lib/widget-store";
 
 export type ResourceHubEntry =
@@ -18,6 +20,8 @@ export type ResourceHubFilters = {
   storeWidgets?: (StoreWidget & { digest?: string; storeVersion?: string })[];
   savedPluginStoreIds?: string[];
   savedWidgetStoreIds?: string[];
+  storeApprovalRequests?: StoreApprovalRequest[];
+  storeGovernancePolicy?: StoreGovernancePolicy;
 };
 
 function matches(entry: ResourceHubEntry, filters: ResourceHubFilters) {
@@ -46,25 +50,42 @@ export function buildResourceHubEntries(filters: ResourceHubFilters) {
     status: plugin.frozen ? "frozen" : "installed",
   }));
 
-  const storePlugins = (filters.storePlugins ?? []).map<ResourceHubEntry>((plugin) => ({
-    id: plugin.storeId,
-    type: "plugin-store",
-    title: plugin.name,
-    subtitle: `${plugin.category} plugin${plugin.version ? ` · v${plugin.version}` : ""}`,
-    keywords: [plugin.name, plugin.description ?? "", plugin.detail ?? "", ...(plugin.tags ?? [])],
-    status: plugin.approvalRequired ? "approval-required" : "ready",
-    saved: (filters.savedPluginStoreIds ?? []).includes(plugin.storeId),
-  }));
+  const storePlugins = (filters.storePlugins ?? []).map<ResourceHubEntry>((plugin) => {
+    const governance = filters.storeGovernancePolicy
+      ? getStorePluginGovernanceState(plugin, filters.storeGovernancePolicy, filters.storeApprovalRequests ?? [])
+      : null;
+    return {
+      id: plugin.storeId,
+      type: "plugin-store",
+      title: plugin.name,
+      subtitle: `${plugin.category} plugin${plugin.version ? ` · v${plugin.version}` : ""}`,
+      keywords: [plugin.name, plugin.description ?? "", plugin.detail ?? "", ...(plugin.tags ?? [])],
+      status:
+        governance
+          ? governance.blockedPermissions.length
+            ? `blocked:${governance.blockedPermissions.join(",")}`
+            : formatStoreApprovalLabel(governance.approval)
+          : plugin.approvalRequired
+            ? "approval-required"
+            : "ready",
+      saved: (filters.savedPluginStoreIds ?? []).includes(plugin.storeId),
+    };
+  });
 
-  const storeWidgets = (filters.storeWidgets ?? []).map<ResourceHubEntry>((widget) => ({
-    id: widget.storeId,
-    type: "widget-store",
-    title: widget.name,
-    subtitle: `${widget.category} widget · v${widget.version}`,
-    keywords: [widget.name, widget.description, widget.detail ?? "", ...(widget.tags ?? [])],
-    status: widget.approvalRequired ? "approval-required" : "ready",
-    saved: (filters.savedWidgetStoreIds ?? []).includes(widget.storeId),
-  }));
+  const storeWidgets = (filters.storeWidgets ?? []).map<ResourceHubEntry>((widget) => {
+    const governance = filters.storeGovernancePolicy
+      ? getStoreWidgetGovernanceState(widget, filters.storeGovernancePolicy, filters.storeApprovalRequests ?? [])
+      : null;
+    return {
+      id: widget.storeId,
+      type: "widget-store",
+      title: widget.name,
+      subtitle: `${widget.category} widget · v${widget.version}`,
+      keywords: [widget.name, widget.description, widget.detail ?? "", ...(widget.tags ?? [])],
+      status: governance ? formatStoreApprovalLabel(governance.approval) : widget.approvalRequired ? "approval-required" : "ready",
+      saved: (filters.savedWidgetStoreIds ?? []).includes(widget.storeId),
+    };
+  });
 
   return [...libraries, ...installedPlugins, ...storePlugins, ...storeWidgets].filter((entry) => matches(entry, filters));
 }

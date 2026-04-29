@@ -4,6 +4,7 @@ import "./globals.css";
 import AnonInit from "@/components/anon-init";
 import { Providers } from "@/components/providers";
 import ConditionalFooter from "@/components/conditional-footer";
+import GlobalNavigation from "@/components/global-navigation";
 import SwRegister from "@/components/sw-register";
 import NativeBridgeHost from "@/components/native-bridge-host";
 
@@ -19,6 +20,20 @@ const mono = IBM_Plex_Mono({
   variable: "--font-mono-custom",
   display: "swap",
 });
+
+const themeInitScript = `
+(function() {
+  try {
+    var stored = localStorage.getItem("theme");
+    var theme = stored === "light" || stored === "dark"
+      ? stored
+      : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  } catch (error) {
+    document.documentElement.setAttribute("data-theme", "light");
+  }
+})();
+`;
 
 export const metadata: Metadata = {
   title: "NULL",
@@ -39,12 +54,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko" className={`${sans.variable} ${mono.variable}`}>
+    <html lang="ko" className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body className="antialiased flex min-h-screen flex-col">
         <Providers>
           <AnonInit />
           <NativeBridgeHost />
           <SwRegister />
+          <GlobalNavigation />
           <main className="flex-1">{children}</main>
           <ConditionalFooter />
         </Providers>

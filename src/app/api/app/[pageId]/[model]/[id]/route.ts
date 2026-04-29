@@ -17,7 +17,10 @@ import { parseJsonObject } from "@/lib/validation";
 import { triggerWorkflowsForEvent } from "@/lib/app-workflow";
 import { resolveAppUserFromRequest } from "@/lib/app-request";
 import { isAppActionAllowedWithContext } from "@/lib/app-permissions";
-import { ensureDevCollections, readEnvFromRequest, resolveAppEnv } from "@/lib/app-env";
+import { ensureDevCollections, readEnvFromRequest, resolveAppEnv, toEnvSlug } from "@/lib/app-env";
+import { deleteServiceRankingRecord, scheduleServiceRankingRecompute, syncServiceRankingRecord } from "@/lib/service-ranking";
+import { deleteServiceSearchRecord, syncServiceSearchRecord } from "@/lib/service-search";
+import { canAccessPublishedPage } from "@/lib/page-access";
 
 type Params = { pageId: string; model: string; id: string };
 
@@ -31,7 +34,14 @@ function getAppUserField(fields: AppFieldDef[]) {
 async function getPageAndAccess(pageId: string, req: Request) {
   const page = await prisma.page.findUnique({
     where: { id: pageId, is_deleted: false },
-    select: { id: true, owner: { select: { anon_id: true } }, status: true, is_hidden: true },
+    select: {
+      id: true,
+      owner: { select: { anon_id: true } },
+      status: true,
+      is_hidden: true,
+      live_expires_at: true,
+      deployed_at: true,
+    },
   });
   if (!page) return { page: null as null, isOwner: false, appUser: null as null };
   const anonUserId = await resolveAnonUserId(req);
@@ -61,7 +71,7 @@ export async function GET(req: Request, context: { params: Promise<Params> }) {
   const appUserField = getAppUserField(fields);
   const requiresAppUser = Boolean(appUserField);
 
-  if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
+  if (!canAccessPublishedPage(page, isOwner)) return apiErrorJson("not_found", 404);
   if (!isOwner && requiresAppUser && !appUser) return apiErrorJson("auth_required", 401);
 
   const record = await getRecord(
@@ -134,12 +144,12 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
 
   const page = await prisma.page.findFirst({
     where: { id: pageId, is_deleted: false },
-    select: { id: true, owner_id: true, status: true, is_hidden: true },
+    select: { id: true, owner_id: true, status: true, is_hidden: true, live_expires_at: true, deployed_at: true },
   });
   if (!page) return apiErrorJson("not_found", 404);
   const isOwner = Boolean(user && page.owner_id === user.id);
   if (!isOwner && !appUser) return apiErrorJson("auth_required", 401);
-  if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
+  if (!canAccessPublishedPage(page, isOwner)) return apiErrorJson("not_found", 404);
   if (appUser && !isAppActionAllowedWithContext(appUser.role, "update", { isOwner, appUserId: appUser.id })) {
     return apiErrorJson("permission_denied", 403, { detail: "app_user_update_required" });
   }
@@ -243,6 +253,23 @@ export async function PATCH(req: Request, context: { params: Promise<Params> }) 
     { collection: model, field: changedFields.length === 1 ? changedFields[0] : "" },
     triggerData
   );
+  await syncServiceSearchRecord({
+    pageId,
+    collectionSlug: toEnvSlug(model, env),
+    recordId: record.id,
+  });
+  const touchedRankingRules = await syncServiceRankingRecord({
+    pageId,
+    collectionSlug: toEnvSlug(model, env),
+    recordId: record.id,
+  });
+  if (touchedRankingRules.length) {
+    await scheduleServiceRankingRecompute({
+      pageId,
+      ruleKeys: touchedRankingRules,
+      env,
+    });
+  }
 
   return NextResponse.json({
     id: record.id,
@@ -265,12 +292,12 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
 
   const page = await prisma.page.findFirst({
     where: { id: pageId, is_deleted: false },
-    select: { id: true, owner_id: true, status: true, is_hidden: true },
+    select: { id: true, owner_id: true, status: true, is_hidden: true, live_expires_at: true, deployed_at: true },
   });
   if (!page) return apiErrorJson("not_found", 404);
   const isOwner = Boolean(user && page.owner_id === user.id);
   if (!isOwner && !appUser) return apiErrorJson("auth_required", 401);
-  if (!isOwner && (page.is_hidden || page.status !== "live")) return apiErrorJson("not_found", 404);
+  if (!canAccessPublishedPage(page, isOwner)) return apiErrorJson("not_found", 404);
   if (appUser && !isAppActionAllowedWithContext(appUser.role, "delete", { isOwner, appUserId: appUser.id })) {
     return apiErrorJson("permission_denied", 403, { detail: "app_user_delete_required" });
   }
@@ -337,6 +364,23 @@ export async function DELETE(req: Request, context: { params: Promise<Params> })
     updated_at: record.updated_at,
   };
   await triggerWorkflowsForEvent(pageId, "record_deleted", { collection: model }, triggerData);
+  await deleteServiceSearchRecord({
+    pageId,
+    collectionSlug: toEnvSlug(model, env),
+    recordId: record.id,
+  });
+  const removedRankingRules = await deleteServiceRankingRecord({
+    pageId,
+    collectionSlug: toEnvSlug(model, env),
+    recordId: record.id,
+  });
+  if (removedRankingRules.length) {
+    await scheduleServiceRankingRecompute({
+      pageId,
+      ruleKeys: removedRankingRules,
+      env,
+    });
+  }
 
   return NextResponse.json({ ok: true, id: record.id });
 }

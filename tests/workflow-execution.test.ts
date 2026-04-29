@@ -1,9 +1,12 @@
 // @vitest-environment node
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   appWorkflow: {
     findUnique: vi.fn(),
+  },
+  appSecret: {
+    findMany: vi.fn(),
   },
   appWorkflowLog: {
     create: vi.fn(),
@@ -23,6 +26,7 @@ import { executeWorkflow } from "@/lib/app-workflow";
 describe("workflow execution retries", () => {
   beforeEach(() => {
     prismaMock.appWorkflow.findUnique.mockReset();
+    prismaMock.appSecret.findMany.mockReset();
     prismaMock.appWorkflowLog.create.mockReset();
     prismaMock.appWorkflowLog.update.mockReset();
     prismaMock.appRecord.create.mockReset();
@@ -87,18 +91,21 @@ describe("workflow execution retries", () => {
       .mockResolvedValueOnce({
         ok: false,
         status: 500,
+        headers: { get: vi.fn().mockReturnValue("application/json") },
         json: vi.fn().mockResolvedValue({ ok: false }),
         text: vi.fn().mockResolvedValue("err"),
       })
       .mockResolvedValueOnce({
         ok: false,
         status: 502,
+        headers: { get: vi.fn().mockReturnValue("application/json") },
         json: vi.fn().mockResolvedValue({ ok: false }),
         text: vi.fn().mockResolvedValue("err"),
       })
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
+        headers: { get: vi.fn().mockReturnValue("application/json") },
         json: vi.fn().mockResolvedValue({ ok: true }),
         text: vi.fn().mockResolvedValue("ok"),
       });
@@ -121,6 +128,7 @@ describe("workflow execution retries", () => {
       ],
     });
     prismaMock.appWorkflowLog.create.mockResolvedValue({ id: "log3" });
+    prismaMock.appSecret.findMany.mockResolvedValue([]);
 
     const result = await executeWorkflow("wf3", "page1");
     expect(result.status).toBe("success");

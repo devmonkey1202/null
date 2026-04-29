@@ -65,6 +65,8 @@ export const POST = withErrorHandler(async (req: Request, context: { params: Pro
     const type = body.type === "widget" ? "widget" : "plugin";
     const storeId = typeof body.storeId === "string" ? body.storeId : "";
     if (!storeId) return apiErrorJson("store_id_required", 400);
+    const current = await getStoreGovernance(pageId);
+    if (!current.policy.allowSave) return apiErrorJson("store_save_disabled", 403);
     const governance = await toggleStoreSaved(pageId, type, storeId, access.actor.userId);
     await logPageAudit({
       pageId,

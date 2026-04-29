@@ -44,11 +44,16 @@ import {
   type PathSegment,
   type NodeDataBinding,
   type NodeDataBindingFilterOp,
+  type NodeServiceBinding,
   type AutoLayout,
   type BranchReviewItem,
+  type BranchReviewActorRole,
   type ComponentVersion,
   type DevAnnotationStatus,
   type DevCodeLinkKind,
+  type ServiceActionKind,
+  type ServiceDataSourceKind,
+  type ServiceStateMachineKind,
 } from "../doc/scene";
 
 import AdvancedRuntimeRenderer from "../runtime/renderer";
@@ -69,6 +74,7 @@ import {
 import { runBooleanMultiple, type BooleanOp } from "../geom/boolean";
 import { buildBooleanOperandSnapshotFromNode } from "../geom/booleanTrace";
 import { hasRichTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "../geom/richTextModel";
+import { MEDIA_PATTERN_BOX, resolveImageFillLayout, resolveNodeMediaLayout } from "../geom/mediaLayout";
 import { getParagraphSpacing, getRenderedTextLines, getTextLineMetrics, resolveTextContentFrameSize } from "../geom/textLayout";
 import { getTextPathId, normalizeTextPathStartOffset, normalizeTextPathText } from "../geom/textPathLayout";
 import {
@@ -77,6 +83,7 @@ import {
   resolveNodeTextValue as resolveBoundNodeTextValue,
   resolveTextRangeBindings,
   resolveVariableColor as resolveBoundVariableColor,
+  resolveVariableNumber as resolveBoundVariableNumber,
   resolveVariableValue as resolveBoundVariableValue,
 } from "../geom/variableBindings";
 import {
@@ -120,6 +127,7 @@ import type {
 } from "./AdvancedEditor.types";
 import { CanvasNode } from "./AdvancedEditorCanvasNode";
 import AdvancedEditorCanvasOverlay from "./AdvancedEditorCanvasOverlay";
+import AdvancedEditorMinimap from "./AdvancedEditorMinimap";
 import {
   GRID,
   DEFAULT_FONT_FAMILY,
@@ -153,7 +161,9 @@ import {
   ensureNodeText,
   flipTextPathSide,
   getTextRangePreview,
+  hasTextStyleOpenTypeFeature,
   nudgeTextPathOffset,
+  OPEN_TYPE_FEATURE_PRESETS,
   patchTextRange,
   patchTextRangeStyle,
   removeTextRange,
@@ -165,8 +175,29 @@ import {
   setTextRangeFill,
   setTextRangeFillRef,
   setTextRangeStyleBinding,
-  TEXT_PATH_PRESETS,
+  toggleNodeTextOpenTypeFeature,
 } from "./textInspectorModel";
+import {
+  createDefaultServiceAction,
+  createDefaultServiceBinding,
+  describeServiceBindingIssues,
+  findPrimaryServiceInteraction,
+  getDefaultServiceDataSource,
+  getDefaultStateTransition,
+  SERVICE_ACTION_OPTIONS,
+  SERVICE_DATA_SOURCE_OPTIONS,
+  SERVICE_FIELD_VALUE_TYPE_OPTIONS,
+  SERVICE_STATE_MACHINE_OPTIONS,
+} from "./serviceBindingModel";
+import {
+  applyTextPathPresetHandle,
+  createPresetTextPath,
+  createTextPathPreset,
+  getTextPathPresetHandles,
+  parseTextPathPreset,
+  TEXT_PATH_VIEWBOX,
+  type TextPathHandleId,
+} from "./textPathPresetModel";
 import {
   describeGridTrackSizing,
   ensureGridChildPlacement,
@@ -207,10 +238,13 @@ import { buildDevCodegenBundle } from "./devCodegen";
 import {
   applyBranchMerge,
   buildBranchDiffSummary,
+  canBranchReviewAction,
   createBranchEntry,
   createBranchReview,
+  getDefaultBranchReviewRequiredRole,
   removeBranchEntry,
   setBranchReviewResolution,
+  setBranchReviewRequiredRole,
   setBranchReviewStatus,
   summarizeBranchReview,
   upsertBranchEntry,
@@ -233,7 +267,17 @@ import {
 } from "./devHandoff";
 import type { StorePlugin } from "@/lib/plugin-store";
 import type { StoreWidget } from "@/lib/widget-store";
-import { WEB_IMPORT_VIEWPORT_OPTIONS, getWebImportViewport, type WebImportViewportId } from "@/lib/webImportShared";
+import { screenshotFileToNullDoc } from "@/lib/screenshotToNull";
+import {
+  buildWebCaptureSnippet,
+  WEB_IMPORT_THEME_OPTIONS,
+  WEB_IMPORT_VIEWPORT_OPTIONS,
+  getWebImportViewport,
+  type WebImportTheme,
+  type WebImportViewportId,
+} from "@/lib/webImportShared";
+import { normalizePluginWebImportParams } from "@/advanced/ui/pluginWebImport";
+import { buildMinimapModel, getNextDeepSelectionId, getNodeIdsAtPoint } from "./canvasChrome";
 import {
   applyEditorDocOperation,
   buildEditorDocOperation,
@@ -243,11 +287,20 @@ import {
   wrapEditorDocOperation,
   type EditorDocOperation,
 } from "@/lib/collab";
+import {
+  buildExternalCollabOperation,
+  createExternalCollabAdapter,
+  getConfiguredExternalCollabAdapterName,
+  pullExternalCollabDoc,
+  pushExternalCollabDoc,
+  type ExternalCollabAdapter,
+} from "@/lib/external-collab";
 import { buildNodeBatchExportQueue, buildScopedExportBaseName } from "./exportPipeline";
 import { exportTokenBundle, importTokenBundleIntoDoc, type TokenBundle } from "./tokenRoundtrip";
 import { formatRotationDegrees, normalizeRotationDegrees, parseRotationInput } from "./rotationMath";
 import { buildPrototypeFlow, diagnosePrototypeInteraction, summarizePrototypeAction } from "../prototype/prototypeFlow";
-import { describePermissions } from "../../lib/plugin-permissions";
+import { ALL_PLUGIN_PERMISSION_KEYS, PERMISSION_LABELS, describePermissions } from "../../lib/plugin-permissions";
+import { formatStoreApprovalLabel, getStorePluginGovernanceState, getStoreWidgetGovernanceState } from "@/lib/store-governance-rules";
 
 const BLEND_MODE_OPTIONS: { value: BlendMode; label: string }[] = [
   { value: "normal", label: "Normal" },
@@ -256,6 +309,16 @@ const BLEND_MODE_OPTIONS: { value: BlendMode; label: string }[] = [
   { value: "overlay", label: "Overlay" },
   { value: "darken", label: "Darken" },
   { value: "lighten", label: "Lighten" },
+  { value: "color-burn", label: "Color Burn" },
+  { value: "color-dodge", label: "Color Dodge" },
+  { value: "hard-light", label: "Hard Light" },
+  { value: "soft-light", label: "Soft Light" },
+  { value: "difference", label: "Difference" },
+  { value: "exclusion", label: "Exclusion" },
+  { value: "hue", label: "Hue" },
+  { value: "saturation", label: "Saturation" },
+  { value: "color", label: "Color" },
+  { value: "luminosity", label: "Luminosity" },
 ];
 
 function formatMeasurementLabel(value: number) {
@@ -547,10 +610,11 @@ const ALLOWED_PLUGIN_ACTIONS = new Set([
   "toggleAudit",
   "togglePerformance",
   "openUrl",
+  "importWeb",
   "createWidget",
 ]);
 
-const ACTION_PERMISSION: Record<string, string | null> = {
+const ACTION_PERMISSION: Record<string, string | string[] | null> = {
   align: "editor",
   distribute: "editor",
   exportTokens: "export",
@@ -561,6 +625,7 @@ const ACTION_PERMISSION: Record<string, string | null> = {
   toggleAudit: "ui",
   togglePerformance: "ui",
   openUrl: "network",
+  importWeb: ["editor", "network"],
   macro: null,
 };
 
@@ -581,7 +646,12 @@ function normalizePluginAction(raw: unknown, depth: number, budget: { count: num
   if (depth > MAX_PLUGIN_DEPTH) return null;
   if (!ALLOWED_PLUGIN_ACTIONS.has(input.type)) return null;
   const requiredPermission = ACTION_PERMISSION[input.type] ?? null;
-  if (requiredPermission && permissions && !permissions.has(requiredPermission)) return null;
+  const requiredPermissions = Array.isArray(requiredPermission)
+    ? requiredPermission
+    : requiredPermission
+      ? [requiredPermission]
+      : [];
+  if (permissions && requiredPermissions.some((permission) => !permissions.has(permission))) return null;
   if (budget.count >= MAX_PLUGIN_ACTIONS) return null;
 
   const action: PluginAction = {
@@ -764,16 +834,7 @@ function getSelectionBounds(doc: Doc, ids: string[]) {
 
 /** Step 8: hit test for node selection (reverse z-order). */
 function getNodeIdAtPoint(doc: Doc, pageRoot: string, point: { x: number; y: number }, excludeIds: Set<string>): string | null {
-  const ids = flattenIds(doc, pageRoot).filter((id) => id !== pageRoot && !excludeIds.has(id));
-  for (let i = ids.length - 1; i >= 0; i--) {
-    const id = ids[i];
-    const node = doc.nodes[id];
-    if (!node || node.hidden) continue;
-    const abs = getAbsoluteFrame(doc, id);
-    if (!abs) continue;
-    if (point.x >= abs.x && point.x < abs.x + abs.w && point.y >= abs.y && point.y < abs.y + abs.h) return id;
-  }
-  return null;
+  return getNodeIdsAtPoint(doc, pageRoot, point, { excludeIds })[0] ?? null;
 }
 
 /** Step 8: flatten tree ids (preorder). */
@@ -866,6 +927,10 @@ function resolveVariableColor(doc: Doc, id: string | undefined) {
   return resolveBoundVariableColor(doc, id);
 }
 
+function resolveVariableNumber(doc: Doc, id: string | undefined) {
+  return resolveBoundVariableNumber(doc, id);
+}
+
 function resolveFill(doc: Doc, node: Node): Fill[] {
   const token = findStyleToken(doc, node.style.fillStyleId, "fill");
   if (token && Array.isArray(token.value)) return token.value as Fill[];
@@ -906,8 +971,25 @@ function resolveStroke(doc: Doc, node: Node) {
 
 function resolveEffects(doc: Doc, node: Node): Effect[] {
   const token = findStyleToken(doc, node.style.effectStyleId, "effect");
-  if (token && Array.isArray(token.value)) return token.value as Effect[];
-  return node.style.effects ?? [];
+  const effects = token && Array.isArray(token.value) ? (token.value as Effect[]) : (node.style.effects ?? []);
+  return effects.map((effect) => {
+    if (effect.type === "shadow") {
+      return {
+        ...effect,
+        x: resolveVariableNumber(doc, effect.xRef) ?? effect.x,
+        y: resolveVariableNumber(doc, effect.yRef) ?? effect.y,
+        blur: resolveVariableNumber(doc, effect.blurRef) ?? effect.blur,
+        color: resolveVariableColor(doc, effect.colorRef) ?? effect.color,
+      };
+    }
+    if (effect.type === "blur") {
+      return {
+        ...effect,
+        blur: resolveVariableNumber(doc, effect.blurRef) ?? effect.blur,
+      };
+    }
+    return { ...effect };
+  });
 }
 
 function resolveVariableValue(doc: Doc, variable: Variable) {
@@ -1664,11 +1746,6 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
     case "video": {
       const media = node.type === "video" ? node.video : node.image;
       const href = normalizeImageSrc(media?.src);
-      const fit = media?.fit ?? "cover";
-      const scale = media?.scale ?? 1;
-      const offsetX = media?.offsetX ?? 0;
-      const offsetY = media?.offsetY ?? 0;
-      const preserve = fit === "contain" ? "xMidYMid meet" : fit === "fill" ? "none" : "xMidYMid slice";
       if (outline) {
         return (
           <g>
@@ -1709,8 +1786,7 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
       const fh = node.frame.h;
       const clipId = `adv-media-clip-${node.id}`;
       const radius = typeof node.style.radius === "number" ? node.style.radius : 0;
-      const crop = media?.crop;
-      const cropRect = crop && (crop.w > 0 && crop.h > 0) ? { x: crop.x * fw, y: crop.y * fh, w: crop.w * fw, h: crop.h * fh } : null;
+      const layout = resolveNodeMediaLayout(fw, fh, media);
       const brightness = media?.brightness ?? 1;
       const contrast = media?.contrast ?? 1;
       const needBcFilter = Math.abs(brightness - 1) > 0.01 || Math.abs(contrast - 1) > 0.01;
@@ -1719,7 +1795,7 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
         <g>
           <defs>
             <clipPath id={clipId}>
-              <rect x={cropRect?.x ?? 0} y={cropRect?.y ?? 0} width={cropRect?.w ?? fw} height={cropRect?.h ?? fh} rx={radius} ry={radius} />
+              <rect x={layout.clipX} y={layout.clipY} width={layout.clipWidth} height={layout.clipHeight} rx={radius} ry={radius} />
             </clipPath>
             {needBcFilter ? (
               <filter id={bcFilterId}>
@@ -1734,11 +1810,11 @@ function renderNodeShape(doc: Doc, node: Node, options?: { outline?: boolean; fi
           <image
             href={href || undefined}
             xlinkHref={href || undefined}
-            x={offsetX}
-            y={offsetY}
-            width={fw * scale}
-            height={fh * scale}
-            preserveAspectRatio={preserve}
+            x={layout.imageX}
+            y={layout.imageY}
+            width={layout.imageWidth}
+            height={layout.imageHeight}
+            preserveAspectRatio={layout.preserveAspectRatio}
             clipPath={`url(#${clipId})`}
             filter={bcFilterId ? `url(#${bcFilterId})` : filterId ? `url(#${filterId})` : undefined}
           />
@@ -1861,20 +1937,34 @@ function buildImageFillPatternDefs(doc: Doc) {
         if (!isImageFill(fill)) return;
         const src = normalizeImageSrc(fill.src);
         if (!src) return;
-        const preserveAspectRatio =
-          fill.fit === "cover" ? "xMidYMid slice" : fill.fit === "contain" ? "xMidYMid meet" : "none";
+        const layout = resolveImageFillLayout(fill, MEDIA_PATTERN_BOX);
+        const clipId = `${EDITOR_IMAGE_FILL_PREFIX}-${node.id}-seg-${i}-clip`;
         defs.push(
           <pattern
             key={`${EDITOR_IMAGE_FILL_PREFIX}-${node.id}-seg-${i}`}
             id={`${EDITOR_IMAGE_FILL_PREFIX}-${node.id}-seg-${i}`}
             patternUnits="objectBoundingBox"
-            patternContentUnits="objectBoundingBox"
             x={0}
             y={0}
             width={1}
             height={1}
+            viewBox={`0 0 ${MEDIA_PATTERN_BOX} ${MEDIA_PATTERN_BOX}`}
           >
-            <image href={src} xlinkHref={src} x={0} y={0} width={1} height={1} preserveAspectRatio={preserveAspectRatio} />
+            <defs>
+              <clipPath id={clipId}>
+                <rect x={layout.clipX} y={layout.clipY} width={layout.clipWidth} height={layout.clipHeight} />
+              </clipPath>
+            </defs>
+            <image
+              href={src}
+              xlinkHref={src}
+              x={layout.imageX}
+              y={layout.imageY}
+              width={layout.imageWidth}
+              height={layout.imageHeight}
+              preserveAspectRatio={layout.preserveAspectRatio}
+              clipPath={`url(#${clipId})`}
+            />
           </pattern>,
         );
       });
@@ -1885,20 +1975,34 @@ function buildImageFillPatternDefs(doc: Doc) {
     if (!isImageFill(fill)) return;
     const src = normalizeImageSrc(fill.src);
     if (!src) return;
-    const preserveAspectRatio =
-      fill.fit === "cover" ? "xMidYMid slice" : fill.fit === "contain" ? "xMidYMid meet" : "none";
+    const layout = resolveImageFillLayout(fill, MEDIA_PATTERN_BOX);
+    const clipId = `${EDITOR_IMAGE_FILL_PREFIX}-${node.id}-clip`;
     defs.push(
       <pattern
         key={`${EDITOR_IMAGE_FILL_PREFIX}-${node.id}`}
         id={`${EDITOR_IMAGE_FILL_PREFIX}-${node.id}`}
         patternUnits="objectBoundingBox"
-        patternContentUnits="objectBoundingBox"
         x={0}
         y={0}
         width={1}
         height={1}
+        viewBox={`0 0 ${MEDIA_PATTERN_BOX} ${MEDIA_PATTERN_BOX}`}
       >
-        <image href={src} xlinkHref={src} x={0} y={0} width={1} height={1} preserveAspectRatio={preserveAspectRatio} />
+        <defs>
+          <clipPath id={clipId}>
+            <rect x={layout.clipX} y={layout.clipY} width={layout.clipWidth} height={layout.clipHeight} />
+          </clipPath>
+        </defs>
+        <image
+          href={src}
+          xlinkHref={src}
+          x={layout.imageX}
+          y={layout.imageY}
+          width={layout.imageWidth}
+          height={layout.imageHeight}
+          preserveAspectRatio={layout.preserveAspectRatio}
+          clipPath={`url(#${clipId})`}
+        />
       </pattern>,
     );
   });
@@ -1912,36 +2016,61 @@ function buildEffectDefs(doc: Doc, prefix: string, skip?: boolean) {
     const effects = resolveEffects(doc, node);
     if (!effects.length) return;
     const filterId = getEffectId(prefix, node.id);
-    const primitives = effects.map((effect, index) => {
+    let currentInput = "SourceGraphic";
+    const primitives = effects.flatMap((effect, index) => {
+      const resultId = `${filterId}-result-${index}`;
       if (effect.type === "shadow") {
         const opacity = typeof effect.opacity === "number" ? effect.opacity : 0.2;
-        return (
+        const primitive = (
           <feDropShadow
             key={`${filterId}-shadow-${index}`}
+            in={currentInput}
             dx={effect.x}
             dy={effect.y}
             stdDeviation={Math.max(0, effect.blur)}
             floodColor={effect.color}
             floodOpacity={opacity}
+            result={resultId}
           />
         );
+        currentInput = resultId;
+        return [primitive];
       }
       if (effect.type === "blur") {
-        return <feGaussianBlur key={`${filterId}-blur-${index}`} stdDeviation={Math.max(0, effect.blur)} />;
+        const primitive = (
+          <feGaussianBlur
+            key={`${filterId}-blur-${index}`}
+            in={currentInput}
+            stdDeviation={Math.max(0, effect.blur)}
+            result={resultId}
+          />
+        );
+        currentInput = resultId;
+        return [primitive];
       }
       if (effect.type === "noise") {
         const amount = typeof effect.amount === "number" ? effect.amount : 0.4;
-        return (
+        const noiseId = `${filterId}-noise-${index}`;
+        const monoId = `${noiseId}-mono`;
+        const alphaId = `${noiseId}-alpha`;
+        const primitivesForNoise = [
           <feTurbulence
-            key={`${filterId}-noise-${index}`}
+            key={`${noiseId}-turbulence`}
             type="fractalNoise"
-            baseFrequency={amount}
+            baseFrequency={Math.max(0.005, amount * 0.08)}
             numOctaves={2}
-            result="noise"
-          />
-        );
+            result={noiseId}
+          />,
+          <feColorMatrix key={`${noiseId}-mono`} in={noiseId} type="saturate" values="0" result={monoId} />,
+          <feComponentTransfer key={`${noiseId}-alpha`} in={monoId} result={alphaId}>
+            <feFuncA type="linear" slope={Math.max(0.05, Math.min(1, amount)) * 0.45} />
+          </feComponentTransfer>,
+          <feBlend key={`${noiseId}-blend`} in={currentInput} in2={alphaId} mode="soft-light" result={resultId} />,
+        ];
+        currentInput = resultId;
+        return primitivesForNoise;
       }
-      return null;
+      return [];
     });
     defs.push(
       <filter key={filterId} id={filterId} x="-50%" y="-50%" width="200%" height="200%">
@@ -2401,6 +2530,8 @@ export default function AdvancedEditor() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialPageId = searchParams.get("pageId");
+  const initialPluginStoreId = searchParams.get("pluginStoreId");
+  const initialWidgetStoreId = searchParams.get("widgetStoreId");
 
   const [pageId, setPageId] = useState<string | null>(initialPageId);
   const [anonId, setAnonId] = useState<string | null>(null);
@@ -2614,6 +2745,7 @@ export default function AdvancedEditor() {
   const collabSessionIdRef = useRef<string>("");
   const anonIdRef = useRef<string | null>(null);
   const collabSocketRef = useRef<ReturnType<typeof io> | null>(null);
+  const externalCollabAdapterRef = useRef<ExternalCollabAdapter | null>(null);
   const collabLastSentRef = useRef(0);
   const collabCursorRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const collabDocPendingRef = useRef<{ doc: Doc; deletedNodeIds: string[]; deletedPageIds: string[] } | null>(null);
@@ -2688,6 +2820,17 @@ export default function AdvancedEditor() {
   });
   const [storeGovernanceRole, setStoreGovernanceRole] = useState<"owner" | "admin" | "member" | "viewer" | null>(null);
 
+  useEffect(() => {
+    if (initialPluginStoreId) {
+      setStorePluginQuery(initialPluginStoreId);
+      setPanelMode("design");
+    }
+    if (initialWidgetStoreId) {
+      setStoreWidgetQuery(initialWidgetStoreId);
+      setPanelMode("design");
+    }
+  }, [initialPluginStoreId, initialWidgetStoreId]);
+
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   /** NOTE: comment removed (encoding issue). */
   const [planFeatures, setPlanFeatures] = useState<{ maxButtons: number; maxTexts: number; maxImages: number } | null>(null);
@@ -2720,6 +2863,7 @@ export default function AdvancedEditor() {
     text: true,
     prototype: true,
     dataBinding: true,
+    serviceBinding: true,
     variables: true,
     globalState: true,
   });
@@ -2746,9 +2890,21 @@ export default function AdvancedEditor() {
   const [figmaImportError, setFigmaImportError] = useState<string | null>(null);
   const [webImportOpen, setWebImportOpen] = useState(false);
   const [webImportUrl, setWebImportUrl] = useState("");
+  const [webImportUrls, setWebImportUrls] = useState("");
+  const [webImportHtml, setWebImportHtml] = useState("");
+  const [webImportCss, setWebImportCss] = useState("");
+  const [webImportCapturePayload, setWebImportCapturePayload] = useState("");
+  const [webImportFile, setWebImportFile] = useState<File | null>(null);
+  const [webImportScreenshotFile, setWebImportScreenshotFile] = useState<File | null>(null);
+  const [webImportFileInputKey, setWebImportFileInputKey] = useState(0);
+  const [webImportScreenshotInputKey, setWebImportScreenshotInputKey] = useState(0);
   const [webImportViewportId, setWebImportViewportId] = useState<WebImportViewportId>("desktop");
+  const [webImportLanguage, setWebImportLanguage] = useState("");
+  const [webImportQuery, setWebImportQuery] = useState("");
+  const [webImportTheme, setWebImportTheme] = useState<WebImportTheme | "">("");
   const [webImportLoading, setWebImportLoading] = useState(false);
   const [webImportError, setWebImportError] = useState<string | null>(null);
+  const [textPathHandleDrag, setTextPathHandleDrag] = useState<{ pointerId: number; handleId: TextPathHandleId } | null>(null);
   const [toolbarOverflowRect, setToolbarOverflowRect] = useState({ left: 0, top: 0 });
   useLayoutEffect(() => {
     if (!toolbarOverflowOpen) return;
@@ -2791,6 +2947,8 @@ export default function AdvancedEditor() {
   const [outlineMode, setOutlineMode] = useState(false);
   const [uiHidden, setUiHidden] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
+  const [showMinimap, setShowMinimap] = useState(true);
+  const [rulerPointer, setRulerPointer] = useState<{ x: number; y: number } | null>(null);
   const [comments, setComments] = useState<Array<{
     id: string;
     pageId: string;
@@ -2840,6 +2998,7 @@ export default function AdvancedEditor() {
   const livePreviewRef = useRef(false);
 
   const dragRef = useRef<DragState | null>(null);
+  const rulerGuideDragRef = useRef<{ pointerId: number; axis: "x" | "y"; index: number; capture: Element | null } | null>(null);
   /** NOTE: comment removed (encoding issue). */
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
   const [activeSmartGuides, setActiveSmartGuides] = useState<ReturnType<typeof computeSmartSnapFeedback> | null>(null);
@@ -3390,7 +3549,6 @@ export default function AdvancedEditor() {
       if (!collabEnabled || !pageId) return;
       const socket = collabSocketRef.current;
       const identity = getCollabIdentity();
-      if (!socket || !identity) return;
       const now = Date.now();
       if (!force && now - collabDocLastSentRef.current < 120) return;
       collabDocLastSentRef.current = now;
@@ -3398,14 +3556,22 @@ export default function AdvancedEditor() {
         doc: next,
         ts: now,
         opId: force && collabLatestLocalOpRef.current ? collabLatestLocalOpRef.current.opId : undefined,
-        sessionId: identity.sessionId || undefined,
-        senderId: identity.presenceId,
+        sessionId: identity?.sessionId || undefined,
+        senderId: identity?.presenceId,
         deletedNodeIds,
         deletedPageIds,
         source,
       });
       operation.content.selection = [];
       collabLatestLocalOpRef.current = operation;
+      void pushExternalCollabDoc(
+        externalCollabAdapterRef.current,
+        pageId,
+        next,
+        operation,
+        source === "recovery" ? "recovery" : "local",
+      );
+      if (!socket || !identity) return;
       socket.emit("editor:op", wrapEditorDocOperation(operation));
     },
     [collabEnabled, pageId, getCollabIdentity],
@@ -3465,6 +3631,36 @@ export default function AdvancedEditor() {
     },
     [emitDocSync, getCollabIdentity, isOwner],
   );
+
+  useEffect(() => {
+    if (isE2E) return;
+    if (!collabEnabled || !pageId) return;
+    const adapterName = getConfiguredExternalCollabAdapterName();
+    if (!adapterName) return;
+    const adapter = createExternalCollabAdapter(adapterName, { pageId });
+    if (!adapter) return;
+    externalCollabAdapterRef.current = adapter;
+    let cancelled = false;
+    const unsubscribe = adapter.subscribe?.((event) => {
+      if (cancelled) return;
+      applyIncomingCollabOperation(buildExternalCollabOperation(event), event.source === "sync");
+    });
+    void Promise.resolve(adapter.connect?.({ pageId, initialSnapshot: serializeDoc(docRef.current) }))
+      .then(async () => {
+        const pulled = await pullExternalCollabDoc(adapter);
+        if (!pulled || cancelled) return;
+        applyIncomingCollabOperation(buildExternalCollabOperation({ adapterId: adapter.id, snapshot: serializeDoc(pulled), source: "sync" }), true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (typeof unsubscribe === "function") unsubscribe();
+      void Promise.resolve(adapter.disconnect?.()).catch(() => {});
+      if (externalCollabAdapterRef.current === adapter) {
+        externalCollabAdapterRef.current = null;
+      }
+    };
+  }, [applyIncomingCollabOperation, collabEnabled, isE2E, pageId]);
 
   useEffect(() => {
     if (isE2E) return;
@@ -3888,6 +4084,8 @@ export default function AdvancedEditor() {
         storeWidgets: filteredStoreWidgets,
         savedPluginStoreIds,
         savedWidgetStoreIds,
+        storeApprovalRequests,
+        storeGovernancePolicy,
       }),
     [
       doc.libraries,
@@ -3896,6 +4094,8 @@ export default function AdvancedEditor() {
       installedPlugins,
       resourceHubQuery,
       resourceHubType,
+      storeApprovalRequests,
+      storeGovernancePolicy,
       savedPluginStoreIds,
       savedWidgetStoreIds,
     ],
@@ -4112,6 +4312,11 @@ export default function AdvancedEditor() {
     doc.selection.forEach((id) => selectedSet.add(id));
     return all.filter((id) => selectedSet.has(id));
   }, [doc, pageRoot, viewportRect]);
+
+  const minimapModel = useMemo(
+    () => (showMinimap && !prototypePreview ? buildMinimapModel(doc, pageRoot, viewportRect, doc.selection) : null),
+    [doc, pageRoot, prototypePreview, showMinimap, viewportRect],
+  );
 
   useEffect(() => {
     const fallback = doc.prototype?.startPageId ?? doc.pages[0]?.id ?? null;
@@ -4561,6 +4766,64 @@ export default function AdvancedEditor() {
     return svgClientPoint(e.clientX, e.clientY);
   }
 
+  function previewReplace(next: Doc) {
+    docRef.current = next;
+    setDoc(next);
+  }
+
+  function updateGuideValue(axis: "x" | "y", index: number, value: number, shouldCommit = false) {
+    const next = cloneDoc(docRef.current);
+    const guides = axis === "x" ? [...(next.view.guides?.x ?? [])] : [...(next.view.guides?.y ?? [])];
+    if (index < 0 || index >= guides.length) return;
+    guides[index] = axis === "x" ? Math.round(value) : Math.round(value);
+    next.view.guides = axis === "x"
+      ? { x: guides, y: next.view.guides?.y ?? [] }
+      : { x: next.view.guides?.x ?? [], y: guides };
+    if (shouldCommit) commit(next);
+    else previewReplace(next);
+  }
+
+  function beginRulerGuideDrag(e: React.PointerEvent, axis: "x" | "y", index?: number) {
+    e.preventDefault();
+    e.stopPropagation();
+    const capture = e.currentTarget as Element;
+    capture.setPointerCapture(e.pointerId);
+    const point = svgClientPoint(e.clientX, e.clientY);
+    const next = cloneDoc(docRef.current);
+    const guides = axis === "x" ? [...(next.view.guides?.x ?? [])] : [...(next.view.guides?.y ?? [])];
+    const guideIndex = typeof index === "number" ? index : guides.length;
+    const guideValue = axis === "x" ? point.x : point.y;
+    if (typeof index !== "number") {
+      guides.push(Math.round(guideValue));
+      next.view.guides = axis === "x"
+        ? { x: guides, y: next.view.guides?.y ?? [] }
+        : { x: next.view.guides?.x ?? [], y: guides };
+      previewReplace(next);
+    }
+    rulerGuideDragRef.current = { pointerId: e.pointerId, axis, index: guideIndex, capture };
+    setRulerPointer(point);
+    if (typeof index === "number") {
+      updateGuideValue(axis, guideIndex, guideValue, false);
+    }
+  }
+
+  function updateRulerGuideDrag(e: React.PointerEvent) {
+    const drag = rulerGuideDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const point = svgClientPoint(e.clientX, e.clientY);
+    updateGuideValue(drag.axis, drag.index, drag.axis === "x" ? point.x : point.y, false);
+    setRulerPointer(point);
+  }
+
+  function endRulerGuideDrag(e: React.PointerEvent) {
+    const drag = rulerGuideDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    drag.capture?.releasePointerCapture(drag.pointerId);
+    const point = svgClientPoint(e.clientX, e.clientY);
+    updateGuideValue(drag.axis, drag.index, drag.axis === "x" ? point.x : point.y, true);
+    rulerGuideDragRef.current = null;
+  }
+
   const updateCollabPointer = useCallback(
     (e: React.PointerEvent) => {
       if (!collabEnabled) return;
@@ -4944,7 +5207,11 @@ export default function AdvancedEditor() {
 
     const pt = svgPoint(e);
     const pageRoot = ensurePageRoot(docRef.current, activePageIdRef.current);
-    const hitId = getNodeIdAtPoint(docRef.current, pageRoot, pt, new Set());
+    const hitIds = getNodeIdsAtPoint(docRef.current, pageRoot, pt, { excludeIds: new Set() });
+    const hitId =
+      tool === "select" && e.altKey
+        ? getNextDeepSelectionId(hitIds, docRef.current.selection.size === 1 ? Array.from(docRef.current.selection)[0] : null)
+        : hitIds[0] ?? null;
     const activeTool = tool;
 
     if (activeTool === "path") {
@@ -5439,7 +5706,7 @@ export default function AdvancedEditor() {
     });
 
     if (!converted.length) {
-      pushMessage("vector_coming_soon");
+      pushMessage("vector_conversion_unavailable");
       return;
     }
     draft.selection = new Set(converted);
@@ -5596,7 +5863,7 @@ export default function AdvancedEditor() {
       converted.push(pathNode.id);
     });
     if (!converted.length) {
-      pushMessage("vector_coming_soon");
+      pushMessage("vector_conversion_unavailable");
       return;
     }
     draft.selection = new Set(converted);
@@ -5659,7 +5926,7 @@ export default function AdvancedEditor() {
         converted.push(pathNode.id);
       });
       if (!converted.length) {
-        pushMessage("vector_coming_soon");
+        pushMessage("vector_conversion_unavailable");
         return;
       }
       draft.selection = new Set(converted);
@@ -9806,6 +10073,22 @@ export default function AdvancedEditor() {
     replace({ ...docRef.current, view: { ...docRef.current.view, zoom: 1, panX: 0, panY: 0 } });
   }
 
+  const jumpViewportToPoint = useCallback(
+    (point: { x: number; y: number }) => {
+      const size = canvasSizeRef.current;
+      const zoom = docRef.current.view.zoom;
+      replace({
+        ...docRef.current,
+        view: {
+          ...docRef.current.view,
+          panX: point.x - size.width / (2 * zoom),
+          panY: point.y - size.height / (2 * zoom),
+        },
+      });
+    },
+    [replace],
+  );
+
   const addGuideVertical = useCallback(() => {
     const draft = cloneDoc(docRef.current);
     const viewW = canvasSizeRef.current.width / draft.view.zoom;
@@ -9926,70 +10209,341 @@ export default function AdvancedEditor() {
   }, [ensureAnonId, pageId, router, status, title, isOwner]);
 
   const openWebImportModal = useCallback(() => {
-    const lastImport = docRef.current.imports?.web;
-    setWebImportUrl(lastImport?.url ?? "");
-    setWebImportViewportId(lastImport?.viewportId ?? "desktop");
-    setWebImportError(null);
-    setWebImportOpen(true);
-    setToolbarOverflowOpen(false);
-  }, []);
+      const lastImport = docRef.current.imports?.web;
+      setWebImportUrl(lastImport?.kind === "public-url" ? lastImport.url : "");
+      setWebImportUrls(lastImport?.kind === "public-url-batch" ? (lastImport.urls ?? []).join("\n") : "");
+      setWebImportHtml("");
+      setWebImportCss("");
+      setWebImportCapturePayload("");
+      setWebImportFile(null);
+      setWebImportScreenshotFile(null);
+      setWebImportFileInputKey((prev) => prev + 1);
+      setWebImportScreenshotInputKey((prev) => prev + 1);
+      setWebImportViewportId(lastImport?.viewportId ?? "desktop");
+      setWebImportLanguage(lastImport?.language ?? "");
+      setWebImportQuery(lastImport?.query ?? "");
+      setWebImportTheme(lastImport?.theme ?? "");
+      setWebImportError(null);
+      setWebImportOpen(true);
+      setToolbarOverflowOpen(false);
+    }, []);
 
   const applyImportedDoc = useCallback((rawDoc: unknown) => {
-    const hydrated = hydrateDoc(rawDoc);
-    const laidOut = layoutDoc(hydrated);
-    replace(laidOut);
-    const firstPageId = laidOut.prototype?.startPageId ?? laidOut.pages[0]?.id ?? null;
+      const hydrated = hydrateDoc(rawDoc);
+      const laidOut = layoutDoc(hydrated);
+      replace(laidOut);
+      const firstPageId = laidOut.prototype?.startPageId ?? laidOut.pages[0]?.id ?? null;
     setActivePageId(firstPageId);
     if (firstPageId && !infiniteCanvasPages[firstPageId]) {
       setInfiniteCanvasPages((prev) => ({ ...prev, [firstPageId]: true }));
-    }
-  }, [infiniteCanvasPages]);
+      }
+    }, [infiniteCanvasPages]);
 
-  const runWebImport = useCallback(async (reuseLast = false) => {
-    const currentImport = docRef.current.imports?.web;
-    const targetUrl = (reuseLast ? (currentImport?.url ?? "") : webImportUrl).trim();
-    const targetViewportId = reuseLast ? (currentImport?.viewportId ?? webImportViewportId) : webImportViewportId;
-    if (!targetUrl) {
-      setWebImportError("가져올 URL을 입력해 주세요.");
-      return;
-    }
-
-    setWebImportError(null);
-    setWebImportLoading(true);
-    try {
+  const requestWebImport = useCallback(
+    async (requestInit: RequestInit) => {
       const anonId = await ensureAnonId();
       const targetPageId = pageId ?? await saveDraft();
       if (!targetPageId) {
-        setWebImportError("페이지를 먼저 만들지 못했습니다.");
-        return;
+        throw new Error("페이지를 먼저 만들지 못했습니다.");
       }
+      const headers = new Headers(requestInit.headers);
+      if (anonId) headers.set("x-anon-user-id", anonId);
       const res = await fetch(`/api/pages/${targetPageId}/web/import`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(anonId ? { "x-anon-user-id": anonId } : {}) },
-        body: JSON.stringify({
-          url: targetUrl,
-          viewportId: targetViewportId,
-        }),
+        ...requestInit,
+        headers,
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setWebImportError(data?.message ?? data?.error ?? "웹 가져오기에 실패했습니다.");
-        return;
+        throw new Error(data?.message ?? data?.error ?? "웹 가져오기에 실패했습니다.");
       }
       if (!data?.doc) {
-        setWebImportError("서버가 문서를 반환하지 않았습니다.");
-        return;
+        throw new Error("서버가 문서를 반환하지 않았습니다.");
       }
       applyImportedDoc(data.doc);
-      setWebImportUrl(data?.importSource?.url ?? targetUrl);
-      setWebImportViewportId(data?.importSource?.viewportId ?? targetViewportId);
-      setWebImportOpen(false);
-    } catch (error) {
-      setWebImportError(error instanceof Error ? error.message : "웹 가져오기에 실패했습니다.");
-    } finally {
-      setWebImportLoading(false);
-    }
-  }, [applyImportedDoc, ensureAnonId, pageId, saveDraft, webImportUrl, webImportViewportId]);
+      return data;
+    },
+    [applyImportedDoc, ensureAnonId, pageId, saveDraft],
+  );
+
+  const runWebImport = useCallback(async (reuseLast = false) => {
+      const currentImport = docRef.current.imports?.web;
+      const targetUrl = (reuseLast ? (currentImport?.url ?? "") : webImportUrl).trim();
+      const targetViewportId = reuseLast ? (currentImport?.viewportId ?? webImportViewportId) : webImportViewportId;
+      const targetLanguage = reuseLast ? (currentImport?.language ?? webImportLanguage) : webImportLanguage;
+      const targetQuery = reuseLast ? (currentImport?.query ?? webImportQuery) : webImportQuery;
+      const targetTheme = reuseLast ? (currentImport?.theme ?? webImportTheme) : webImportTheme;
+      if (!targetUrl) {
+        setWebImportError("가져올 URL을 입력해 주세요.");
+        return;
+      }
+
+      setWebImportError(null);
+      setWebImportLoading(true);
+      try {
+        const data = await requestWebImport({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "url",
+            url: targetUrl,
+            viewportId: targetViewportId,
+            language: targetLanguage.trim() || undefined,
+            query: targetQuery.trim() || undefined,
+            theme: targetTheme || undefined,
+          }),
+        });
+        setWebImportUrl(data?.importSource?.url ?? targetUrl);
+        setWebImportViewportId(data?.importSource?.viewportId ?? targetViewportId);
+        setWebImportLanguage(data?.importSource?.language ?? targetLanguage);
+        setWebImportQuery(data?.importSource?.query ?? targetQuery);
+        setWebImportTheme(data?.importSource?.theme ?? targetTheme);
+        setWebImportOpen(false);
+      } catch (error) {
+        setWebImportError(error instanceof Error ? error.message : "웹 가져오기에 실패했습니다.");
+      } finally {
+        setWebImportLoading(false);
+      }
+    }, [requestWebImport, webImportLanguage, webImportQuery, webImportTheme, webImportUrl, webImportViewportId]);
+
+  const runWebBulkImport = useCallback(async (reuseLast = false) => {
+      const currentImport = docRef.current.imports?.web;
+      const targetUrls = reuseLast
+        ? currentImport?.kind === "public-url-batch"
+          ? currentImport.urls ?? []
+          : []
+        : webImportUrls
+            .split(/\r?\n/)
+            .map((value) => value.trim())
+            .filter(Boolean);
+      const targetViewportId = reuseLast ? (currentImport?.viewportId ?? webImportViewportId) : webImportViewportId;
+      const targetLanguage = reuseLast ? (currentImport?.language ?? webImportLanguage) : webImportLanguage;
+      const targetQuery = reuseLast ? (currentImport?.query ?? webImportQuery) : webImportQuery;
+      const targetTheme = reuseLast ? (currentImport?.theme ?? webImportTheme) : webImportTheme;
+      if (!targetUrls.length) {
+        setWebImportError("가져올 URL을 한 줄에 하나씩 입력해 주세요.");
+        return;
+      }
+
+      setWebImportError(null);
+      setWebImportLoading(true);
+      try {
+        const data = await requestWebImport({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "url-bulk",
+            urls: targetUrls,
+            viewportId: targetViewportId,
+            language: targetLanguage.trim() || undefined,
+            query: targetQuery.trim() || undefined,
+            theme: targetTheme || undefined,
+          }),
+        });
+        setWebImportUrls((data?.importSource?.urls ?? targetUrls).join("\n"));
+        setWebImportViewportId(data?.importSource?.viewportId ?? targetViewportId);
+        setWebImportLanguage(data?.importSource?.language ?? targetLanguage);
+        setWebImportQuery(data?.importSource?.query ?? targetQuery);
+        setWebImportTheme(data?.importSource?.theme ?? targetTheme);
+        setWebImportOpen(false);
+      } catch (error) {
+        setWebImportError(error instanceof Error ? error.message : "여러 URL 가져오기에 실패했습니다.");
+      } finally {
+        setWebImportLoading(false);
+      }
+    }, [requestWebImport, webImportLanguage, webImportQuery, webImportTheme, webImportUrls, webImportViewportId]);
+
+  const runWebHtmlImport = useCallback(async () => {
+      if (!webImportHtml.trim()) {
+        setWebImportError("가져올 HTML을 입력해 주세요.");
+        return;
+      }
+
+      setWebImportError(null);
+      setWebImportLoading(true);
+      try {
+        const data = await requestWebImport({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "html",
+            html: webImportHtml,
+            css: webImportCss.trim() ? webImportCss : undefined,
+            viewportId: webImportViewportId,
+          }),
+        });
+        setWebImportViewportId(data?.importSource?.viewportId ?? webImportViewportId);
+        setWebImportOpen(false);
+      } catch (error) {
+        setWebImportError(error instanceof Error ? error.message : "HTML 가져오기에 실패했습니다.");
+      } finally {
+        setWebImportLoading(false);
+      }
+    }, [requestWebImport, webImportCss, webImportHtml, webImportViewportId]);
+
+  const runWebFileImport = useCallback(async () => {
+      if (!webImportFile) {
+        setWebImportError("가져올 파일을 선택해 주세요.");
+        return;
+      }
+
+      setWebImportError(null);
+      setWebImportLoading(true);
+      try {
+        const formData = new FormData();
+        formData.set("importFile", webImportFile);
+        formData.set("viewportId", webImportViewportId);
+        const data = await requestWebImport({
+          method: "POST",
+          body: formData,
+        });
+        setWebImportViewportId(data?.importSource?.viewportId ?? webImportViewportId);
+        setWebImportFile(null);
+        setWebImportFileInputKey((prev) => prev + 1);
+        setWebImportOpen(false);
+      } catch (error) {
+        setWebImportError(error instanceof Error ? error.message : "파일 가져오기에 실패했습니다.");
+      } finally {
+        setWebImportLoading(false);
+      }
+    }, [requestWebImport, webImportFile, webImportViewportId]);
+
+  const runScreenshotImport = useCallback(async () => {
+      if (!webImportScreenshotFile) {
+        setWebImportError("가져올 스크린샷 파일을 선택해 주세요.");
+        return;
+      }
+
+      setWebImportError(null);
+      setWebImportLoading(true);
+      try {
+        const imported = await screenshotFileToNullDoc(webImportScreenshotFile, {
+          viewportId: webImportViewportId,
+        });
+        applyImportedDoc(imported.doc);
+        setWebImportViewportId(imported.importSource.viewportId ?? webImportViewportId);
+        setWebImportScreenshotFile(null);
+        setWebImportScreenshotInputKey((prev) => prev + 1);
+        setWebImportOpen(false);
+        pushMessage(`스크린샷을 ${imported.regionCount}개 레이어로 가져왔습니다.`);
+      } catch (error) {
+        setWebImportError(error instanceof Error ? error.message : "스크린샷 가져오기에 실패했습니다.");
+      } finally {
+        setWebImportLoading(false);
+      }
+    }, [applyImportedDoc, pushMessage, webImportScreenshotFile, webImportViewportId]);
+
+  const runWebCaptureImport = useCallback(async (captureKind: "private-page-capture" | "local-page-capture") => {
+      if (!webImportCapturePayload.trim()) {
+        setWebImportError("캡처 payload를 붙여 넣어 주세요.");
+        return;
+      }
+
+      setWebImportError(null);
+      setWebImportLoading(true);
+      try {
+        const data = await requestWebImport({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "capture",
+            captureKind,
+            payload: webImportCapturePayload,
+            viewportId: webImportViewportId,
+          }),
+        });
+        setWebImportViewportId(data?.importSource?.viewportId ?? webImportViewportId);
+        setWebImportOpen(false);
+      } catch (error) {
+        setWebImportError(error instanceof Error ? error.message : "캡처 가져오기에 실패했습니다.");
+      } finally {
+        setWebImportLoading(false);
+      }
+    }, [requestWebImport, webImportCapturePayload, webImportViewportId]);
+
+  const executePluginWebImport = useCallback(
+    async (inputParams?: Record<string, unknown>) => {
+      const spec = normalizePluginWebImportParams(inputParams);
+      if (!spec) {
+        setWebImportError("플러그인 웹 import 설정이 올바르지 않습니다.");
+        return false;
+      }
+
+      if (spec.kind === "open-modal") {
+        setWebImportUrl(spec.url ?? "");
+        setWebImportUrls(spec.urls?.join("\n") ?? "");
+        setWebImportHtml("");
+        setWebImportCss("");
+        setWebImportCapturePayload("");
+        setWebImportFile(null);
+        setWebImportScreenshotFile(null);
+        setWebImportFileInputKey((prev) => prev + 1);
+        setWebImportScreenshotInputKey((prev) => prev + 1);
+        setWebImportViewportId(spec.viewportId);
+        setWebImportLanguage(spec.language);
+        setWebImportQuery(spec.query);
+        setWebImportTheme(spec.theme);
+        setWebImportError(null);
+        setWebImportOpen(true);
+        setToolbarOverflowOpen(false);
+        pushMessage("웹 가져오기 설정을 불러왔습니다.");
+        return true;
+      }
+
+      setWebImportError(null);
+      setWebImportLoading(true);
+      try {
+        if (spec.kind === "url") {
+          const data = await requestWebImport({
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode: "url",
+              url: spec.url,
+              viewportId: spec.viewportId,
+              language: spec.language || undefined,
+              query: spec.query || undefined,
+              theme: spec.theme || undefined,
+            }),
+          });
+          setWebImportUrl(data?.importSource?.url ?? spec.url);
+          setWebImportUrls("");
+          setWebImportViewportId(data?.importSource?.viewportId ?? spec.viewportId);
+          setWebImportLanguage(data?.importSource?.language ?? spec.language);
+          setWebImportQuery(data?.importSource?.query ?? spec.query);
+          setWebImportTheme(data?.importSource?.theme ?? spec.theme);
+        } else {
+          const data = await requestWebImport({
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode: "url-bulk",
+              urls: spec.urls,
+              viewportId: spec.viewportId,
+              language: spec.language || undefined,
+              query: spec.query || undefined,
+              theme: spec.theme || undefined,
+            }),
+          });
+          setWebImportUrl("");
+          setWebImportUrls((data?.importSource?.urls ?? spec.urls).join("\n"));
+          setWebImportViewportId(data?.importSource?.viewportId ?? spec.viewportId);
+          setWebImportLanguage(data?.importSource?.language ?? spec.language);
+          setWebImportQuery(data?.importSource?.query ?? spec.query);
+          setWebImportTheme(data?.importSource?.theme ?? spec.theme);
+        }
+        setWebImportOpen(false);
+        pushMessage("웹 가져오기를 완료했습니다.");
+        return true;
+      } catch (error) {
+        setWebImportError(error instanceof Error ? error.message : "웹 가져오기에 실패했습니다.");
+        pushMessage("웹 가져오기에 실패했습니다.");
+        return false;
+      } finally {
+        setWebImportLoading(false);
+      }
+    },
+    [pushMessage, requestWebImport],
+  );
 
   const flushDraftOnExit = useCallback(() => {
     if (isE2E) return;
@@ -10768,6 +11322,10 @@ export default function AdvancedEditor() {
         window.open(safe, "_blank");
         return;
       }
+      if (action.type === "importWeb") {
+        void executePluginWebImport(params);
+        return;
+      }
       if (action.type === "createWidget") {
         const html = typeof params.html === "string" ? params.html : undefined;
         const src = typeof params.src === "string" ? params.src : undefined;
@@ -10800,7 +11358,7 @@ export default function AdvancedEditor() {
       }
       pushMessage("Unsupported action.");
     },
-    [exportSelectionPng, exportSelectionSvg, exportTokensJson, pushMessage, activePageId, canvasSize, replace],
+    [executePluginWebImport, exportSelectionPng, exportSelectionSvg, exportTokensJson, pushMessage, activePageId, canvasSize, replace],
   );
 
   const createBranch = useCallback(() => {
@@ -10836,6 +11394,10 @@ export default function AdvancedEditor() {
     restoreVersion(versionId);
   }, [restoreVersion]);
 
+  const currentBranchReviewRole: BranchReviewActorRole = storeGovernanceRole ?? "viewer";
+  const canEditBranchReviewPolicy =
+    currentBranchReviewRole === "owner" || currentBranchReviewRole === "admin";
+
   const compareBranch = useCallback(
     async (name: string) => {
       const branch = docRef.current.branches?.[name];
@@ -10849,7 +11411,14 @@ export default function AdvancedEditor() {
           return;
         }
         const summary = buildBranchDiffSummary(docRef.current, branchDoc);
-        const review = createBranchReview(name, branch.versionId, summary);
+        const review = createBranchReview(
+          name,
+          branch.versionId,
+          summary,
+          undefined,
+          currentBranchReviewRole,
+          getDefaultBranchReviewRequiredRole(currentBranchReviewRole),
+        );
         let next = upsertBranchReview(docRef.current, review);
         next = upsertBranchEntry(next, {
           ...branch,
@@ -10866,34 +11435,62 @@ export default function AdvancedEditor() {
         setBranchCompareLoading((prev) => (prev === name ? null : prev));
       }
     },
-    [buildBranchDiffSummary, commit, fetchVersionContentDoc, pushMessage],
+    [buildBranchDiffSummary, commit, currentBranchReviewRole, fetchVersionContentDoc, pushMessage],
   );
 
   const approveBranchReview = useCallback(
     (reviewId: string) => {
+      const review = docRef.current.branchReviews?.find((item) => item.id === reviewId);
+      if (!review || !canBranchReviewAction(review, currentBranchReviewRole, "approve")) {
+        pushMessage("branch_review_permission_denied");
+        return;
+      }
       const next = setBranchReviewStatus(docRef.current, reviewId, "approved");
       commit(next);
       pushMessage("branch_review_approved");
     },
-    [commit, pushMessage],
+    [commit, currentBranchReviewRole, pushMessage],
   );
 
   const closeBranchReview = useCallback(
     (reviewId: string) => {
+      const review = docRef.current.branchReviews?.find((item) => item.id === reviewId);
+      if (!review || !canBranchReviewAction(review, currentBranchReviewRole, "close")) {
+        pushMessage("branch_review_permission_denied");
+        return;
+      }
       const next = setBranchReviewStatus(docRef.current, reviewId, "closed");
       commit(next);
       setSelectedBranchReviewId((prev) => (prev === reviewId ? null : prev));
       pushMessage("branch_review_closed");
     },
-    [commit, pushMessage],
+    [commit, currentBranchReviewRole, pushMessage],
   );
 
   const resolveBranchReviewNode = useCallback(
     (reviewId: string, nodeId: string, resolution: "current" | "branch") => {
+      const review = docRef.current.branchReviews?.find((item) => item.id === reviewId);
+      if (!review || !canBranchReviewAction(review, currentBranchReviewRole, "resolve")) {
+        pushMessage("branch_review_permission_denied");
+        return;
+      }
       const next = setBranchReviewResolution(docRef.current, reviewId, nodeId, resolution);
       commit(next);
     },
-    [commit],
+    [commit, currentBranchReviewRole, pushMessage],
+  );
+
+  const updateBranchReviewRole = useCallback(
+    (reviewId: string, requiredRole: BranchReviewActorRole) => {
+      if (!canEditBranchReviewPolicy) {
+        pushMessage("branch_review_permission_denied");
+        return;
+      }
+      const next = setBranchReviewRequiredRole(docRef.current, reviewId, requiredRole);
+      commit(next);
+      pushMessage("branch_review_policy_updated");
+    },
+    [canEditBranchReviewPolicy, commit, pushMessage],
   );
 
   const mergeBranch = useCallback(
@@ -10906,6 +11503,11 @@ export default function AdvancedEditor() {
         : reviews[0];
       if (!review) {
         await compareBranch(name);
+        return;
+      }
+      if (!canBranchReviewAction(review, currentBranchReviewRole, "merge")) {
+        setSelectedBranchReviewId(review.id);
+        pushMessage("branch_review_permission_denied");
         return;
       }
       if (review.summary.conflicts.length && review.status !== "approved") {
@@ -10924,7 +11526,7 @@ export default function AdvancedEditor() {
       setSelectedBranchReviewId(review.id);
       pushMessage("branch_merged");
     },
-    [applyBranchMerge, commit, compareBranch, fetchVersionContentDoc, pushMessage, selectedBranchReviewId],
+    [applyBranchMerge, commit, compareBranch, currentBranchReviewRole, fetchVersionContentDoc, pushMessage, selectedBranchReviewId],
   );
 
   const exportByNodeSettings = useCallback(() => {
@@ -11934,6 +12536,25 @@ export default function AdvancedEditor() {
     }
   }, [devCompareVersionId, ensureAnonId, pageId, pushMessage, selectedNode]);
 
+  const copyDevInteropSnippet = useCallback(
+    async (kind: "code-connect" | "mcp") => {
+      if (!pageId || typeof window === "undefined") return;
+      const anonId = await ensureAnonId();
+      const origin = window.location.origin;
+      const url =
+        kind === "code-connect"
+          ? `${origin}/api/pages/${pageId}/dev/code-connect`
+          : `${origin}/api/pages/${pageId}/dev/mcp`;
+      const snippet =
+        kind === "code-connect"
+          ? `curl -H "x-anon-user-id: ${anonId}" "${url}"`
+          : `curl -X POST -H "content-type: application/json" -H "x-anon-user-id: ${anonId}" "${url}" -d "{\\"tool\\":\\"list_ready_nodes\\"}"`;
+      await navigator.clipboard?.writeText(snippet);
+      pushMessage(kind === "code-connect" ? "code_connect_snippet_copied" : "mcp_snippet_copied");
+    },
+    [ensureAnonId, pageId, pushMessage],
+  );
+
   useEffect(() => {
     if (exportScope === "selection" && !hasSelection) setExportScope("page");
   }, [exportScope, hasSelection]);
@@ -12032,21 +12653,22 @@ export default function AdvancedEditor() {
     { id: "forward", label: "Bring Forward", hint: "Ctrl+Shift+]", disabled: !hasSelection, onClick: bringForward },
     { id: "backward", label: "Send Backward", hint: "Ctrl+Shift+[", disabled: !hasSelection, onClick: sendBackward },
     { id: "divider-4", divider: true },
-    { id: "snap-grid", label: "Snap to Grid", disabled: !hasSelection, onClick: snapSelectionToGrid },
-    { id: "tidy-up", label: "Tidy Up", disabled: selectedIds.length < 2, onClick: tidyUpSelection },
-    { id: "repeat-grid", label: "Repeat Grid", disabled: !hasSelection, onClick: openRepeatGrid },
+    { id: "snap-grid", label: "그리드에 맞추기", disabled: !hasSelection, onClick: snapSelectionToGrid },
+    { id: "tidy-up", label: "간격 정리", disabled: selectedIds.length < 2, onClick: tidyUpSelection },
+    { id: "repeat-grid", label: "반복 그리드", disabled: !hasSelection, onClick: openRepeatGrid },
     { id: "divider-vector", divider: true },
-    { id: "vector-flatten", label: "Flatten to Path", disabled: !canFlattenSelection, onClick: flattenSelectionToPath },
-    { id: "vector-join", label: "Join to Path", disabled: !canJoinSelection, onClick: joinSelectionToPath },
+    { id: "vector-flatten", label: "패스로 평탄화", disabled: !canFlattenSelection, onClick: flattenSelectionToPath },
+    { id: "vector-join", label: "패스로 결합", disabled: !canJoinSelection, onClick: joinSelectionToPath },
     { id: "divider-4b", divider: true },
-    { id: "zoom-selection", label: "Zoom to Selection", disabled: !hasSelection, onClick: zoomToSelection },
-    { id: "zoom-content", label: "Zoom to Content", onClick: zoomToContent },
-    { id: "zoom-page", label: "Zoom to Page", onClick: zoomToPage },
+    { id: "zoom-selection", label: "선택 영역으로 확대", disabled: !hasSelection, onClick: zoomToSelection },
+    { id: "zoom-content", label: "전체 콘텐츠에 맞추기", onClick: zoomToContent },
+    { id: "zoom-page", label: "페이지에 맞추기", onClick: zoomToPage },
     { id: "divider-4c", divider: true },
-    { id: "toggle-grid", label: showGrid ? "Hide Grid" : "Show Grid", onClick: () => setShowGrid((prev) => !prev) },
-    { id: "toggle-outline", label: outlineMode ? "Disable Outline" : "Enable Outline", onClick: () => setOutlineMode((prev) => !prev) },
-    { id: "toggle-rulers", label: showRulers ? "Hide Rulers" : "Show Rulers", onClick: () => setShowRulers((prev) => !prev) },
-    { id: "toggle-ui", label: uiHidden ? "Show UI" : "Hide UI", onClick: () => setUiHidden((prev) => !prev) },
+    { id: "toggle-grid", label: showGrid ? "그리드 숨기기" : "그리드 보이기", onClick: () => setShowGrid((prev) => !prev) },
+    { id: "toggle-outline", label: outlineMode ? "아웃라인 끄기" : "아웃라인 켜기", onClick: () => setOutlineMode((prev) => !prev) },
+    { id: "toggle-rulers", label: showRulers ? "눈금자 숨기기" : "눈금자 보이기", onClick: () => setShowRulers((prev) => !prev) },
+    { id: "toggle-minimap", label: showMinimap ? "미니맵 숨기기" : "미니맵 보이기", onClick: () => setShowMinimap((prev) => !prev) },
+    { id: "toggle-ui", label: uiHidden ? "UI 보이기" : "UI 숨기기", onClick: () => setUiHidden((prev) => !prev) },
   ];
 
   const parentNode = selectedNode?.parentId ? doc.nodes[selectedNode.parentId] : null;
@@ -12075,12 +12697,24 @@ export default function AdvancedEditor() {
   const selectedTextModel = selectedNode?.type === "text" ? ensureNodeText(selectedNode.text) : null;
   const selectedTextRanges = selectedTextModel?.ranges ?? [];
   const selectedTextPath = selectedTextModel?.textPath;
+  const selectedTextPathPreset = useMemo(
+    () => parseTextPathPreset(selectedTextPath?.pathData),
+    [selectedTextPath?.pathData],
+  );
+  const selectedTextPathPresetHandles = useMemo(
+    () => (selectedTextPathPreset ? getTextPathPresetHandles(selectedTextPathPreset) : []),
+    [selectedTextPathPreset],
+  );
   const textContentVariables = useMemo(
     () => doc.variables.filter((variable) => variable.type === "string" || variable.type === "number" || variable.type === "boolean"),
     [doc.variables],
   );
   const textStyleVariables = useMemo(
     () => doc.variables.filter((variable) => variable.type === "string" || variable.type === "number"),
+    [doc.variables],
+  );
+  const numberVariables = useMemo(
+    () => doc.variables.filter((variable) => variable.type === "number"),
     [doc.variables],
   );
   const selectedTextPathPreviewId = selectedNode?.type === "text" ? getTextPathId(selectedNode.id, "text-inspector-preview") : null;
@@ -12125,16 +12759,83 @@ export default function AdvancedEditor() {
     },
     [fitTextNodeToContent, selectedNode, updateNode],
   );
+  const applySelectedTextPathPreset = useCallback(
+    (kind: "arc" | "wave" | "line", patch: Partial<ReturnType<typeof createTextPathPreset>> = {}) => {
+      if (!selectedNode || selectedNode.type !== "text") return;
+      const baseText = ensureNodeText(selectedNode.text);
+      const preset = createTextPathPreset(kind, patch);
+      updateNode(
+        selectedNode.id,
+        {
+          text: {
+            ...baseText,
+            textPath: {
+              pathData: createPresetTextPath(kind, patch).pathData,
+              startOffset: baseText.textPath?.startOffset,
+              side: baseText.textPath?.side,
+            },
+          },
+        },
+        true,
+      );
+    },
+    [selectedNode, updateNode],
+  );
+  const updateSelectedTextPathHandle = useCallback(
+    (handleId: TextPathHandleId, clientX: number, clientY: number, svg: SVGSVGElement | null) => {
+      if (!selectedNode || selectedNode.type !== "text" || !selectedTextPathPreset || !svg) return;
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const scaleX = TEXT_PATH_VIEWBOX.width / rect.width;
+      const scaleY = TEXT_PATH_VIEWBOX.height / rect.height;
+      const point = {
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY,
+      };
+      const nextPreset = applyTextPathPresetHandle(selectedTextPathPreset, handleId, point);
+      const baseText = ensureNodeText(selectedNode.text);
+      updateNode(
+        selectedNode.id,
+        {
+          text: {
+            ...baseText,
+            textPath: {
+              pathData: createPresetTextPath(nextPreset.kind, nextPreset).pathData,
+              startOffset: baseText.textPath?.startOffset,
+              side: baseText.textPath?.side,
+            },
+          },
+        },
+        true,
+      );
+    },
+    [selectedNode, selectedTextPathPreset, updateNode],
+  );
   const selectedSupportsDataBinding = Boolean(
     selectedNode && ["frame", "section", "group", "component", "instance", "table"].includes(selectedNode.type),
   );
   const selectedDataBinding =
     selectedSupportsDataBinding && selectedNode?.data?.type === "collection"
-      ? (selectedNode.data as NodeDataBinding)
+      ? selectedNode.data
       : null;
   const selectedDataBindingFields = selectedDataBinding?.fields?.join(", ") ?? "";
   const selectedDataBindingSearchFields = selectedDataBinding?.search?.fields?.join(", ") ?? "";
   const selectedDataBindingFilters = selectedDataBinding?.filters ?? [];
+  const selectedSupportsServiceBinding = Boolean(selectedNode);
+  const selectedServiceBinding = selectedSupportsServiceBinding ? selectedNode?.service ?? null : null;
+  const selectedServiceFieldBinding = selectedServiceBinding?.field ?? null;
+  const selectedServiceDataSourceBinding = selectedServiceBinding?.dataSource ?? null;
+  const selectedServiceStateTransitionBinding = selectedServiceBinding?.stateTransition ?? null;
+  const selectedServiceDataSourceFields = selectedServiceDataSourceBinding?.fields?.join(", ") ?? "";
+  const selectedServiceDataSourceSearchFields = selectedServiceDataSourceBinding?.search?.fields?.join(", ") ?? "";
+  const selectedServiceDataSourceFilters = selectedServiceDataSourceBinding?.filters ?? [];
+  const selectedServiceDataSourceParams = Object.entries(selectedServiceDataSourceBinding?.params ?? {})
+    .map(([key, value]) => `${key}:${String(value)}`)
+    .join(", ");
+  const selectedPrimaryServiceInteraction = findPrimaryServiceInteraction(selectedNode?.prototype?.interactions);
+  const selectedPrimaryServiceAction =
+    selectedPrimaryServiceInteraction?.action.type === "service" ? selectedPrimaryServiceInteraction.action : null;
+  const selectedServiceIssues = describeServiceBindingIssues(selectedNode?.service, selectedPrimaryServiceAction?.action);
   const selectedIsMedia = Boolean(selectedNode && (selectedNode.type === "image" || selectedNode.type === "video"));
   const vectorOpsEnabled = Boolean(
     selectedNode && ["rect", "ellipse", "polygon", "star", "line", "arrow", "path"].includes(selectedNode.type),
@@ -12612,6 +13313,65 @@ export default function AdvancedEditor() {
     window.speechSynthesis.speak(u);
   }, [selectionAnnounceText]);
 
+  const updatePrimaryServiceAction = useCallback((patch: Partial<Extract<PrototypeAction, { type: "service" }>>) => {
+    if (!selectedNode) return;
+    const draft = cloneDoc(docRef.current);
+    const node = draft.nodes[selectedNode.id];
+    if (!node) return;
+    const interactions = [...(node.prototype?.interactions ?? [])];
+    const currentIndex = interactions.findIndex(
+      (interaction) => interaction.trigger === "click" && interaction.action.type === "service",
+    );
+    const currentAction =
+      currentIndex >= 0 && interactions[currentIndex]?.action.type === "service"
+        ? interactions[currentIndex]!.action
+        : createDefaultServiceAction("auth.login");
+    const nextInteraction: PrototypeInteraction = {
+      id: currentIndex >= 0 ? interactions[currentIndex]!.id : makeRuntimeId("proto"),
+      trigger: currentIndex >= 0 ? interactions[currentIndex]!.trigger : "click",
+      action: {
+        ...currentAction,
+        ...patch,
+        type: "service",
+      },
+    };
+    if (currentIndex >= 0) interactions[currentIndex] = nextInteraction;
+    else interactions.push(nextInteraction);
+    node.prototype = { interactions };
+    commit(draft);
+  }, [commit, selectedNode]);
+
+  const removePrimaryServiceAction = useCallback(() => {
+    if (!selectedNode) return;
+    const draft = cloneDoc(docRef.current);
+    const node = draft.nodes[selectedNode.id];
+    if (!node) return;
+    const interactions = (node.prototype?.interactions ?? []).filter(
+      (interaction) => !(interaction.trigger === "click" && interaction.action.type === "service"),
+    );
+    node.prototype = interactions.length ? { interactions } : undefined;
+    commit(draft);
+  }, [commit, selectedNode]);
+
+  const updateSelectedServiceBinding = useCallback((patch: Partial<NodeServiceBinding> | undefined) => {
+    if (!selectedNode) return;
+    const nextBinding = patch
+      ? {
+          ...(selectedNode.service ?? createDefaultServiceBinding()),
+          ...patch,
+        }
+      : undefined;
+    updateNode(selectedNode.id, { service: nextBinding }, true);
+    if (selectedPrimaryServiceAction && patch) {
+      const actionPatch: Partial<Extract<PrototypeAction, { type: "service" }>> = {};
+      if ("dataSource" in patch) actionPatch.dataSource = patch.dataSource;
+      if ("stateTransition" in patch) actionPatch.stateTransition = patch.stateTransition;
+      if (Object.keys(actionPatch).length) {
+        updatePrimaryServiceAction(actionPatch);
+      }
+    }
+  }, [selectedNode, selectedPrimaryServiceAction, updateNode, updatePrimaryServiceAction]);
+
   const DesignPanelInner = () => (
     <>
       {selectedNode ? (
@@ -12978,6 +13738,493 @@ export default function AdvancedEditor() {
             )}
           </div>
         )}
+        {selectedSupportsServiceBinding && (
+          <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100"
+              onClick={() => setRightPanelSections((s) => ({ ...s, serviceBinding: !s.serviceBinding }))}
+            >
+              <span>Service binding</span>
+              <span className={`shrink-0 transition-transform ${rightPanelSections.serviceBinding ? "rotate-180" : ""}`} aria-hidden>▾</span>
+            </button>
+            {rightPanelSections.serviceBinding && (
+              <div className="px-2 pb-2">
+                <div className="mt-2 space-y-2">
+                  <p className="text-[11px] text-neutral-500">
+                    선택한 노드에 명시적 서비스 의미를 연결합니다. 화면 구조를 많이 바꿔도 액션, 데이터, 상태 전이가 유지되도록 만드는 패널입니다.
+                  </p>
+                  {selectedServiceIssues.length ? (
+                    <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-700">
+                      {selectedServiceIssues.map((issue) => (
+                        <div key={issue}>{issue}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded border border-emerald-200 bg-emerald-50 p-2 text-[11px] text-emerald-700">
+                      현재 선택 노드의 서비스 바인딩은 치명적인 누락이 없습니다.
+                    </div>
+                  )}
+                  <div className="rounded border border-neutral-200 bg-white p-2 space-y-2">
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">Primary service action</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selectedPrimaryServiceAction)}
+                        onChange={(e) => {
+                          if (!selectedNode) return;
+                          if (e.target.checked) {
+                            const nextAction = createDefaultServiceAction("auth.login");
+                            updatePrimaryServiceAction(nextAction);
+                            updateSelectedServiceBinding({
+                              dataSource: getDefaultServiceDataSource(nextAction.action),
+                              stateTransition: getDefaultStateTransition(nextAction.action),
+                            });
+                          } else {
+                            removePrimaryServiceAction();
+                          }
+                        }}
+                      />
+                    </label>
+                    {selectedPrimaryServiceAction ? (
+                      <>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Action kind</span>
+                          <select
+                            value={selectedPrimaryServiceAction.action}
+                            onChange={(e) => {
+                              const nextAction = e.target.value as ServiceActionKind;
+                              const nextDataSource = selectedServiceDataSourceBinding ?? getDefaultServiceDataSource(nextAction);
+                              const nextTransition = getDefaultStateTransition(nextAction);
+                              updatePrimaryServiceAction({
+                                ...createDefaultServiceAction(nextAction),
+                                nextPageId: selectedPrimaryServiceAction.nextPageId,
+                                bindings: selectedPrimaryServiceAction.bindings,
+                                dataSource: nextDataSource,
+                                stateTransition: nextTransition,
+                              });
+                              updateSelectedServiceBinding({
+                                dataSource: nextDataSource,
+                                stateTransition: nextTransition,
+                              });
+                            }}
+                            className="w-48 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          >
+                            {SERVICE_ACTION_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Success next page</span>
+                          <select
+                            value={selectedPrimaryServiceAction.nextPageId ?? ""}
+                            onChange={(e) => updatePrimaryServiceAction({ nextPageId: e.target.value || undefined })}
+                            className="w-40 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          >
+                            <option value="">현재 페이지 유지</option>
+                            {doc.pages.map((page) => (
+                              <option key={page.id} value={page.id}>{page.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </>
+                    ) : (
+                      <p className="text-[11px] text-neutral-500">
+                        버튼/카드/컨테이너 노드에 서비스 액션을 직접 연결할 수 있습니다.
+                      </p>
+                    )}
+                  </div>
+                  <div className="rounded border border-neutral-200 bg-white p-2 space-y-2">
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">Field binding</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selectedServiceFieldBinding)}
+                        onChange={(e) =>
+                          updateSelectedServiceBinding(
+                            e.target.checked
+                              ? { field: selectedServiceFieldBinding ?? { key: "", valueType: "string", required: false } }
+                              : { field: undefined },
+                          )
+                        }
+                      />
+                    </label>
+                    {selectedServiceFieldBinding ? (
+                      <>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Field key</span>
+                          <input
+                            type="text"
+                            value={selectedServiceFieldBinding.key}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                field: { ...selectedServiceFieldBinding, key: e.target.value },
+                              })
+                            }
+                            placeholder="email / password / message / reservation.notes"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Field type</span>
+                          <select
+                            value={selectedServiceFieldBinding.valueType ?? "string"}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                field: {
+                                  ...selectedServiceFieldBinding,
+                                  valueType: e.target.value as NonNullable<typeof selectedServiceFieldBinding.valueType>,
+                                },
+                              })
+                            }
+                            className="w-32 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          >
+                            {SERVICE_FIELD_VALUE_TYPE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Required</span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedServiceFieldBinding.required)}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                field: { ...selectedServiceFieldBinding, required: e.target.checked },
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Fallback value</span>
+                          <input
+                            type="text"
+                            value={selectedServiceFieldBinding.fallbackValue == null ? "" : String(selectedServiceFieldBinding.fallbackValue)}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                field: {
+                                  ...selectedServiceFieldBinding,
+                                  fallbackValue: e.target.value || undefined,
+                                },
+                              })
+                            }
+                            placeholder="optional fallback"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+                  <div className="rounded border border-neutral-200 bg-white p-2 space-y-2">
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">Data source binding</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selectedServiceDataSourceBinding)}
+                        onChange={(e) =>
+                          updateSelectedServiceBinding(
+                            e.target.checked
+                              ? { dataSource: selectedServiceDataSourceBinding ?? getDefaultServiceDataSource(selectedPrimaryServiceAction?.action) }
+                              : { dataSource: undefined },
+                          )
+                        }
+                      />
+                    </label>
+                    {selectedServiceDataSourceBinding ? (
+                      <>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Source</span>
+                          <select
+                            value={selectedServiceDataSourceBinding.source}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                dataSource: {
+                                  ...selectedServiceDataSourceBinding,
+                                  source: e.target.value as ServiceDataSourceKind,
+                                },
+                              })
+                            }
+                            className="w-44 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          >
+                            {SERVICE_DATA_SOURCE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Fields</span>
+                          <input
+                            type="text"
+                            value={selectedServiceDataSourceFields}
+                            onChange={(e) => {
+                              const fields = e.target.value.split(",").map((value) => value.trim()).filter(Boolean);
+                              updateSelectedServiceBinding({
+                                dataSource: {
+                                  ...selectedServiceDataSourceBinding,
+                                  fields: fields.length ? fields : undefined,
+                                },
+                              });
+                            }}
+                            placeholder="title, status, updated_at"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="flex items-center justify-between gap-2">
+                            <span className="text-neutral-500">Limit</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={selectedServiceDataSourceBinding.limit ?? ""}
+                              onChange={(e) =>
+                                updateSelectedServiceBinding({
+                                  dataSource: {
+                                    ...selectedServiceDataSourceBinding,
+                                    limit: e.target.value === "" ? undefined : Math.max(1, Number(e.target.value)),
+                                  },
+                                })
+                              }
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                            />
+                          </label>
+                          <label className="flex items-center justify-between gap-2">
+                            <span className="text-neutral-500">Offset</span>
+                            <input
+                              type="number"
+                              min={0}
+                              value={selectedServiceDataSourceBinding.offset ?? ""}
+                              onChange={(e) =>
+                                updateSelectedServiceBinding({
+                                  dataSource: {
+                                    ...selectedServiceDataSourceBinding,
+                                    offset: e.target.value === "" ? undefined : Math.max(0, Number(e.target.value)),
+                                  },
+                                })
+                              }
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                            />
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="flex flex-col gap-1">
+                            <span className="text-neutral-500">Order by</span>
+                            <input
+                              type="text"
+                              value={selectedServiceDataSourceBinding.orderBy ?? ""}
+                              onChange={(e) =>
+                                updateSelectedServiceBinding({
+                                  dataSource: {
+                                    ...selectedServiceDataSourceBinding,
+                                    orderBy: e.target.value || undefined,
+                                  },
+                                })
+                              }
+                              placeholder="created_at"
+                              className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                            />
+                          </label>
+                          <label className="flex items-center justify-between gap-2">
+                            <span className="text-neutral-500">Order dir</span>
+                            <select
+                              value={selectedServiceDataSourceBinding.orderDir ?? "desc"}
+                              onChange={(e) =>
+                                updateSelectedServiceBinding({
+                                  dataSource: {
+                                    ...selectedServiceDataSourceBinding,
+                                    orderDir: e.target.value as "asc" | "desc",
+                                  },
+                                })
+                              }
+                              className="w-24 rounded border border-neutral-200 px-2 py-1 text-xs"
+                            >
+                              <option value="desc">desc</option>
+                              <option value="asc">asc</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Search fields</span>
+                          <input
+                            type="text"
+                            value={selectedServiceDataSourceSearchFields}
+                            onChange={(e) => {
+                              const fields = e.target.value.split(",").map((value) => value.trim()).filter(Boolean);
+                              updateSelectedServiceBinding({
+                                dataSource: {
+                                  ...selectedServiceDataSourceBinding,
+                                  search: {
+                                    ...(selectedServiceDataSourceBinding.search ?? {}),
+                                    fields: fields.length ? fields : undefined,
+                                  },
+                                },
+                              });
+                            }}
+                            placeholder="title, description"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Params</span>
+                          <input
+                            type="text"
+                            value={selectedServiceDataSourceParams}
+                            onChange={(e) => {
+                              const params = Object.fromEntries(
+                                e.target.value
+                                  .split(",")
+                                  .map((entry) => entry.trim())
+                                  .filter(Boolean)
+                                  .map((entry) => {
+                                    const [rawKey, ...rawValue] = entry.split(":");
+                                    const key = rawKey?.trim() ?? "";
+                                    const joined = rawValue.join(":").trim();
+                                    const value =
+                                      joined === "true"
+                                        ? true
+                                        : joined === "false"
+                                          ? false
+                                          : joined !== "" && !Number.isNaN(Number(joined))
+                                            ? Number(joined)
+                                            : joined;
+                                    return [key, value];
+                                  })
+                                  .filter(([key]) => Boolean(key)),
+                              );
+                              updateSelectedServiceBinding({
+                                dataSource: {
+                                  ...selectedServiceDataSourceBinding,
+                                  params: Object.keys(params).length ? params : undefined,
+                                },
+                              });
+                            }}
+                            placeholder="channel:support, role:partner"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+                  <div className="rounded border border-neutral-200 bg-white p-2 space-y-2">
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-neutral-500">State transition</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selectedServiceStateTransitionBinding)}
+                        onChange={(e) =>
+                          updateSelectedServiceBinding(
+                            e.target.checked
+                              ? {
+                                  stateTransition:
+                                    selectedServiceStateTransitionBinding
+                                    ?? getDefaultStateTransition(selectedPrimaryServiceAction?.action)
+                                    ?? { machine: "reservation", to: "", recordIdField: "recordId", statusField: "status" },
+                                }
+                              : { stateTransition: undefined },
+                          )
+                        }
+                      />
+                    </label>
+                    {selectedServiceStateTransitionBinding ? (
+                      <>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Machine</span>
+                          <select
+                            value={selectedServiceStateTransitionBinding.machine}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                stateTransition: {
+                                  ...selectedServiceStateTransitionBinding,
+                                  machine: e.target.value as ServiceStateMachineKind,
+                                },
+                              })
+                            }
+                            className="w-36 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          >
+                            {SERVICE_STATE_MACHINE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Target state</span>
+                          <input
+                            type="text"
+                            value={selectedServiceStateTransitionBinding.to}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                stateTransition: {
+                                  ...selectedServiceStateTransitionBinding,
+                                  to: e.target.value,
+                                },
+                              })
+                            }
+                            placeholder="confirmed / qualified / approved"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="flex flex-col gap-1">
+                            <span className="text-neutral-500">Record ID field</span>
+                            <input
+                              type="text"
+                              value={selectedServiceStateTransitionBinding.recordIdField ?? ""}
+                              onChange={(e) =>
+                                updateSelectedServiceBinding({
+                                  stateTransition: {
+                                    ...selectedServiceStateTransitionBinding,
+                                    recordIdField: e.target.value || undefined,
+                                  },
+                                })
+                              }
+                              placeholder="reservationId"
+                              className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1">
+                            <span className="text-neutral-500">Status field</span>
+                            <input
+                              type="text"
+                              value={selectedServiceStateTransitionBinding.statusField ?? ""}
+                              onChange={(e) =>
+                                updateSelectedServiceBinding({
+                                  stateTransition: {
+                                    ...selectedServiceStateTransitionBinding,
+                                    statusField: e.target.value || undefined,
+                                  },
+                                })
+                              }
+                              placeholder="status"
+                              className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                            />
+                          </label>
+                        </div>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Allowed from</span>
+                          <input
+                            type="text"
+                            value={selectedServiceStateTransitionBinding.from?.join(", ") ?? ""}
+                            onChange={(e) =>
+                              updateSelectedServiceBinding({
+                                stateTransition: {
+                                  ...selectedServiceStateTransitionBinding,
+                                  from: e.target.value.split(",").map((value) => value.trim()).filter(Boolean),
+                                },
+                              })
+                            }
+                            placeholder="requested, confirmed"
+                            className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <div className="rounded-md border border-neutral-100 bg-neutral-50/50 overflow-hidden">
           <button type="button" className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500 hover:bg-neutral-100" onClick={() => setRightPanelSections((s) => ({ ...s, geometry: !s.geometry }))}>
             <span>지오메트리</span>
@@ -13042,9 +14289,9 @@ export default function AdvancedEditor() {
               </div>
               {vectorOpsEnabled ? (
                 <div className="mt-3 rounded-md border border-neutral-200 bg-white px-2 py-2">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Vector Ops</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">벡터 도구</div>
                   <label className="mt-2 flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                    <span>Offset</span>
+                    <span>오프셋</span>
                     <input
                       type="number"
                       value={vectorOffsetValue}
@@ -13053,14 +14300,14 @@ export default function AdvancedEditor() {
                     />
                   </label>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={outlineSelectionToPath}>Outline (Stroke)</button>
-                    <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => offsetSelectionToPath(vectorOffsetValue)}>Offset Path</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={outlineSelectionToPath}>스트로크를 아웃라인으로</button>
+                    <button type="button" className="rounded border border-neutral-200 px-2 py-1 text-[11px]" onClick={() => offsetSelectionToPath(vectorOffsetValue)}>오프셋 패스 생성</button>
                   </div>
                   <div className="mt-2 text-[10px] text-neutral-400">
-                    Offset/Outline uses polygon approximation for curves.
+                    곡선 오프셋과 아웃라인은 다각형 근사 방식으로 계산됩니다.
                   </div>
                   <div className="mt-4 space-y-2">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Plugin Store</div>
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">플러그인 스토어</div>
                     <div className="grid grid-cols-[1fr,120px] gap-2">
                       <input
                         type="text"
@@ -13084,8 +14331,9 @@ export default function AdvancedEditor() {
                     <div className="max-h-48 space-y-2 overflow-y-auto rounded border border-neutral-200 bg-white p-2">
                       {filteredStorePlugins.length ? (
                         filteredStorePlugins.map((plugin) => {
+                          const governance = getStorePluginGovernanceState(plugin, storeGovernancePolicy, storeApprovalRequests);
                           const request = storeApprovalRequests.find((item) => item.type === "plugin" && item.storeId === plugin.storeId && item.status === "requested");
-                          const approved = storeApprovalRequests.some((item) => item.type === "plugin" && item.storeId === plugin.storeId && item.status === "approved");
+                          const approved = governance.approval === "approved" || governance.approval === "not-required";
                           const needsApproval = storeGovernancePolicy.pluginApprovalRequired || plugin.approvalRequired;
                           return (
                           <div key={plugin.storeId} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2 text-[11px]">
@@ -13097,17 +14345,18 @@ export default function AdvancedEditor() {
                               <div className="flex items-center gap-1">
                                 <button
                                   type="button"
-                                  className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                  className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
                                   onClick={() => toggleSavedPluginStore(plugin.storeId)}
+                                  disabled={!governance.canSave}
                                 >
-                                  {savedPluginStoreIds.includes(plugin.storeId) ? "saved" : "save"}
+                                  {!governance.canSave ? "save off" : savedPluginStoreIds.includes(plugin.storeId) ? "saved" : "save"}
                                 </button>
                                 {needsApproval && !approved ? (
                                   <button
                                     type="button"
                                     className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-700 disabled:opacity-50"
                                     onClick={() => void requestStoreApproval("plugin", plugin.storeId)}
-                                    disabled={!pageId || Boolean(request)}
+                                    disabled={!pageId || Boolean(request) || !governance.canRequestApproval}
                                   >
                                     {request ? "requested" : "request"}
                                   </button>
@@ -13116,7 +14365,7 @@ export default function AdvancedEditor() {
                                     type="button"
                                     className="rounded border border-neutral-900 bg-neutral-900 px-2 py-1 text-[10px] text-white disabled:opacity-50"
                                     onClick={() => void installStorePlugin(plugin.storeId)}
-                                    disabled={!pageId}
+                                    disabled={!pageId || !governance.canInstall}
                                   >
                                     install
                                   </button>
@@ -13137,7 +14386,9 @@ export default function AdvancedEditor() {
                             {plugin.detail ? <div className="mt-1 text-[10px] text-neutral-400">{plugin.detail}</div> : null}
                             {needsApproval ? (
                               <div className="mt-1 text-[10px] text-neutral-500">
-                                approval {approved ? "approved" : request ? "requested" : "required"}
+                                approval {formatStoreApprovalLabel(governance.approval)}
+                                {governance.blockedPermissions.length ? ` · blocked permissions: ${governance.blockedPermissions.join(", ")}` : ""}
+                                {!governance.canSave ? " · saving disabled by policy" : ""}
                               </div>
                             ) : null}
                           </div>
@@ -13173,7 +14424,8 @@ export default function AdvancedEditor() {
                       {filteredStoreWidgets.length ? (
                         filteredStoreWidgets.map((widget) => {
                           const request = storeApprovalRequests.find((item) => item.type === "widget" && item.storeId === widget.storeId && item.status === "requested");
-                          const approved = storeApprovalRequests.some((item) => item.type === "widget" && item.storeId === widget.storeId && item.status === "approved");
+                          const governance = getStoreWidgetGovernanceState(widget, storeGovernancePolicy, storeApprovalRequests);
+                          const approved = governance.approval === "approved" || governance.approval === "not-required";
                           const needsApproval = storeGovernancePolicy.widgetApprovalRequired || widget.approvalRequired;
                           return (
                           <div key={widget.storeId} className="rounded border border-neutral-100 bg-neutral-50 px-2 py-2 text-[11px]">
@@ -13185,17 +14437,18 @@ export default function AdvancedEditor() {
                               <div className="flex items-center gap-1">
                                 <button
                                   type="button"
-                                  className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                  className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
                                   onClick={() => toggleSavedWidgetStore(widget.storeId)}
+                                  disabled={!governance.canSave}
                                 >
-                                  {savedWidgetStoreIds.includes(widget.storeId) ? "saved" : "save"}
+                                  {!governance.canSave ? "save off" : savedWidgetStoreIds.includes(widget.storeId) ? "saved" : "save"}
                                 </button>
                                 {needsApproval && !approved ? (
                                   <button
                                     type="button"
                                     className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-700 disabled:opacity-50"
                                     onClick={() => void requestStoreApproval("widget", widget.storeId)}
-                                    disabled={!pageId || Boolean(request)}
+                                    disabled={!pageId || Boolean(request) || !governance.canRequestApproval}
                                   >
                                     {request ? "requested" : "request"}
                                   </button>
@@ -13203,15 +14456,17 @@ export default function AdvancedEditor() {
                                   <>
                                     <button
                                       type="button"
-                                      className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
                                       onClick={() => updateStoreWidgets(widget.storeId)}
+                                      disabled={!governance.canUpdate}
                                     >
                                       update
                                     </button>
                                     <button
                                       type="button"
-                                      className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-[10px] text-indigo-700"
+                                      className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-[10px] text-indigo-700 disabled:opacity-50"
                                       onClick={() => insertStoreWidget(widget)}
+                                      disabled={!governance.canInsert}
                                     >
                                       insert
                                     </button>
@@ -13233,7 +14488,8 @@ export default function AdvancedEditor() {
                             {widget.detail ? <div className="mt-1 text-[10px] text-neutral-400">{widget.detail}</div> : null}
                             {needsApproval ? (
                               <div className="mt-1 text-[10px] text-neutral-500">
-                                approval {approved ? "approved" : request ? "requested" : "required"}
+                                approval {formatStoreApprovalLabel(governance.approval)}
+                                {!governance.canSave ? " · saving disabled by policy" : ""}
                               </div>
                             ) : null}
                           </div>
@@ -13285,6 +14541,10 @@ export default function AdvancedEditor() {
                   <div className="mt-4 space-y-2">
                     <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Store Governance</div>
                     <div className="rounded border border-neutral-200 bg-white p-2 space-y-2 text-[11px]">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-neutral-500">
+                        <span>role: {storeGovernanceRole ?? "viewer"}</span>
+                        <span>updated: {new Date(storeGovernancePolicy.updatedAt).toLocaleString("ko-KR")}</span>
+                      </div>
                       <div className="grid grid-cols-2 gap-2">
                         <label className="flex items-center justify-between gap-2">
                           <span className="text-neutral-500">scope</span>
@@ -13329,6 +14589,27 @@ export default function AdvancedEditor() {
                       <div className="text-[10px] text-neutral-500">
                         allowed permissions: {storeGovernancePolicy.allowedPermissions.join(", ")}
                       </div>
+                      <div className="grid grid-cols-2 gap-2 rounded border border-neutral-100 bg-neutral-50 p-2">
+                        {ALL_PLUGIN_PERMISSION_KEYS.map((permission) => {
+                          const checked = storeGovernancePolicy.allowedPermissions.includes(permission);
+                          return (
+                            <label key={permission} className="flex items-center justify-between gap-2 text-[10px] text-neutral-600">
+                              <span>{PERMISSION_LABELS[permission] ?? permission}</span>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={storeGovernanceRole !== "owner" && storeGovernanceRole !== "admin"}
+                                onChange={(e) => {
+                                  const next = e.target.checked
+                                    ? Array.from(new Set([...storeGovernancePolicy.allowedPermissions, permission]))
+                                    : storeGovernancePolicy.allowedPermissions.filter((item) => item !== permission);
+                                  void updateStoreGovernancePolicy({ allowedPermissions: next });
+                                }}
+                              />
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
                     <div className="rounded border border-neutral-200 bg-white p-2">
                       <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-neutral-400">Approval Requests</div>
@@ -13340,6 +14621,7 @@ export default function AdvancedEditor() {
                                 <div className="font-medium text-neutral-700">{request.type} · {request.storeId}</div>
                                 <div className="text-[10px] text-neutral-400">{request.status} · {new Date(request.updatedAt).toLocaleString("ko-KR")}</div>
                               </div>
+                              {request.note ? <div className="text-[10px] text-neutral-500">note: {request.note}</div> : null}
                               {(storeGovernanceRole === "owner" || storeGovernanceRole === "admin") && request.status === "requested" ? (
                                 <div className="flex items-center gap-1">
                                   <button type="button" className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-700" onClick={() => void decideStoreApproval(request.id, "approved")}>approve</button>
@@ -13580,6 +14862,51 @@ export default function AdvancedEditor() {
                         <option value="space-between">Space Between</option>
                       </select>
                     </label>
+                    {selectedTextPathPreset ? (
+                      <div className="grid grid-cols-3 gap-2">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Inset</span>
+                          <input
+                            type="range"
+                            min={8}
+                            max={72}
+                            step={1}
+                            value={selectedTextPathPreset.inset}
+                            onChange={(e) => applySelectedTextPathPreset(selectedTextPathPreset.kind, { ...selectedTextPathPreset, inset: Number(e.target.value) || 0 })}
+                            className="w-full"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">Baseline</span>
+                          <input
+                            type="range"
+                            min={12}
+                            max={68}
+                            step={1}
+                            value={selectedTextPathPreset.baseline}
+                            onChange={(e) => applySelectedTextPathPreset(selectedTextPathPreset.kind, { ...selectedTextPathPreset, baseline: Number(e.target.value) || 0 })}
+                            className="w-full"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-neutral-500">{selectedTextPathPreset.kind === "wave" ? "Amplitude" : "Curve"}</span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={36}
+                            step={1}
+                            value={selectedTextPathPreset.curve}
+                            onChange={(e) => applySelectedTextPathPreset(selectedTextPathPreset.kind, { ...selectedTextPathPreset, curve: Number(e.target.value) || 0 })}
+                            className="w-full"
+                            disabled={selectedTextPathPreset.kind === "line"}
+                          />
+                        </label>
+                      </div>
+                    ) : selectedTextPath ? (
+                      <div className="text-[11px] text-neutral-500">
+                        Custom path detected. Preset handles are available for Arc, Wave, and Line paths.
+                      </div>
+                    ) : null}
                     <div className="grid grid-cols-2 gap-2">
                       <label className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
                         <span>간격</span>
@@ -14157,6 +15484,10 @@ export default function AdvancedEditor() {
                     <span className="text-neutral-500">룰러</span>
                     <input type="checkbox" checked={showRulers} onChange={(e) => setShowRulers(e.target.checked)} />
                   </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-neutral-500">미니맵</span>
+                    <input type="checkbox" checked={showMinimap} onChange={(e) => setShowMinimap(e.target.checked)} />
+                  </label>
                 </div>
               </div>
             </div>
@@ -14246,6 +15577,112 @@ export default function AdvancedEditor() {
                       />
                     </label>
                   </div>
+                  {selectedNode?.type === "image" ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Focal X</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={selectedMedia?.focalX ?? 0.5}
+                            onChange={(e) => updateSelectedMedia({ focalX: Number(e.target.value) })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Focal Y</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={selectedMedia?.focalY ?? 0.5}
+                            onChange={(e) => updateSelectedMedia({ focalY: Number(e.target.value) })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Crop X</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={selectedMedia?.crop?.x ?? 0}
+                            onChange={(e) => updateSelectedMedia({ crop: { ...(selectedMedia?.crop ?? { x: 0, y: 0, w: 1, h: 1 }), x: Number(e.target.value) } })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Crop Y</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={selectedMedia?.crop?.y ?? 0}
+                            onChange={(e) => updateSelectedMedia({ crop: { ...(selectedMedia?.crop ?? { x: 0, y: 0, w: 1, h: 1 }), y: Number(e.target.value) } })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Crop W</span>
+                          <input
+                            type="number"
+                            min={0.05}
+                            max={1}
+                            step={0.05}
+                            value={selectedMedia?.crop?.w ?? 1}
+                            onChange={(e) => updateSelectedMedia({ crop: { ...(selectedMedia?.crop ?? { x: 0, y: 0, w: 1, h: 1 }), w: Number(e.target.value) } })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Crop H</span>
+                          <input
+                            type="number"
+                            min={0.05}
+                            max={1}
+                            step={0.05}
+                            value={selectedMedia?.crop?.h ?? 1}
+                            onChange={(e) => updateSelectedMedia({ crop: { ...(selectedMedia?.crop ?? { x: 0, y: 0, w: 1, h: 1 }), h: Number(e.target.value) } })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Brightness</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={2}
+                            step={0.05}
+                            value={selectedMedia?.brightness ?? 1}
+                            onChange={(e) => updateSelectedMedia({ brightness: Number(e.target.value) })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="text-neutral-500">Contrast</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={2}
+                            step={0.05}
+                            value={selectedMedia?.contrast ?? 1}
+                            onChange={(e) => updateSelectedMedia({ contrast: Number(e.target.value) })}
+                            className="w-20 rounded border border-neutral-200 px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </div>
+                    </>
+                  ) : null}
                   {selectedNode?.type === "video" && (
                     <div className="border-t border-neutral-100 pt-2">
                       <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">Video Controls</div>
@@ -14429,6 +15866,93 @@ export default function AdvancedEditor() {
                               <option value="fill">늘림(fill)</option>
                             </select>
                           </label>
+                          <label className="flex items-center justify-between gap-2">
+                            <span className="text-neutral-500">Scale</span>
+                            <input
+                              type="number"
+                              min={0.1}
+                              step={0.05}
+                              value={primaryFill.scale ?? 1}
+                              onChange={(e) => setFills([{ ...primaryFill, scale: Number(e.target.value) || 1 }])}
+                              className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                            />
+                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-neutral-500">Focal X</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                value={primaryFill.focalX ?? 0.5}
+                                onChange={(e) => setFills([{ ...primaryFill, focalX: Number(e.target.value) }])}
+                                className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-neutral-500">Focal Y</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                value={primaryFill.focalY ?? 0.5}
+                                onChange={(e) => setFills([{ ...primaryFill, focalY: Number(e.target.value) }])}
+                                className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                            </label>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-neutral-500">Crop X</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                value={primaryFill.crop?.x ?? 0}
+                                onChange={(e) => setFills([{ ...primaryFill, crop: { ...(primaryFill.crop ?? { x: 0, y: 0, w: 1, h: 1 }), x: Number(e.target.value) } }])}
+                                className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-neutral-500">Crop Y</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                value={primaryFill.crop?.y ?? 0}
+                                onChange={(e) => setFills([{ ...primaryFill, crop: { ...(primaryFill.crop ?? { x: 0, y: 0, w: 1, h: 1 }), y: Number(e.target.value) } }])}
+                                className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-neutral-500">Crop W</span>
+                              <input
+                                type="number"
+                                min={0.05}
+                                max={1}
+                                step={0.05}
+                                value={primaryFill.crop?.w ?? 1}
+                                onChange={(e) => setFills([{ ...primaryFill, crop: { ...(primaryFill.crop ?? { x: 0, y: 0, w: 1, h: 1 }), w: Number(e.target.value) } }])}
+                                className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-neutral-500">Crop H</span>
+                              <input
+                                type="number"
+                                min={0.05}
+                                max={1}
+                                step={0.05}
+                                value={primaryFill.crop?.h ?? 1}
+                                onChange={(e) => setFills([{ ...primaryFill, crop: { ...(primaryFill.crop ?? { x: 0, y: 0, w: 1, h: 1 }), h: Number(e.target.value) } }])}
+                                className="w-20 rounded border border-neutral-200 px-2 py-1 text-[11px]"
+                              />
+                            </label>
+                          </div>
                         </>
                       )}
                       {(isLinear || isRadial) && (
@@ -14565,16 +16089,83 @@ export default function AdvancedEditor() {
                             <input type="color" value={effect.color} onChange={(e) => updateEffectAt(idx, { color: e.target.value })} className="h-6 w-10 rounded border border-neutral-200" />
                           </label>
                           <label className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="text-neutral-500">Color Var</span>
+                            <select
+                              value={effect.colorRef ?? ""}
+                              onChange={(e) => updateEffectAt(idx, { colorRef: e.target.value || undefined })}
+                              className="min-w-0 flex-1 rounded border border-neutral-200 px-1.5 py-0.5"
+                            >
+                              <option value="">None</option>
+                              {colorVariables.map((variable) => (
+                                <option key={variable.id} value={variable.id}>{variable.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="text-neutral-500">X Var</span>
+                            <select
+                              value={effect.xRef ?? ""}
+                              onChange={(e) => updateEffectAt(idx, { xRef: e.target.value || undefined })}
+                              className="min-w-0 flex-1 rounded border border-neutral-200 px-1.5 py-0.5"
+                            >
+                              <option value="">None</option>
+                              {numberVariables.map((variable) => (
+                                <option key={variable.id} value={variable.id}>{variable.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="text-neutral-500">Y Var</span>
+                            <select
+                              value={effect.yRef ?? ""}
+                              onChange={(e) => updateEffectAt(idx, { yRef: e.target.value || undefined })}
+                              className="min-w-0 flex-1 rounded border border-neutral-200 px-1.5 py-0.5"
+                            >
+                              <option value="">None</option>
+                              {numberVariables.map((variable) => (
+                                <option key={variable.id} value={variable.id}>{variable.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="text-neutral-500">Blur Var</span>
+                            <select
+                              value={effect.blurRef ?? ""}
+                              onChange={(e) => updateEffectAt(idx, { blurRef: e.target.value || undefined })}
+                              className="min-w-0 flex-1 rounded border border-neutral-200 px-1.5 py-0.5"
+                            >
+                              <option value="">None</option>
+                              {numberVariables.map((variable) => (
+                                <option key={variable.id} value={variable.id}>{variable.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center justify-between gap-2 text-[11px]">
                             <span className="text-neutral-500">정렬</span>
                             <input type="number" min={0} max={1} step={0.05} value={effect.opacity ?? 1} onChange={(e) => updateEffectAt(idx, { opacity: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                           </label>
                         </>
                       )}
                       {effect.type === "blur" && (
+                        <>
                         <label className="flex items-center justify-between gap-2 text-[11px]">
                           <span className="text-neutral-500">모드</span>
                           <input type="number" min={0} value={effect.blur} onChange={(e) => updateEffectAt(idx, { blur: Number(e.target.value) })} className="w-16 rounded border border-neutral-200 px-1.5 py-0.5" />
                         </label>
+                        <label className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="text-neutral-500">Blur Var</span>
+                          <select
+                            value={effect.blurRef ?? ""}
+                            onChange={(e) => updateEffectAt(idx, { blurRef: e.target.value || undefined })}
+                            className="min-w-0 flex-1 rounded border border-neutral-200 px-1.5 py-0.5"
+                          >
+                            <option value="">None</option>
+                            {numberVariables.map((variable) => (
+                              <option key={variable.id} value={variable.id}>{variable.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                        </>
                       )}
                       {effect.type === "noise" && (
                         <label className="flex items-center justify-between gap-2 text-[11px]">
@@ -14903,6 +16494,21 @@ export default function AdvancedEditor() {
                     <span className="text-neutral-500">OpenType (font-feature-settings)</span>
                     <input type="text" value={resolvedTextStyle?.fontFeatureSettings ?? ""} onChange={(e) => updateNode(selectedNode.id, { text: { ...(selectedNode.text ?? { value: "", style: DEFAULT_TEXT_STYLE }), style: { ...(resolvedTextStyle ?? DEFAULT_TEXT_STYLE), fontFeatureSettings: e.target.value || undefined } } as NodeText }, true)} placeholder='e.g. "liga" 1, "ss01" 1' className="w-full rounded border border-neutral-200 px-2 py-1 text-xs" />
                   </label>
+                  <div className="flex flex-wrap gap-1">
+                    {OPEN_TYPE_FEATURE_PRESETS.map((feature) => {
+                      const active = hasTextStyleOpenTypeFeature(resolvedTextStyle, feature.tag);
+                      return (
+                        <button
+                          key={feature.tag}
+                          type="button"
+                          className={`rounded border px-2 py-1 text-[10px] ${active ? "border-black bg-black text-white" : "border-neutral-200 bg-white text-neutral-600"}`}
+                          onClick={() => updateNode(selectedNode.id, { text: toggleNodeTextOpenTypeFeature(selectedNode.text, feature.tag) }, true)}
+                        >
+                          {feature.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                   <div className="border-t border-neutral-100 pt-2 mt-1">
                     <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1.5">가변 폰트 (B2)</div>
                     <label className="flex flex-col gap-1">
@@ -15098,6 +16704,99 @@ export default function AdvancedEditor() {
                                 className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
                               />
                             </label>
+                            <label className="flex flex-col gap-1">
+                              <span className="text-neutral-500">OpenType</span>
+                              <input
+                                type="text"
+                                value={range.style?.fontFeatureSettings ?? ""}
+                                onChange={(e) => updateNode(selectedNode.id, { text: patchTextRangeStyle(selectedNode.text, index, { fontFeatureSettings: e.target.value || undefined }) }, true)}
+                                placeholder='e.g. "liga" 1, "ss01" 1'
+                                className="w-full rounded border border-neutral-200 px-2 py-1 text-xs"
+                              />
+                            </label>
+                            <div className="rounded border border-neutral-100 bg-neutral-50/60 p-2 space-y-2">
+                              <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">Range Variable Bindings</div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Font Size</span>
+                                  <select
+                                    value={range.styleBindings?.fontSize ?? ""}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeStyleBinding(selectedNode.text, index, "fontSize", e.target.value || undefined) }, true)}
+                                    className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  >
+                                    <option value="">None</option>
+                                    {textStyleVariables.map((variable) => (
+                                      <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Font Weight</span>
+                                  <select
+                                    value={range.styleBindings?.fontWeight ?? ""}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeStyleBinding(selectedNode.text, index, "fontWeight", e.target.value || undefined) }, true)}
+                                    className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  >
+                                    <option value="">None</option>
+                                    {textStyleVariables.map((variable) => (
+                                      <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Line Height</span>
+                                  <select
+                                    value={range.styleBindings?.lineHeight ?? ""}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeStyleBinding(selectedNode.text, index, "lineHeight", e.target.value || undefined) }, true)}
+                                    className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  >
+                                    <option value="">None</option>
+                                    {numberVariables.map((variable) => (
+                                      <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Letter Spacing</span>
+                                  <select
+                                    value={range.styleBindings?.letterSpacing ?? ""}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeStyleBinding(selectedNode.text, index, "letterSpacing", e.target.value || undefined) }, true)}
+                                    className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  >
+                                    <option value="">None</option>
+                                    {numberVariables.map((variable) => (
+                                      <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Paragraph</span>
+                                  <select
+                                    value={range.styleBindings?.paragraphSpacing ?? ""}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeStyleBinding(selectedNode.text, index, "paragraphSpacing", e.target.value || undefined) }, true)}
+                                    className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  >
+                                    <option value="">None</option>
+                                    {numberVariables.map((variable) => (
+                                      <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-neutral-500">Family</span>
+                                  <select
+                                    value={range.styleBindings?.fontFamily ?? ""}
+                                    onChange={(e) => updateNode(selectedNode.id, { text: setTextRangeStyleBinding(selectedNode.text, index, "fontFamily", e.target.value || undefined) }, true)}
+                                    className="rounded border border-neutral-200 px-2 py-1 text-xs"
+                                  >
+                                    <option value="">None</option>
+                                    {textStyleVariables.map((variable) => (
+                                      <option key={variable.id} value={variable.id}>{variable.name}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                              </div>
+                            </div>
                             <div className="grid grid-cols-2 gap-2">
                               <label className="flex flex-col gap-1">
                                 <span className="text-neutral-500">Fill</span>
@@ -15199,28 +16898,45 @@ export default function AdvancedEditor() {
                       <button
                         type="button"
                         className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
-                        onClick={() => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: TEXT_PATH_PRESETS.arc }) }, true)}
+                        onClick={() => applySelectedTextPathPreset("arc")}
                       >
                         Arc
                       </button>
                       <button
                         type="button"
                         className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
-                        onClick={() => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: TEXT_PATH_PRESETS.wave }) }, true)}
+                        onClick={() => applySelectedTextPathPreset("wave")}
                       >
                         Wave
                       </button>
                       <button
                         type="button"
                         className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
-                        onClick={() => updateNode(selectedNode.id, { text: setTextPath(selectedNode.text, { pathData: TEXT_PATH_PRESETS.line }) }, true)}
+                        onClick={() => applySelectedTextPathPreset("line")}
                       >
                         Line
                       </button>
                     </div>
                     {selectedTextPath ? (
                       <div className="rounded border border-neutral-200 bg-white p-2">
-                        <svg viewBox="0 0 220 80" className="h-24 w-full overflow-visible">
+                        <svg
+                          viewBox={`0 0 ${TEXT_PATH_VIEWBOX.width} ${TEXT_PATH_VIEWBOX.height}`}
+                          className="h-24 w-full overflow-visible"
+                          onPointerMove={(e) => {
+                            if (!textPathHandleDrag) return;
+                            updateSelectedTextPathHandle(textPathHandleDrag.handleId, e.clientX, e.clientY, e.currentTarget);
+                          }}
+                          onPointerUp={(e) => {
+                            if (!textPathHandleDrag || textPathHandleDrag.pointerId !== e.pointerId) return;
+                            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                            setTextPathHandleDrag(null);
+                          }}
+                          onPointerCancel={(e) => {
+                            if (!textPathHandleDrag || textPathHandleDrag.pointerId !== e.pointerId) return;
+                            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                            setTextPathHandleDrag(null);
+                          }}
+                        >
                           <defs>
                             <path id={selectedTextPathPreviewId ?? undefined} d={selectedTextPath.pathData} />
                           </defs>
@@ -15240,6 +16956,39 @@ export default function AdvancedEditor() {
                               ●
                             </textPath>
                           </text>
+                          {selectedTextPathPresetHandles.map((handle) => (
+                            <g key={handle.id}>
+                              <line
+                                x1={handle.x}
+                                y1={handle.y}
+                                x2={handle.x}
+                                y2={selectedTextPathPreset?.baseline ?? handle.y}
+                                stroke="#93c5fd"
+                                strokeDasharray="2 2"
+                              />
+                              <circle
+                                cx={handle.x}
+                                cy={handle.y}
+                                r={4}
+                                fill="#2563eb"
+                                stroke="#ffffff"
+                                strokeWidth={1.5}
+                                style={{ cursor: "grab" }}
+                                onPointerDown={(e) => {
+                                  const svg = e.currentTarget.ownerSVGElement;
+                                  if (!svg) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  svg.setPointerCapture(e.pointerId);
+                                  setTextPathHandleDrag({ pointerId: e.pointerId, handleId: handle.id });
+                                  updateSelectedTextPathHandle(handle.id, e.clientX, e.clientY, svg);
+                                }}
+                              />
+                              <text x={handle.x + 6} y={handle.y - 6} fontSize={7} fill="#2563eb">
+                                {handle.label}
+                              </text>
+                            </g>
+                          ))}
                         </svg>
                       </div>
                     ) : null}
@@ -15396,11 +17145,11 @@ export default function AdvancedEditor() {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden text-sm text-neutral-900">
+    <div className="advanced-editor-workbench flex h-screen w-full overflow-hidden text-sm text-neutral-900">
       {!uiHidden ? (
-      <aside className="flex h-full w-80 shrink-0 min-h-0 flex-col overflow-hidden border-r border-neutral-200 bg-neutral-50/90">
+      <aside className="advanced-editor-panel advanced-editor-panel-left flex h-full w-80 shrink-0 min-h-0 flex-col overflow-hidden border-r border-neutral-200 bg-neutral-50/90">
         {/* 8번: 좌측 탭 — 페이지 | 레이어 | 자산 */}
-        <div className="flex shrink-0 border-b border-neutral-200 bg-white px-2 pt-2">
+        <div className="advanced-editor-panel-tabs flex shrink-0 border-b border-neutral-200 bg-white px-2 pt-2">
           {(["pages", "layers", "assets"] as const).map((tab) => (
             <button
               key={tab}
@@ -15716,10 +17465,10 @@ export default function AdvancedEditor() {
       </aside>
       ) : null}
 
-      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-        <header className="relative z-50 h-14 shrink-0 overflow-x-auto overflow-y-hidden border-b border-neutral-200 bg-white" role="toolbar" aria-label="편집 도구">
-          <div className="flex h-full min-w-max items-center justify-between gap-2 px-4">
-          <div className="flex shrink-0 items-center gap-3">
+      <main className="advanced-editor-main flex h-full min-h-0 min-w-0 flex-1 flex-col">
+        <header className="advanced-editor-toolbar relative z-50 h-14 shrink-0 overflow-x-auto overflow-y-hidden border-b border-neutral-200 bg-white" role="toolbar" aria-label="편집 도구">
+          <div className="advanced-editor-toolbar-inner flex h-full min-w-0 w-full items-center justify-between gap-2 px-4">
+          <div className="advanced-editor-toolbar-primary flex min-w-0 flex-1 items-center gap-3">
             <input
               type="text"
               value={title}
@@ -15727,7 +17476,7 @@ export default function AdvancedEditor() {
               placeholder="제목 없음"
               className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-1 text-sm"
             />
-            <div className="flex items-center gap-2">
+            <div className="advanced-editor-tool-cluster flex min-w-0 items-center gap-2 overflow-x-auto">
               {TOOL_GROUPS.map((group, gi) => {
                 const activeInGroup = group.ids.includes(tool);
                 const displayId = activeInGroup ? tool : group.ids[0];
@@ -15829,7 +17578,7 @@ export default function AdvancedEditor() {
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1.5">
+          <div className="advanced-editor-toolbar-actions flex shrink-0 items-center gap-1.5">
             {/* Undo / Redo */}
             <button type="button" className="shrink-0 rounded-md border border-neutral-200 p-1.5 text-xs hover:bg-neutral-50" onClick={doUndo} disabled={undoStackLen === 0} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소">↶</button>
             <button type="button" className="shrink-0 rounded-md border border-neutral-200 p-1.5 text-xs hover:bg-neutral-50" onClick={doRedo} disabled={redoStackLen === 0} title="다시 실행 (Ctrl+Shift+Z)" aria-label="다시 실행">↷</button>
@@ -16136,7 +17885,15 @@ export default function AdvancedEditor() {
                             <div className="flex items-center gap-1">
                               <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]" onClick={() => fetchVersionPreview(versionId)}>미리보기</button>
                               <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]" onClick={() => checkoutBranch(name)}>체크아웃</button>
-                              <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]" onClick={() => mergeBranch(name)}>병합</button>
+                              <button
+                                type="button"
+                                className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
+                                onClick={() => mergeBranch(name)}
+                                disabled={review ? !canBranchReviewAction(review, currentBranchReviewRole, "merge") : false}
+                                title={review ? (!canBranchReviewAction(review, currentBranchReviewRole, "merge") ? "현재 역할로는 병합할 수 없습니다." : undefined) : undefined}
+                              >
+                                병합
+                              </button>
                               <button type="button" className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]" onClick={() => removeBranch(name)}>삭제</button>
                             </div>
                           </div>
@@ -16199,8 +17956,9 @@ export default function AdvancedEditor() {
                                   {review.status !== "approved" && review.status !== "merged" ? (
                                     <button
                                       type="button"
-                                      className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700"
+                                      className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700 disabled:opacity-50"
                                       onClick={() => approveBranchReview(review.id)}
+                                      disabled={!canBranchReviewAction(review, currentBranchReviewRole, "approve")}
                                     >
                                       approve
                                     </button>
@@ -16208,8 +17966,9 @@ export default function AdvancedEditor() {
                                   {review.status !== "merged" ? (
                                     <button
                                       type="button"
-                                      className="rounded border border-neutral-200 bg-white px-2 py-1"
+                                      className="rounded border border-neutral-200 bg-white px-2 py-1 disabled:opacity-50"
                                       onClick={() => closeBranchReview(review.id)}
+                                      disabled={!canBranchReviewAction(review, currentBranchReviewRole, "close")}
                                     >
                                       close
                                     </button>
@@ -16231,6 +17990,9 @@ export default function AdvancedEditor() {
                         <div className="flex items-center justify-between gap-2">
                           <div>
                             <div className="font-medium text-neutral-700">{selectedBranchReview.branchName}</div>
+                            <div className="mt-1 text-[10px] text-neutral-500">
+                              role: {currentBranchReviewRole} 쨌 approve/close/merge {selectedBranchReview.requiredRole ?? "admin"}+
+                            </div>
                             <div className="text-[10px] text-neutral-400">
                               {selectedBranchReview.status} · {summarizeBranchReview(selectedBranchReview)}
                             </div>
@@ -16239,8 +18001,9 @@ export default function AdvancedEditor() {
                             {selectedBranchReview.status !== "approved" && selectedBranchReview.status !== "merged" ? (
                               <button
                                 type="button"
-                                className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-700"
+                                className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-700 disabled:opacity-50"
                                 onClick={() => approveBranchReview(selectedBranchReview.id)}
+                                disabled={!canBranchReviewAction(selectedBranchReview, currentBranchReviewRole, "approve")}
                               >
                                 approve
                               </button>
@@ -16248,13 +18011,27 @@ export default function AdvancedEditor() {
                             {selectedBranchReview.status !== "merged" ? (
                               <button
                                 type="button"
-                                className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                                className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] disabled:opacity-50"
                                 onClick={() => closeBranchReview(selectedBranchReview.id)}
+                                disabled={!canBranchReviewAction(selectedBranchReview, currentBranchReviewRole, "close")}
                               >
                                 close
                               </button>
                             ) : null}
                           </div>
+                        </div>
+                        <div className="mt-2 grid grid-cols-[auto,1fr] items-center gap-2 text-[10px] text-neutral-500">
+                          <span>approval role</span>
+                          <select
+                            value={selectedBranchReview.requiredRole ?? "admin"}
+                            onChange={(e) => updateBranchReviewRole(selectedBranchReview.id, e.target.value as BranchReviewActorRole)}
+                            className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px] text-neutral-700 disabled:opacity-50"
+                            disabled={!canEditBranchReviewPolicy || selectedBranchReview.status === "merged"}
+                          >
+                            <option value="member">member+</option>
+                            <option value="admin">admin+</option>
+                            <option value="owner">owner</option>
+                          </select>
                         </div>
                         {selectedBranchReview.summary.conflicts.length ? (
                           <div className="mt-3 space-y-2">
@@ -16275,8 +18052,9 @@ export default function AdvancedEditor() {
                                           resolution === "branch"
                                             ? "border-neutral-900 bg-neutral-900 text-white"
                                             : "border-neutral-200 bg-white"
-                                        }`}
+                                        } disabled:opacity-50`}
                                         onClick={() => resolveBranchReviewNode(selectedBranchReview.id, nodeId, "branch")}
+                                        disabled={!canBranchReviewAction(selectedBranchReview, currentBranchReviewRole, "resolve")}
                                       >
                                         branch
                                       </button>
@@ -16286,8 +18064,9 @@ export default function AdvancedEditor() {
                                           resolution === "current"
                                             ? "border-neutral-900 bg-neutral-900 text-white"
                                             : "border-neutral-200 bg-white"
-                                        }`}
+                                        } disabled:opacity-50`}
                                         onClick={() => resolveBranchReviewNode(selectedBranchReview.id, nodeId, "current")}
+                                        disabled={!canBranchReviewAction(selectedBranchReview, currentBranchReviewRole, "resolve")}
                                       >
                                         current
                                       </button>
@@ -16413,25 +18192,194 @@ export default function AdvancedEditor() {
 
         {webImportOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" role="dialog" aria-modal="true" aria-label="웹에서 가져오기" onClick={() => { setWebImportOpen(false); setWebImportError(null); }}>
-            <div className="w-full max-w-lg rounded-xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="w-full max-w-2xl rounded-xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-sm font-medium text-neutral-900">웹에서 가져오기</h2>
                 <button type="button" className="rounded p-1 text-neutral-500 hover:bg-neutral-100" onClick={() => { setWebImportOpen(false); setWebImportError(null); }} aria-label="닫기">×</button>
               </div>
               <div className="space-y-3">
                 <p className="text-xs text-neutral-500">
-                  공개 URL을 읽어 제목, 본문, 버튼, 링크, 이미지를 편집 가능한 프레임으로 가져옵니다.
+                  URL, HTML/CSS, 웹 파일을 읽어 제목, 본문, 버튼, 링크, 이미지를 편집 가능한 프레임으로 가져옵니다.
                   {!pageId ? " 페이지가 없으면 가져오기 전에 새 작품을 자동으로 만듭니다." : ""}
                 </p>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-neutral-600">웹 페이지 URL</label>
+                <div className="grid gap-4 xl:grid-cols-3">
+                  <div className="space-y-3 rounded-lg border border-neutral-200 p-3">
+                    <div>
+                      <div className="text-xs font-medium text-neutral-800">공개 URL</div>
+                      <p className="mt-1 text-[11px] text-neutral-500">공개 웹 페이지를 직접 읽어 편집 가능한 레이어로 변환합니다.</p>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-neutral-600">웹 페이지 URL</label>
+                      <input
+                        type="url"
+                        value={webImportUrl}
+                        onChange={(e) => setWebImportUrl(e.target.value)}
+                        placeholder="https://example.com"
+                        className="w-full rounded border border-neutral-200 px-2 py-1.5 text-sm"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="w-full rounded bg-neutral-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                      disabled={webImportLoading || !webImportUrl.trim()}
+                      onClick={() => { void runWebImport(false); }}
+                    >
+                      {webImportLoading ? "가져오는 중…" : "URL 가져오기"}
+                    </button>
+                  </div>
+                  <div className="space-y-3 rounded-lg border border-neutral-200 p-3">
+                    <div>
+                      <div className="text-xs font-medium text-neutral-800">여러 URL</div>
+                      <p className="mt-1 text-[11px] text-neutral-500">한 줄에 하나씩 넣으면 여러 페이지를 한 번에 프레임 묶음으로 가져옵니다.</p>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-neutral-600">URL 목록</label>
+                      <textarea
+                        value={webImportUrls}
+                        onChange={(e) => setWebImportUrls(e.target.value)}
+                        placeholder={"https://example.com\nhttps://example.com/pricing"}
+                        className="h-28 w-full rounded border border-neutral-200 px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="w-full rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                      disabled={webImportLoading || !webImportUrls.trim()}
+                      onClick={() => { void runWebBulkImport(false); }}
+                    >
+                      {webImportLoading ? "가져오는 중…" : "여러 URL 가져오기"}
+                    </button>
+                  </div>
+                  <div className="space-y-3 rounded-lg border border-neutral-200 p-3">
+                    <div>
+                      <div className="text-xs font-medium text-neutral-800">HTML / CSS 직접 입력</div>
+                      <p className="mt-1 text-[11px] text-neutral-500">코드 조각을 바로 붙여넣어 편집 가능한 프레임으로 만듭니다.</p>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-neutral-600">HTML</label>
+                      <textarea
+                        value={webImportHtml}
+                        onChange={(e) => setWebImportHtml(e.target.value)}
+                        placeholder="<main><h1>Hello</h1></main>"
+                        className="h-28 w-full rounded border border-neutral-200 px-2 py-1.5 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-neutral-600">CSS (선택)</label>
+                      <textarea
+                        value={webImportCss}
+                        onChange={(e) => setWebImportCss(e.target.value)}
+                        placeholder="main { padding: 32px; }"
+                        className="h-20 w-full rounded border border-neutral-200 px-2 py-1.5 text-xs font-mono"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="w-full rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                      disabled={webImportLoading || !webImportHtml.trim()}
+                      onClick={() => { void runWebHtmlImport(); }}
+                    >
+                      {webImportLoading ? "가져오는 중…" : "HTML/CSS 가져오기"}
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-3 rounded-lg border border-neutral-200 p-3">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-800">웹 파일 가져오기</div>
+                    <p className="mt-1 text-[11px] text-neutral-500">`.html`, `.htm`, `.zip`, `.mhtml`, `.mht` 파일을 바로 읽을 수 있습니다.</p>
+                  </div>
                   <input
-                    type="url"
-                    value={webImportUrl}
-                    onChange={(e) => setWebImportUrl(e.target.value)}
-                    placeholder="https://example.com"
-                    className="w-full rounded border border-neutral-200 px-2 py-1.5 text-sm"
+                    key={webImportFileInputKey}
+                    type="file"
+                    accept=".html,.htm,.zip,.mhtml,.mht"
+                    onChange={(e) => setWebImportFile(e.target.files?.[0] ?? null)}
+                    className="block w-full text-xs text-neutral-600 file:mr-3 file:rounded file:border file:border-neutral-200 file:bg-white file:px-3 file:py-1.5 file:text-xs"
                   />
+                  <div className="text-[11px] text-neutral-500">
+                    {webImportFile ? `선택한 파일: ${webImportFile.name}` : "선택한 파일이 없습니다."}
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                    disabled={webImportLoading || !webImportFile}
+                    onClick={() => { void runWebFileImport(); }}
+                  >
+                    {webImportLoading ? "가져오는 중…" : "파일 가져오기"}
+                  </button>
+                </div>
+                <div className="space-y-3 rounded-lg border border-neutral-200 p-3">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-800">스크린샷 분해 가져오기</div>
+                    <p className="mt-1 text-[11px] text-neutral-500">
+                      PNG, JPG, WebP, GIF 스크린샷을 배경, 텍스트, 색 블록, 이미지 레이어로 나눠 가져옵니다.
+                    </p>
+                    <p className="mt-1 text-[11px] text-neutral-500">
+                      브라우저가 텍스트 감지를 지원하면 실제 텍스트를 추출하고, 아니면 기본 텍스트 레이어를 배치합니다.
+                    </p>
+                  </div>
+                  <input
+                    key={webImportScreenshotInputKey}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    onChange={(e) => setWebImportScreenshotFile(e.target.files?.[0] ?? null)}
+                    className="block w-full text-xs text-neutral-600 file:mr-3 file:rounded file:border file:border-neutral-200 file:bg-white file:px-3 file:py-1.5 file:text-xs"
+                  />
+                  <div className="text-[11px] text-neutral-500">
+                    {webImportScreenshotFile ? `선택된 스크린샷: ${webImportScreenshotFile.name}` : "선택된 스크린샷이 없습니다."}
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                    disabled={webImportLoading || !webImportScreenshotFile}
+                    onClick={() => { void runScreenshotImport(); }}
+                  >
+                    {webImportLoading ? "가져오는 중…" : "스크린샷 분해 가져오기"}
+                  </button>
+                </div>
+                <div className="space-y-3 rounded-lg border border-neutral-200 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-medium text-neutral-800">프라이빗 / 로컬 페이지 캡처</div>
+                      <p className="mt-1 text-[11px] text-neutral-500">로그인된 페이지나 로컬 개발 페이지에서 DOM 캡처 payload를 복사해 바로 가져옵니다.</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-3 py-1.5 text-[11px] text-neutral-700"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(buildWebCaptureSnippet());
+                        } catch {
+                          setWebImportError("캡처 스니펫 복사에 실패했습니다. 브라우저 권한을 확인해 주세요.");
+                        }
+                      }}
+                    >
+                      캡처 스니펫 복사
+                    </button>
+                  </div>
+                  <textarea
+                    value={webImportCapturePayload}
+                    onChange={(e) => setWebImportCapturePayload(e.target.value)}
+                    placeholder='{"url":"https://private.example.com","title":"Dashboard","html":"<!doctype html>..."}'
+                    className="h-32 w-full rounded border border-neutral-200 px-2 py-1.5 text-xs font-mono"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                      disabled={webImportLoading || !webImportCapturePayload.trim()}
+                      onClick={() => { void runWebCaptureImport("private-page-capture"); }}
+                    >
+                      {webImportLoading ? "가져오는 중…" : "프라이빗 페이지 가져오기"}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                      disabled={webImportLoading || !webImportCapturePayload.trim()}
+                      onClick={() => { void runWebCaptureImport("local-page-capture"); }}
+                    >
+                      {webImportLoading ? "가져오는 중…" : "로컬 페이지 가져오기"}
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-neutral-600">Viewport</label>
@@ -16447,11 +18395,70 @@ export default function AdvancedEditor() {
                     ))}
                   </select>
                 </div>
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-neutral-600">테마 선택</label>
+                    <select
+                      value={webImportTheme}
+                      onChange={(e) => setWebImportTheme(e.target.value as WebImportTheme | "")}
+                      className="w-full rounded border border-neutral-200 px-2 py-1.5 text-sm"
+                    >
+                      {WEB_IMPORT_THEME_OPTIONS.map((theme) => (
+                        <option key={theme || "auto"} value={theme}>
+                          {theme === "light" ? "라이트" : theme === "dark" ? "다크" : "기본"}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-neutral-600">언어 (선택)</label>
+                    <input
+                      type="text"
+                      value={webImportLanguage}
+                      onChange={(e) => setWebImportLanguage(e.target.value)}
+                      placeholder="ko-KR, en-US, ja-JP"
+                      className="w-full rounded border border-neutral-200 px-2 py-1.5 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-neutral-600">Query mode (선택)</label>
+                    <input
+                      type="text"
+                      value={webImportQuery}
+                      onChange={(e) => setWebImportQuery(e.target.value)}
+                      placeholder="theme=dark&lang=ko"
+                      className="w-full rounded border border-neutral-200 px-2 py-1.5 text-sm"
+                    />
+                  </div>
+                </div>
                 {doc.imports?.web ? (
                   <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-xs text-neutral-600">
                     <div className="font-medium text-neutral-800">마지막 가져오기</div>
-                    <div className="mt-1 break-all">{doc.imports.web.url}</div>
+                    <div className="mt-1">
+                      {doc.imports.web.kind === "public-url"
+                        ? "공개 URL"
+                        : doc.imports.web.kind === "public-url-batch"
+                          ? "여러 URL"
+                        : doc.imports.web.kind === "html-code"
+                          ? "HTML/CSS"
+                        : doc.imports.web.kind === "screenshot-file"
+                          ? "스크린샷"
+                          : doc.imports.web.fileName ?? doc.imports.web.kind}
+                    </div>
+                    <div className="mt-1 break-all">
+                      {doc.imports.web.kind === "public-url-batch"
+                        ? `${doc.imports.web.urls?.length ?? 0}개 URL`
+                        : doc.imports.web.fileName ?? doc.imports.web.url}
+                    </div>
+                    {doc.imports.web.kind === "public-url-batch" && doc.imports.web.urls?.length ? (
+                      <div className="mt-1 whitespace-pre-wrap break-all text-[11px] text-neutral-500">
+                        {doc.imports.web.urls.join("\n")}
+                      </div>
+                    ) : null}
                     <div className="mt-1">{getWebImportViewport(doc.imports.web.viewportId).label}</div>
+                    {doc.imports.web.theme ? <div className="mt-1">테마: {doc.imports.web.theme}</div> : null}
+                    {doc.imports.web.language ? <div className="mt-1">언어: {doc.imports.web.language}</div> : null}
+                    {doc.imports.web.query ? <div className="mt-1">Query: {doc.imports.web.query}</div> : null}
                   </div>
                 ) : null}
                 {webImportError ? <p className="text-xs text-red-600">{webImportError}</p> : null}
@@ -16459,7 +18466,7 @@ export default function AdvancedEditor() {
                   <button type="button" className="rounded border border-neutral-200 px-3 py-1.5 text-xs" onClick={() => { setWebImportOpen(false); setWebImportError(null); }}>
                     취소
                   </button>
-                  {doc.imports?.web ? (
+                  {doc.imports?.web?.kind === "public-url" ? (
                     <button
                       type="button"
                       className="rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
@@ -16468,15 +18475,16 @@ export default function AdvancedEditor() {
                     >
                       {webImportLoading ? "다시 가져오는 중…" : "마지막 URL 다시 가져오기"}
                     </button>
+                  ) : doc.imports?.web?.kind === "public-url-batch" ? (
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-200 px-3 py-1.5 text-xs text-neutral-700 disabled:opacity-50"
+                      disabled={webImportLoading}
+                      onClick={() => { void runWebBulkImport(true); }}
+                    >
+                      {webImportLoading ? "다시 가져오는 중…" : "마지막 URL 묶음 다시 가져오기"}
+                    </button>
                   ) : null}
-                  <button
-                    type="button"
-                    className="rounded bg-neutral-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
-                    disabled={webImportLoading || !webImportUrl.trim()}
-                    onClick={() => { void runWebImport(false); }}
-                  >
-                    {webImportLoading ? "가져오는 중…" : "가져오기"}
-                  </button>
                 </div>
               </div>
             </div>
@@ -16657,14 +18665,23 @@ export default function AdvancedEditor() {
         ) : null}
 
         <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
-          <section className="relative min-w-0 flex-1 bg-neutral-100">
+          <section className="advanced-editor-canvas-shell relative min-w-0 flex-1 bg-neutral-100">
             <div ref={canvasRef} className="absolute inset-0" style={{ userSelect: "none", WebkitUserSelect: "none", touchAction: "none" }} onWheel={prototypePreview ? undefined : handleCanvasWheel}>
               {!prototypePreview && showRulers ? (
                 <>
-                  <div className="pointer-events-none absolute left-0 top-0 right-0 z-10 h-6 border-b border-neutral-200 bg-white/90 text-[10px] text-neutral-500">
+                  <div
+                    className="absolute left-0 top-0 right-0 z-10 h-6 border-b border-neutral-200 bg-white/90 text-[10px] text-neutral-500"
+                    onPointerDown={(e) => beginRulerGuideDrag(e, "x")}
+                    onPointerMove={(e) => {
+                      updateRulerGuideDrag(e);
+                      setRulerPointer(svgClientPoint(e.clientX, e.clientY));
+                    }}
+                    onPointerUp={endRulerGuideDrag}
+                    onPointerCancel={endRulerGuideDrag}
+                  >
                     <div className="absolute left-0 top-0 h-6 w-6 border-r border-neutral-200 bg-white/90" />
                     {rulerTicks.x.map((tick) => (
-                      <div key={`x-${tick.value}`} className="absolute top-0 h-full" style={{ left: tick.pos }}>
+                      <div key={`x-${tick.value}`} className="pointer-events-none absolute top-0 h-full" style={{ left: tick.pos }}>
                         <div className="h-2 w-px bg-neutral-300" />
                         <div className="translate-x-1">{tick.value}</div>
                       </div>
@@ -16674,9 +18691,18 @@ export default function AdvancedEditor() {
                       return <div key={`gx-${i}`} className="absolute bottom-0 h-4 w-0.5 bg-sky-500" style={{ left: pos }} title={`세로 가이드 ${Math.round(gx)}`} />;
                     })}
                   </div>
-                  <div className="pointer-events-none absolute left-0 top-0 bottom-0 z-10 w-6 border-r border-neutral-200 bg-white/90 text-[10px] text-neutral-500">
+                  <div
+                    className="absolute left-0 top-0 bottom-0 z-10 w-6 border-r border-neutral-200 bg-white/90 text-[10px] text-neutral-500"
+                    onPointerDown={(e) => beginRulerGuideDrag(e, "y")}
+                    onPointerMove={(e) => {
+                      updateRulerGuideDrag(e);
+                      setRulerPointer(svgClientPoint(e.clientX, e.clientY));
+                    }}
+                    onPointerUp={endRulerGuideDrag}
+                    onPointerCancel={endRulerGuideDrag}
+                  >
                     {rulerTicks.y.map((tick) => (
-                      <div key={`y-${tick.value}`} className="absolute left-0 w-full" style={{ top: tick.pos }}>
+                      <div key={`y-${tick.value}`} className="pointer-events-none absolute left-0 w-full" style={{ top: tick.pos }}>
                         <div className="ml-4 h-px w-2 bg-neutral-300" />
                         <div className="ml-1 -translate-y-1">{tick.value}</div>
                       </div>
@@ -16808,6 +18834,7 @@ export default function AdvancedEditor() {
                   onPointerMove={(e) => {
                     updateDrag(e);
                     if (marquee) updateMarquee(e);
+                    setRulerPointer(svgClientPoint(e.clientX, e.clientY));
                     updateCollabPointer(e);
                   }}
                   onPointerUp={(e) => {
@@ -16817,10 +18844,12 @@ export default function AdvancedEditor() {
                   onPointerLeave={(e) => {
                     endDrag(e);
                     if (marquee) endMarquee(e);
+                    setRulerPointer(null);
                   }}
                   onPointerCancel={(e) => {
                     endDrag(e);
                     if (marquee) endMarquee(e);
+                    setRulerPointer(null);
                   }}
                 >
                 <defs>
@@ -17056,16 +19085,19 @@ export default function AdvancedEditor() {
                   </div>
                 ) : null}
               </div>
-            ) : null}
-          </section>
+              ) : null}
+              {!prototypePreview && showMinimap && minimapModel ? (
+                <AdvancedEditorMinimap model={minimapModel} onJumpTo={jumpViewportToPoint} />
+              ) : null}
+            </section>
 
           {!uiHidden ? (
-          <aside className="flex h-full w-80 shrink-0 min-h-0 flex-col overflow-hidden border-l border-neutral-200 bg-neutral-50/80">
-            <div className="flex shrink-0 items-center border-b border-neutral-200 px-1">
+          <aside className="advanced-editor-panel advanced-editor-panel-right flex h-full w-80 shrink-0 min-h-0 flex-col overflow-hidden border-l border-neutral-200 bg-neutral-50/80">
+            <div className="advanced-editor-panel-tabs advanced-editor-inspector-tabs flex shrink-0 items-center border-b border-neutral-200 px-1">
               {([
                 { id: "design", label: "디자인" },
-                { id: "prototype", label: "프로토타입" },
-                { id: "workflow", label: "워크플로우" },
+                { id: "prototype", label: "프로토" },
+                { id: "workflow", label: "흐름" },
                 { id: "dev", label: "개발" },
                 { id: "export", label: "내보내기" },
               ] as const).map((tab) => (
@@ -17083,7 +19115,7 @@ export default function AdvancedEditor() {
                 </button>
               ))}
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4 pr-3">
+            <div className="advanced-editor-inspector-scroll min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4 pr-3">
             {selectedCommentId ? (() => {
               const root = comments.find((c) => c.id === selectedCommentId) ?? comments.find((c) => c.replies.some((r) => r.id === selectedCommentId));
               if (!root || !pageId) return null;
@@ -19168,6 +21200,10 @@ export default function AdvancedEditor() {
                             const submitUrl = "url" in interaction.action ? interaction.action.url : "";
                             const submitMethod = "method" in interaction.action ? interaction.action.method ?? "POST" : "POST";
                             const submitNextPageId = "nextPageId" in interaction.action ? interaction.action.nextPageId ?? "" : "";
+                            const serviceAction = interaction.action.type === "service" ? interaction.action.action : "auth.login";
+                            const serviceNextPageId = interaction.action.type === "service" ? interaction.action.nextPageId ?? "" : "";
+                            const serviceStateTarget = interaction.action.type === "service" ? interaction.action.stateTransition?.to ?? "" : "";
+                            const serviceRecordIdField = interaction.action.type === "service" ? interaction.action.stateTransition?.recordIdField ?? "" : "";
                             const nativeName = interaction.action.type === "nativeCall" ? interaction.action.name ?? "" : "";
                             const nativeArgs = interaction.action.type === "nativeCall"
                               ? (typeof interaction.action.args === "string"
@@ -19409,6 +21445,18 @@ export default function AdvancedEditor() {
                                                           delayMs: "delayMs" in interaction.action ? interaction.action.delayMs : undefined,
                                                           condition: "condition" in interaction.action ? interaction.action.condition : undefined,
                                                         }
+                                                      : nextType === "service"
+                                                        ? {
+                                                            type: "service" as const,
+                                                            action: interaction.action.type === "service" ? interaction.action.action : ("auth.login" as ServiceActionKind),
+                                                            bindings: interaction.action.type === "service" ? interaction.action.bindings : [],
+                                                            dataSource: interaction.action.type === "service" ? interaction.action.dataSource : undefined,
+                                                            stateTransition: interaction.action.type === "service" ? interaction.action.stateTransition : undefined,
+                                                            nextPageId: "nextPageId" in interaction.action ? interaction.action.nextPageId : undefined,
+                                                            transition: "transition" in interaction.action ? interaction.action.transition : undefined,
+                                                            delayMs: "delayMs" in interaction.action ? interaction.action.delayMs : undefined,
+                                                            condition: "condition" in interaction.action ? interaction.action.condition : undefined,
+                                                          }
                                                       : {
                                                           type: nextType as "back",
                                                           transition: "transition" in interaction.action ? interaction.action.transition : undefined,
@@ -19432,6 +21480,7 @@ export default function AdvancedEditor() {
                                   <option value="apiCall">API 호출</option>
                                   <option value="nativeCall">네이티브 호출</option>
                                   <option value="appAuth">앱 인증</option>
+                                  <option value="service">Service</option>
                                 </select>
                               </label>
                               {needsTarget ? (
@@ -19759,6 +21808,111 @@ export default function AdvancedEditor() {
                                       {doc.pages.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
                                     </select>
                                   </label>
+                                </>
+                              ) : null}
+                              {actionType === "service" ? (
+                                <>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">서비스 액션</span>
+                                    <select
+                                      value={serviceAction}
+                                      onChange={(e) =>
+                                        updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                          action: {
+                                            ...(interaction.action as PrototypeAction),
+                                            action: e.target.value as ServiceActionKind,
+                                          } as PrototypeAction,
+                                        })
+                                      }
+                                      className="w-40 rounded border border-neutral-200 px-2 py-1"
+                                    >
+                                      <option value="auth.login">auth.login</option>
+                                      <option value="auth.register">auth.register</option>
+                                      <option value="auth.logout">auth.logout</option>
+                                      <option value="reservation.create">reservation.create</option>
+                                      <option value="reservation.transition">reservation.transition</option>
+                                      <option value="ticket.create">ticket.create</option>
+                                      <option value="ticket.reply">ticket.reply</option>
+                                      <option value="crm.lead.move">crm.lead.move</option>
+                                      <option value="document.submit">document.submit</option>
+                                      <option value="document.decide">document.decide</option>
+                                      <option value="billing.checkout">billing.checkout</option>
+                                      <option value="billing.invoice.pay">billing.invoice.pay</option>
+                                      <option value="policy.evaluate">policy.evaluate</option>
+                                    </select>
+                                  </label>
+                                  <label className="flex items-center justify-between gap-2">
+                                    <span className="text-neutral-500">성공 후 이동</span>
+                                    <select
+                                      value={serviceNextPageId}
+                                      onChange={(e) =>
+                                        updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                          action: { ...(interaction.action as PrototypeAction), nextPageId: e.target.value || undefined } as PrototypeAction,
+                                        })
+                                      }
+                                      className="w-40 rounded border border-neutral-200 px-2 py-1"
+                                    >
+                                      <option value="">현재 페이지 유지</option>
+                                      {doc.pages.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                                    </select>
+                                  </label>
+                                  {(serviceAction === "reservation.transition" || serviceAction === "crm.lead.move" || serviceAction === "document.decide") ? (
+                                    <>
+                                      <label className="flex items-center justify-between gap-2">
+                                        <span className="text-neutral-500">목표 상태</span>
+                                        <input
+                                          type="text"
+                                          value={serviceStateTarget}
+                                          onChange={(e) =>
+                                            updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                              action: {
+                                                ...(interaction.action as PrototypeAction),
+                                                stateTransition: {
+                                                  ...(interaction.action.type === "service" ? interaction.action.stateTransition : undefined),
+                                                  machine:
+                                                    serviceAction === "reservation.transition"
+                                                      ? "reservation"
+                                                      : serviceAction === "crm.lead.move"
+                                                        ? "crmLead"
+                                                        : "document",
+                                                  to: e.target.value,
+                                                },
+                                              } as PrototypeAction,
+                                            })
+                                          }
+                                          className="w-40 rounded border border-neutral-200 px-2 py-1"
+                                          placeholder="confirmed / qualified / approved"
+                                        />
+                                      </label>
+                                      <label className="flex items-center justify-between gap-2">
+                                        <span className="text-neutral-500">레코드 ID 필드</span>
+                                        <input
+                                          type="text"
+                                          value={serviceRecordIdField}
+                                          onChange={(e) =>
+                                            updatePrototypeInteraction(selectedNode.id, interaction.id, {
+                                              action: {
+                                                ...(interaction.action as PrototypeAction),
+                                                stateTransition: {
+                                                  ...(interaction.action.type === "service" ? interaction.action.stateTransition : undefined),
+                                                  machine:
+                                                    serviceAction === "reservation.transition"
+                                                      ? "reservation"
+                                                      : serviceAction === "crm.lead.move"
+                                                        ? "crmLead"
+                                                        : "document",
+                                                  to: serviceStateTarget,
+                                                  recordIdField: e.target.value || undefined,
+                                                },
+                                              } as PrototypeAction,
+                                            })
+                                          }
+                                          className="w-40 rounded border border-neutral-200 px-2 py-1"
+                                          placeholder="reservationId / leadId / documentId"
+                                        />
+                                      </label>
+                                    </>
+                                  ) : null}
                                 </>
                               ) : null}
                               {actionType === "url" ? (
@@ -20839,6 +22993,27 @@ export default function AdvancedEditor() {
                       ) : (
                         <div className="text-[11px] text-neutral-400">No code links yet.</div>
                       )}
+                      {pageId ? (
+                        <div className="rounded border border-dashed border-neutral-200 bg-neutral-50 px-2 py-2">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">External handoff</div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                              onClick={() => void copyDevInteropSnippet("code-connect")}
+                            >
+                              Copy Code Connect
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded border border-neutral-200 bg-white px-2 py-1 text-[10px]"
+                              onClick={() => void copyDevInteropSnippet("mcp")}
+                            >
+                              Copy MCP
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 text-[11px] text-neutral-600 space-y-2">
                       <div className="flex items-center justify-between gap-2">
@@ -21580,15 +23755,15 @@ export default function AdvancedEditor() {
       {showOnboarding ? (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40">
           <div className="w-[440px] rounded-lg bg-white p-6 shadow-xl">
-            <h2 className="text-lg font-semibold text-neutral-900">NULL Editor</h2>
+            <h2 className="text-lg font-semibold text-neutral-900">NULL 에디터 시작 안내</h2>
             <div className="mt-3 space-y-2 text-sm text-neutral-600">
-              <p>Create frames by dragging on the canvas or insert presets from the asset library.</p>
-              <p>Use the right panel to adjust design, prototype, and workflow settings.</p>
+              <p>캔버스를 드래그해 프레임을 만들거나 에셋 라이브러리 프리셋을 바로 삽입하실 수 있습니다.</p>
+              <p>오른쪽 패널에서 디자인, 프로토타입, 워크플로 설정을 조정하실 수 있습니다.</p>
               <div className="mt-2 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500 space-y-1">
-                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">Space + Drag</kbd> Pan canvas</div>
-                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">Ctrl + Wheel</kbd> Zoom</div>
-                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">R</kbd> Rectangle <kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">T</kbd> Text</div>
-                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">Ctrl + Z</kbd> Undo</div>
+                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">Space + Drag</kbd> 캔버스 이동</div>
+                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">Ctrl + Wheel</kbd> 확대/축소</div>
+                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">R</kbd> 사각형 <kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">T</kbd> 텍스트</div>
+                <div><kbd className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px]">Ctrl + Z</kbd> 실행 취소</div>
               </div>
             </div>
             <button
@@ -21599,7 +23774,7 @@ export default function AdvancedEditor() {
                 localStorage.setItem("null_editor_onboarded", "1");
               }}
             >
-              Get started
+              시작하기
             </button>
           </div>
         </div>

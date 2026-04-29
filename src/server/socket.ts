@@ -17,6 +17,16 @@ import {
   wrapEditorDocOperation,
   type EditorDocOperation,
 } from "@/lib/collab";
+import {
+  ackServiceRealtimeMessage,
+  getServiceRealtimeRoom,
+  getServiceRealtimeSnapshot,
+  leaveServiceRealtimeChannel,
+  listServiceRealtimePresence,
+  publishServiceRealtimeMessage,
+  replayServiceRealtimeMessages,
+  upsertServiceRealtimePresence,
+} from "@/lib/service-realtime";
 import { resolvePlanFeatures } from "@/lib/plan";
 import { logWithThrottle } from "@/lib/logger";
 
@@ -353,6 +363,48 @@ async function handleConnection(io: Server, socket: Socket) {
     });
   };
 
+  type ServiceRealtimeBinding = {
+    channelKey: string;
+    memberKey: string;
+    sessionId?: string | null;
+    socketId: string;
+  };
+
+  const serviceBindings: ServiceRealtimeBinding[] = [];
+
+  const rememberServiceBinding = (binding: ServiceRealtimeBinding) => {
+    const existing = serviceBindings.find(
+      (entry) =>
+        entry.channelKey === binding.channelKey &&
+        entry.memberKey === binding.memberKey &&
+        (entry.sessionId ?? null) === (binding.sessionId ?? null),
+    );
+    if (existing) {
+      existing.socketId = binding.socketId;
+      existing.sessionId = binding.sessionId;
+      return;
+    }
+    serviceBindings.push(binding);
+  };
+
+  const forgetServiceBinding = (binding: Pick<ServiceRealtimeBinding, "channelKey" | "memberKey" | "sessionId">) => {
+    const index = serviceBindings.findIndex(
+      (entry) =>
+        entry.channelKey === binding.channelKey &&
+        entry.memberKey === binding.memberKey &&
+        (entry.sessionId ?? null) === (binding.sessionId ?? null),
+    );
+    if (index >= 0) {
+      serviceBindings.splice(index, 1);
+    }
+  };
+
+  const emitServiceError = (action: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    socket.emit("service:error", { action, message });
+    logSocketWarn(`socket:${action}`, `socket ${action} failed`, error);
+  };
+
   if (!isBot) {
     try {
       const created = await prisma.liveSession.create({
@@ -471,6 +523,265 @@ async function handleConnection(io: Server, socket: Socket) {
 
   socket.on("chat:notify", () => {
     socket.to(room).emit("chat:message", {});
+  });
+
+  socket.on("service:join", (payload) => {
+    void (async () => {
+      const raw = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const channelKey =
+        typeof raw.channel === "string"
+          ? raw.channel
+          : typeof raw.channelKey === "string"
+            ? raw.channelKey
+            : "";
+      const memberKey = typeof raw.memberKey === "string" ? raw.memberKey.trim() : "";
+      if (!channelKey || !memberKey) {
+        emitServiceError("service:join", "service_channel_or_member_required");
+        return;
+      }
+
+      const serviceRoom = getServiceRealtimeRoom(pageId, channelKey);
+      socket.join(serviceRoom);
+      const result = await upsertServiceRealtimePresence({
+        pageId,
+        channelKey,
+        topic: typeof raw.topic === "string" ? raw.topic : undefined,
+        kind: raw.kind === "generic" || raw.kind === "chat" || raw.kind === "stream" || raw.kind === "presence" ? raw.kind : undefined,
+        memberKey,
+        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+        socketId: socket.id,
+        name: typeof raw.name === "string" ? raw.name : null,
+        status:
+          raw.status === "online" || raw.status === "away" || raw.status === "busy" || raw.status === "offline"
+            ? raw.status
+            : "online",
+        meta: raw.meta && typeof raw.meta === "object" && !Array.isArray(raw.meta) ? (raw.meta as Record<string, unknown>) : null,
+      });
+      rememberServiceBinding({
+        channelKey: result.channel.key,
+        memberKey,
+        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+        socketId: socket.id,
+      });
+      const snapshot = await getServiceRealtimeSnapshot({
+        pageId,
+        channelKey: result.channel.key,
+        messageLimit: typeof raw.limit === "number" ? raw.limit : undefined,
+      });
+      socket.emit("service:sync", { channelKey: result.channel.key, snapshot });
+      socket.to(serviceRoom).emit("service:presence", {
+        channelKey: result.channel.key,
+        event: "upsert",
+        presence: result.presence,
+      });
+    })().catch((error) => emitServiceError("service:join", error));
+  });
+
+  socket.on("service:presence", (payload) => {
+    void (async () => {
+      const raw = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const channelKey =
+        typeof raw.channel === "string"
+          ? raw.channel
+          : typeof raw.channelKey === "string"
+            ? raw.channelKey
+            : "";
+      const memberKey = typeof raw.memberKey === "string" ? raw.memberKey.trim() : "";
+      if (!channelKey || !memberKey) {
+        emitServiceError("service:presence", "service_channel_or_member_required");
+        return;
+      }
+      const serviceRoom = getServiceRealtimeRoom(pageId, channelKey);
+      socket.join(serviceRoom);
+      const result = await upsertServiceRealtimePresence({
+        pageId,
+        channelKey,
+        topic: typeof raw.topic === "string" ? raw.topic : undefined,
+        kind: raw.kind === "generic" || raw.kind === "chat" || raw.kind === "stream" || raw.kind === "presence" ? raw.kind : undefined,
+        memberKey,
+        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+        socketId: socket.id,
+        name: typeof raw.name === "string" ? raw.name : null,
+        status:
+          raw.status === "online" || raw.status === "away" || raw.status === "busy" || raw.status === "offline"
+            ? raw.status
+            : "online",
+        meta: raw.meta && typeof raw.meta === "object" && !Array.isArray(raw.meta) ? (raw.meta as Record<string, unknown>) : null,
+      });
+      rememberServiceBinding({
+        channelKey: result.channel.key,
+        memberKey,
+        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+        socketId: socket.id,
+      });
+      socket.to(serviceRoom).emit("service:presence", {
+        channelKey: result.channel.key,
+        event: "upsert",
+        presence: result.presence,
+      });
+    })().catch((error) => emitServiceError("service:presence", error));
+  });
+
+  socket.on("service:message", (payload) => {
+    void (async () => {
+      const raw = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const channelKey =
+        typeof raw.channel === "string"
+          ? raw.channel
+          : typeof raw.channelKey === "string"
+            ? raw.channelKey
+            : "";
+      const senderKey = typeof raw.senderKey === "string" ? raw.senderKey.trim() : "";
+      if (!channelKey || !senderKey) {
+        emitServiceError("service:message", "service_channel_or_sender_required");
+        return;
+      }
+      const serviceRoom = getServiceRealtimeRoom(pageId, channelKey);
+      socket.join(serviceRoom);
+      if (typeof raw.sessionId === "string" || typeof raw.name === "string") {
+        await upsertServiceRealtimePresence({
+          pageId,
+          channelKey,
+          topic: typeof raw.topic === "string" ? raw.topic : undefined,
+          kind: raw.kind === "generic" || raw.kind === "chat" || raw.kind === "stream" || raw.kind === "presence" ? raw.kind : "chat",
+          memberKey: senderKey,
+          sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+          socketId: socket.id,
+          name: typeof raw.name === "string" ? raw.name : null,
+          status: "online",
+        });
+        rememberServiceBinding({
+          channelKey,
+          memberKey: senderKey,
+          sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+          socketId: socket.id,
+        });
+      }
+      const result = await publishServiceRealtimeMessage({
+        pageId,
+        channelKey,
+        topic: typeof raw.topic === "string" ? raw.topic : undefined,
+        kind: raw.kind === "generic" || raw.kind === "chat" || raw.kind === "stream" || raw.kind === "presence" ? raw.kind : "chat",
+        senderKey,
+        senderName: typeof raw.name === "string" ? raw.name : null,
+        messageKey: typeof raw.messageKey === "string" ? raw.messageKey : null,
+        type: typeof raw.type === "string" ? raw.type : "message",
+        body: raw.body,
+        meta: raw.meta && typeof raw.meta === "object" && !Array.isArray(raw.meta) ? (raw.meta as Record<string, unknown>) : null,
+      });
+      io.to(serviceRoom).emit("service:message", {
+        channelKey: result.channel.key,
+        message: result.message,
+        deduped: result.deduped,
+      });
+    })().catch((error) => emitServiceError("service:message", error));
+  });
+
+  socket.on("service:ack", (payload) => {
+    void (async () => {
+      const raw = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const channelKey =
+        typeof raw.channel === "string"
+          ? raw.channel
+          : typeof raw.channelKey === "string"
+            ? raw.channelKey
+            : "";
+      const messageId = typeof raw.messageId === "string" ? raw.messageId : "";
+      const recipientKey = typeof raw.recipientKey === "string" ? raw.recipientKey.trim() : "";
+      const state = raw.state === "read" ? "read" : "delivered";
+      if (!channelKey || !messageId || !recipientKey) {
+        emitServiceError("service:ack", "service_ack_invalid");
+        return;
+      }
+      const receipt = await ackServiceRealtimeMessage({
+        pageId,
+        channelKey,
+        messageId,
+        recipientKey,
+        state,
+      });
+      io.to(getServiceRealtimeRoom(pageId, channelKey)).emit("service:ack", {
+        channelKey,
+        messageId,
+        receipt,
+      });
+    })().catch((error) => emitServiceError("service:ack", error));
+  });
+
+  socket.on("service:sync", (payload) => {
+    void (async () => {
+      const raw = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const channelKey =
+        typeof raw.channel === "string"
+          ? raw.channel
+          : typeof raw.channelKey === "string"
+            ? raw.channelKey
+            : "";
+      if (!channelKey) {
+        emitServiceError("service:sync", "service_channel_required");
+        return;
+      }
+      const afterId = typeof raw.afterId === "string" ? raw.afterId : null;
+      if (afterId) {
+        const [messages, presence] = await Promise.all([
+          replayServiceRealtimeMessages({
+            pageId,
+            channelKey,
+            afterId,
+            limit: typeof raw.limit === "number" ? raw.limit : undefined,
+          }),
+          listServiceRealtimePresence({
+            pageId,
+            channelKey,
+          }),
+        ]);
+        socket.emit("service:sync", { channelKey, messages, presence, mode: "delta" });
+        return;
+      }
+      const snapshot = await getServiceRealtimeSnapshot({
+        pageId,
+        channelKey,
+        messageLimit: typeof raw.limit === "number" ? raw.limit : undefined,
+      });
+      socket.emit("service:sync", { channelKey: snapshot.channel.key, snapshot, mode: "full" });
+    })().catch((error) => emitServiceError("service:sync", error));
+  });
+
+  socket.on("service:leave", (payload) => {
+    void (async () => {
+      const raw = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const channelKey =
+        typeof raw.channel === "string"
+          ? raw.channel
+          : typeof raw.channelKey === "string"
+            ? raw.channelKey
+            : "";
+      const memberKey = typeof raw.memberKey === "string" ? raw.memberKey.trim() : "";
+      if (!channelKey || !memberKey) {
+        emitServiceError("service:leave", "service_channel_or_member_required");
+        return;
+      }
+      const serviceRoom = getServiceRealtimeRoom(pageId, channelKey);
+      const result = await leaveServiceRealtimeChannel({
+        pageId,
+        channelKey,
+        memberKey,
+        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+        socketId: socket.id,
+      });
+      forgetServiceBinding({
+        channelKey,
+        memberKey,
+        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+      });
+      socket.leave(serviceRoom);
+      socket.to(serviceRoom).emit("service:presence", {
+        channelKey,
+        event: "leave",
+        memberKey,
+        connectionKey: result.connectionKey,
+      });
+    })().catch((error) => emitServiceError("service:leave", error));
   });
 
   socket.on("move", (payload) => {
@@ -912,6 +1223,30 @@ async function handleConnection(io: Server, socket: Socket) {
 
 
   socket.on("disconnect", async () => {
+
+    for (const binding of [...serviceBindings]) {
+      try {
+        const serviceRoom = getServiceRealtimeRoom(pageId, binding.channelKey);
+        const result = await leaveServiceRealtimeChannel({
+          pageId,
+          channelKey: binding.channelKey,
+          memberKey: binding.memberKey,
+          sessionId: binding.sessionId,
+          socketId: socket.id,
+        });
+        socket.to(serviceRoom).emit("service:presence", {
+          channelKey: binding.channelKey,
+          event: "leave",
+          memberKey: binding.memberKey,
+          connectionKey: result.connectionKey,
+        });
+      } catch (error) {
+        logSocketWarn("socket:service:disconnect", "socket service disconnect cleanup failed", error, {
+          channel_key: binding.channelKey,
+          member_key: binding.memberKey,
+        });
+      }
+    }
 
     const remaining = removeSession(pageId, socket.id);
 

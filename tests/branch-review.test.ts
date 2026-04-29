@@ -4,10 +4,14 @@ import { addNode, cloneDoc, createDoc, createNode } from "@/advanced/doc/scene";
 import {
   applyBranchMerge,
   buildBranchDiffSummary,
+  canBranchReviewAction,
+  createBranchReviewPermissions,
   createBranchEntry,
   createBranchReview,
+  getDefaultBranchReviewRequiredRole,
   removeBranchEntry,
   setBranchReviewResolution,
+  setBranchReviewRequiredRole,
   setBranchReviewStatus,
   summarizeBranchReview,
   upsertBranchEntry,
@@ -135,5 +139,38 @@ describe("branch review", () => {
     expect(Array.from(merged.selection)).toEqual(["rect_a"]);
     expect(merged.branchReviews?.find((item) => item.id === review.id)?.status).toBe("merged");
     expect(merged.branches?.["feature/card"]?.versionId).toBe("version_3");
+  });
+
+  it("builds granular review permissions from the required role", () => {
+    expect(getDefaultBranchReviewRequiredRole("viewer")).toBe("admin");
+    expect(getDefaultBranchReviewRequiredRole("owner")).toBe("owner");
+    expect(createBranchReviewPermissions("member")).toEqual({
+      approve: ["member", "admin", "owner"],
+      close: ["member", "admin", "owner"],
+      resolve: ["member", "admin", "owner"],
+      merge: ["member", "admin", "owner"],
+    });
+  });
+
+  it("enforces branch review actions per role and updates the approval policy", () => {
+    const { doc } = addRect();
+    const branchDoc = cloneDoc(doc);
+    branchDoc.nodes.rect_a = {
+      ...branchDoc.nodes.rect_a!,
+      frame: { ...branchDoc.nodes.rect_a!.frame, x: 72 },
+    };
+    const summary = buildBranchDiffSummary(doc, branchDoc);
+    const review = createBranchReview("feature/card", "version_4", summary, "2026-03-14T00:05:00.000Z", "member", "admin");
+
+    expect(canBranchReviewAction(review, "member", "approve")).toBe(false);
+    expect(canBranchReviewAction(review, "member", "resolve")).toBe(true);
+    expect(canBranchReviewAction(review, "admin", "approve")).toBe(true);
+    expect(canBranchReviewAction(review, "viewer", "merge")).toBe(false);
+
+    const next = upsertBranchReview(doc, review);
+    const updated = setBranchReviewRequiredRole(next, review.id, "member");
+    const updatedReview = updated.branchReviews?.[0];
+    expect(updatedReview?.requiredRole).toBe("member");
+    expect(updatedReview && canBranchReviewAction(updatedReview, "member", "approve")).toBe(true);
   });
 });

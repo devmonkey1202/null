@@ -75,11 +75,40 @@ export function buildRuntimeSceneGraph(doc: Doc | SerializableDoc, options: Buil
 
   const preferredPageId = options.activePageId ?? laidOut.prototype?.startPageId;
   const page = preferredPageId ? laidOut.pages.find((item) => item.id === preferredPageId) ?? laidOut.pages[0] : laidOut.pages[0];
-  const pageNode = page ? laidOut.nodes[page.rootId] : null;
-  const pageRootIds = pageNode ? [pageNode.id] : laidOut.nodes[laidOut.root]?.children ?? [];
+
+  // Editor pages may be spread across a large infinite canvas. Runtime/public view should
+  // render the active page in its own local viewport, so normalize the selected page root
+  // back to the origin without mutating the original layout result.
+  const runtimeDoc: Doc = {
+    ...laidOut,
+    pages: laidOut.pages.map((item) => ({ ...item })),
+    nodes: Object.fromEntries(
+      Object.entries(laidOut.nodes).map(([id, node]) => [
+        id,
+        {
+          ...node,
+          frame: { ...node.frame },
+          children: [...node.children],
+          style: {
+            ...node.style,
+            fills: [...(node.style.fills ?? [])],
+            strokes: [...(node.style.strokes ?? [])],
+            effects: [...(node.style.effects ?? [])],
+          },
+        },
+      ]),
+    ),
+  };
+
+  const pageNode = page ? runtimeDoc.nodes[page.rootId] : null;
+  if (pageNode) {
+    pageNode.frame = { ...pageNode.frame, x: 0, y: 0 };
+  }
+
+  const pageRootIds = pageNode ? [pageNode.id] : runtimeDoc.nodes[runtimeDoc.root]?.children ?? [];
   const width = pageNode?.frame.w ?? 1200;
   const height = pageNode?.frame.h ?? 800;
-  const bounds = getPageContentBounds(laidOut, page?.id ?? null);
+  const bounds = getPageContentBounds(runtimeDoc, page?.id ?? null);
   const resolvedBounds = bounds && bounds.w > 0 && bounds.h > 0 ? bounds : null;
   const hasContent = Boolean(pageNode?.children?.length);
   const isLargeCanvas = Boolean(pageNode && (pageNode.frame.w >= 2400 || pageNode.frame.h >= 1800));
@@ -96,17 +125,17 @@ export function buildRuntimeSceneGraph(doc: Doc | SerializableDoc, options: Buil
     ? `${resolvedBounds.x} ${resolvedBounds.y} ${resolvedBounds.w} ${resolvedBounds.h}`
     : `${minX} ${minY} ${extendedWidth} ${extendedHeight}`;
 
-  const orderedNodeIds = collectOrderedNodeIds(laidOut, pageRootIds);
-  const effectNodeCount = orderedNodeIds.filter((id) => (laidOut.nodes[id]?.style.effects?.length ?? 0) > 0).length;
-  const widgetNodeCount = orderedNodeIds.filter((id) => Boolean(laidOut.nodes[id]?.widget)).length;
+  const orderedNodeIds = collectOrderedNodeIds(runtimeDoc, pageRootIds);
+  const effectNodeCount = orderedNodeIds.filter((id) => (runtimeDoc.nodes[id]?.style.effects?.length ?? 0) > 0).length;
+  const widgetNodeCount = orderedNodeIds.filter((id) => Boolean(runtimeDoc.nodes[id]?.widget)).length;
   const unsupportedCanvasNodeIds = orderedNodeIds.filter((id) => {
-    const node = laidOut.nodes[id];
+    const node = runtimeDoc.nodes[id];
     return node ? isCanvasPrototypeUnsupportedNode(node) : false;
   });
 
   return {
     hydrated,
-    laidOut,
+    laidOut: runtimeDoc,
     pageId: page?.id ?? null,
     pageRootIds,
     width,

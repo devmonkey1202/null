@@ -3,12 +3,18 @@ import { logSystemEvent } from "../src/lib/system-log";
 import { logSecurityEvent } from "../src/lib/security-log";
 import { logAvailability } from "../src/lib/availability-log";
 import { POST as postClientErrors } from "../src/app/api/client-errors/route";
-import { readFileSync, existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 function findMarkerInFile(filePath: string, marker: string): boolean {
   if (!existsSync(filePath)) return false;
-  const raw = readFileSync(filePath, "utf8");
+  const stat = statSync(filePath);
+  const tailBytes = Math.min(stat.size, 1024 * 1024);
+  const fd = openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(tailBytes);
+  readSync(fd, buffer, 0, tailBytes, Math.max(0, stat.size - tailBytes));
+  closeSync(fd);
+  const raw = buffer.toString("utf8");
   const lines = raw.split("\n").filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (lines[i].includes(marker)) return true;

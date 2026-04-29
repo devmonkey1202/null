@@ -87,6 +87,7 @@ enum BackgroundJobStatus {
   running
   succeeded
   failed
+  dead_lettered
 }
 
 enum AppSsoProvider {
@@ -278,6 +279,42 @@ model Page {
   page_notifications PageNotification[]
   call_states      CallState[]
   background_jobs  BackgroundJob[]
+  service_events   ServiceEvent[]
+  service_state_machines ServiceStateMachine[]
+  service_state_instances ServiceStateInstance[]
+  service_state_transitions ServiceStateTransition[]
+  service_realtime_channels ServiceRealtimeChannel[]
+  service_realtime_messages ServiceRealtimeMessage[]
+  service_realtime_presences ServiceRealtimePresence[]
+  service_realtime_receipts ServiceRealtimeReceipt[]
+  service_search_indices ServiceSearchIndex[]
+  service_search_documents ServiceSearchDocument[]
+  service_ranking_rules ServiceRankingRule[]
+  service_ranking_snapshots ServiceRankingSnapshot[]
+  service_notifications ServiceNotification[]
+  service_notification_deliveries ServiceNotificationDelivery[]
+  service_notification_preferences ServiceNotificationPreference[]
+  service_media_assets ServiceMediaAsset[]
+  service_media_variants ServiceMediaVariant[]
+  service_media_upload_sessions ServiceMediaUploadSession[]
+  service_billing_accounts ServiceBillingAccount[]
+  service_billing_plans ServiceBillingPlan[]
+  service_billing_subscriptions ServiceBillingSubscription[]
+  service_billing_usage_records ServiceBillingUsageRecord[]
+  service_billing_charges ServiceBillingCharge[]
+  service_billing_invoices ServiceBillingInvoice[]
+  service_billing_invoice_lines ServiceBillingInvoiceLine[]
+  service_billing_settlements ServiceBillingSettlement[]
+  service_policy_rules ServicePolicyRule[]
+  service_policy_approval_requests ServicePolicyApprovalRequest[]
+  service_policy_overrides ServicePolicyOverride[]
+  service_risk_incidents ServiceRiskIncident[]
+  service_risk_sanctions ServiceRiskSanction[]
+  service_geo_places ServiceGeoPlace[]
+  service_geo_regions ServiceGeoRegion[]
+  service_geo_route_caches ServiceGeoRouteCache[]
+  service_runtime_modules ServiceRuntimeModule[]
+  service_runtime_functions ServiceRuntimeFunction[]
 
   @@index([owner_id, status])
   @@index([status, live_expires_at])
@@ -288,10 +325,13 @@ model BackgroundJob {
   id           String             @id @default(cuid())
   page_id      String?
   page         Page?              @relation(fields: [page_id], references: [id], onDelete: SetNull)
+  queue        String             @default("default")
   type         String
   payload      Json?
+  dedupe_key   String?
   status       BackgroundJobStatus @default(queued)
   run_at       DateTime           @default(now())
+  priority     Int                @default(100)
   locked_at    DateTime?
   locked_by    String?
   attempts     Int                @default(0)
@@ -301,8 +341,903 @@ model BackgroundJob {
   updated_at   DateTime           @updatedAt
   finished_at  DateTime?
 
+  @@unique([page_id, queue, dedupe_key])
+  @@index([queue, status, priority, run_at])
   @@index([status, run_at])
   @@index([page_id])
+}
+
+model BackgroundJobDeadLetter {
+  id           String   @id @default(cuid())
+  job_id       String
+  page_id      String?
+  queue        String   @default("default")
+  type         String
+  payload      Json?
+  attempts     Int
+  max_attempts Int
+  last_error   String?
+  failed_at    DateTime @default(now())
+  metadata     Json?
+  created_at   DateTime @default(now())
+
+  @@unique([job_id])
+  @@index([queue, failed_at])
+  @@index([page_id, queue, failed_at])
+}
+
+model ServiceRuntimeModule {
+  id         String   @id @default(cuid())
+  page_id    String
+  page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key        String
+  name       String
+  kind       String   @default("generic")
+  enabled    Boolean  @default(true)
+  sandbox    Json?
+  metadata   Json?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  functions  ServiceRuntimeFunction[]
+
+  @@unique([page_id, key])
+  @@index([page_id, kind, enabled])
+}
+
+model ServiceRuntimeFunction {
+  id           String   @id @default(cuid())
+  page_id      String
+  page         Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  module_id    String?
+  module       ServiceRuntimeModule? @relation(fields: [module_id], references: [id], onDelete: SetNull)
+  key          String
+  name         String
+  target       String   @default("generic")
+  enabled      Boolean  @default(true)
+  code         String
+  timeout_ms   Int      @default(10000)
+  memory_mb    Int      @default(128)
+  network_mode String   @default("inherit")
+  network_allow Json?
+  network_deny  Json?
+  secret_keys   Json?
+  metadata      Json?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([page_id, key])
+  @@index([page_id, target, enabled])
+  @@index([module_id])
+}
+
+model ServiceEvent {
+  id                 String   @id @default(cuid())
+  page_id            String
+  page               Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  stream             String
+  topic              String
+  event_key          String?
+  type               String
+  entity_type        String?
+  entity_id          String?
+  source             String?
+  payload            Json?
+  meta               Json?
+  status             String   @default("published") // "published" | "processed" | "dead_letter" | "compensated"
+  attempts           Int      @default(0)
+  max_attempts       Int      @default(3)
+  available_at       DateTime @default(now())
+  published_at       DateTime @default(now())
+  processed_at       DateTime?
+  dead_lettered_at   DateTime?
+  compensation_of_id String?
+  compensation_of    ServiceEvent? @relation("ServiceEventCompensations", fields: [compensation_of_id], references: [id], onDelete: SetNull)
+  compensations      ServiceEvent[] @relation("ServiceEventCompensations")
+  transitions        ServiceStateTransition[]
+  instances          ServiceStateInstance[] @relation("ServiceEventLastInstance")
+
+  @@unique([page_id, stream, event_key])
+  @@index([page_id, stream, published_at])
+  @@index([page_id, topic, published_at])
+  @@index([page_id, entity_type, entity_id, published_at])
+  @@index([page_id, status, available_at])
+}
+
+model ServiceStateMachine {
+  id          String   @id @default(cuid())
+  page_id     String
+  page        Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key         String
+  name        String
+  version     Int      @default(1)
+  definition  Json
+  enabled     Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  instances   ServiceStateInstance[]
+  transitions ServiceStateTransition[]
+
+  @@unique([page_id, key])
+  @@index([page_id, enabled])
+}
+
+model ServiceStateInstance {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  machine_id    String
+  machine       ServiceStateMachine @relation(fields: [machine_id], references: [id], onDelete: Cascade)
+  entity_type   String
+  entity_id     String
+  current_state String
+  data          Json?
+  version       Int      @default(0)
+  last_event_id String?
+  last_event    ServiceEvent? @relation("ServiceEventLastInstance", fields: [last_event_id], references: [id], onDelete: SetNull)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  transitions   ServiceStateTransition[]
+
+  @@unique([machine_id, entity_type, entity_id])
+  @@index([page_id, entity_type, entity_id])
+}
+
+model ServiceStateTransition {
+  id             String   @id @default(cuid())
+  page_id        String
+  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  machine_id     String
+  machine        ServiceStateMachine @relation(fields: [machine_id], references: [id], onDelete: Cascade)
+  instance_id    String
+  instance       ServiceStateInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  event_id       String?
+  event          ServiceEvent? @relation(fields: [event_id], references: [id], onDelete: SetNull)
+  transition_key String
+  from_state     String?
+  to_state       String
+  status         String   @default("applied") // "applied" | "rejected" | "compensated"
+  reason         String?
+  payload        Json?
+  created_at     DateTime @default(now())
+
+  @@index([page_id, created_at])
+  @@index([machine_id, instance_id, created_at])
+}
+
+model ServiceRealtimeChannel {
+  id             String   @id @default(cuid())
+  page_id        String
+  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key            String
+  topic          String
+  kind           String   @default("generic")
+  config         Json?
+  message_limit  Int      @default(100)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  messages       ServiceRealtimeMessage[]
+  presences      ServiceRealtimePresence[]
+  receipts       ServiceRealtimeReceipt[]
+
+  @@unique([page_id, key])
+  @@index([page_id, topic])
+}
+
+model ServiceRealtimeMessage {
+  id             String   @id @default(cuid())
+  page_id        String
+  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  channel_id     String
+  channel        ServiceRealtimeChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
+  message_key    String?
+  type           String   @default("message")
+  sender_key     String
+  sender_name    String?
+  body           Json?
+  meta           Json?
+  created_at     DateTime @default(now())
+
+  receipts       ServiceRealtimeReceipt[]
+
+  @@index([page_id, created_at])
+  @@index([channel_id, created_at])
+  @@index([channel_id, sender_key, message_key])
+}
+
+model ServiceRealtimePresence {
+  id             String   @id @default(cuid())
+  page_id        String
+  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  channel_id     String
+  channel        ServiceRealtimeChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
+  connection_key String
+  member_key     String
+  session_id     String?
+  socket_id      String?
+  name           String?
+  status         String   @default("online")
+  meta           Json?
+  joined_at      DateTime @default(now())
+  last_seen_at   DateTime @default(now())
+
+  @@unique([channel_id, connection_key])
+  @@index([page_id, member_key])
+  @@index([channel_id, last_seen_at])
+}
+
+model ServiceRealtimeReceipt {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  channel_id    String
+  channel       ServiceRealtimeChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
+  message_id    String
+  message       ServiceRealtimeMessage @relation(fields: [message_id], references: [id], onDelete: Cascade)
+  recipient_key String
+  delivered_at  DateTime?
+  read_at       DateTime?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([message_id, recipient_key])
+  @@index([page_id, recipient_key])
+  @@index([channel_id, updated_at])
+}
+
+model ServiceSearchIndex {
+  id           String   @id @default(cuid())
+  page_id      String
+  page         Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key          String
+  name         String
+  source_type  String
+  source_key   String
+  title_fields Json?
+  body_fields  Json?
+  facet_fields Json?
+  sort_field   String?
+  visibility   String   @default("owner")
+  scope_mode   String   @default("all")
+  enabled      Boolean  @default(true)
+  config       Json?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  documents    ServiceSearchDocument[]
+
+  @@unique([page_id, key])
+  @@index([page_id, source_type, source_key])
+}
+
+model ServiceSearchDocument {
+  id          String   @id @default(cuid())
+  page_id     String
+  page        Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  index_id    String
+  index       ServiceSearchIndex @relation(fields: [index_id], references: [id], onDelete: Cascade)
+  source_type String
+  source_key  String
+  source_id   String
+  title       String?
+  body        String
+  facets      Json?
+  sort_text   String?
+  sort_number Float?
+  sort_date   DateTime?
+  app_user_id String?
+  payload     Json?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@unique([index_id, source_id])
+  @@index([page_id, index_id])
+  @@index([page_id, source_type, source_key])
+  @@index([page_id, app_user_id])
+  @@index([page_id, updated_at])
+}
+
+model ServiceRankingRule {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key           String
+  name          String
+  source_type   String
+  source_key    String
+  title_fields  Json?
+  excerpt_fields Json?
+  facet_fields  Json?
+  visibility    String   @default("owner")
+  scope_mode    String   @default("all")
+  enabled       Boolean  @default(true)
+  config        Json?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  snapshots     ServiceRankingSnapshot[]
+
+  @@unique([page_id, key])
+  @@index([page_id, source_type, source_key])
+}
+
+model ServiceRankingSnapshot {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  rule_id       String
+  rule          ServiceRankingRule @relation(fields: [rule_id], references: [id], onDelete: Cascade)
+  source_type   String
+  source_key    String
+  source_id     String
+  title         String?
+  excerpt       String?
+  score         Float
+  rank          Int?
+  facets        Json?
+  app_user_id   String?
+  payload       Json?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([rule_id, source_id])
+  @@index([page_id, rule_id])
+  @@index([page_id, source_type, source_key])
+  @@index([page_id, app_user_id])
+  @@index([page_id, score, updated_at])
+}
+
+model ServiceNotification {
+  id                 String   @id @default(cuid())
+  page_id            String
+  page               Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  recipient_key      String
+  recipient_label    String?
+  app_user_id        String?
+  type               String   @default("generic")
+  topic              String   @default("general")
+  title              String?
+  body               String?
+  payload            Json?
+  delivery_channels  Json?
+  source_type        String?
+  source_id          String?
+  status             String   @default("queued")
+  scheduled_for      DateTime @default(now())
+  sent_at            DateTime?
+  read_at            DateTime?
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  deliveries         ServiceNotificationDelivery[]
+
+  @@index([page_id, recipient_key, read_at, created_at])
+  @@index([page_id, status, scheduled_for])
+  @@index([page_id, topic, created_at])
+}
+
+model ServiceNotificationDelivery {
+  id               String   @id @default(cuid())
+  page_id          String
+  page             Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  notification_id  String
+  notification     ServiceNotification @relation(fields: [notification_id], references: [id], onDelete: Cascade)
+  channel          String
+  provider         String?
+  status           String   @default("queued")
+  error            String?
+  meta             Json?
+  delivered_at     DateTime?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@index([page_id, channel, status, created_at])
+  @@index([notification_id, channel])
+}
+
+model ServiceNotificationPreference {
+  id               String   @id @default(cuid())
+  page_id          String
+  page             Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  recipient_key    String
+  channel          String
+  topic            String
+  enabled          Boolean  @default(true)
+  muted_until      DateTime?
+  config           Json?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@unique([page_id, recipient_key, channel, topic])
+  @@index([page_id, recipient_key, channel])
+}
+
+model ServiceMediaAsset {
+  id                   String   @id @default(cuid())
+  page_id              String
+  page                 Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key                  String
+  original_name        String
+  kind                 String
+  mime_type            String
+  backend              String
+  storage_scope        String   @default("private")
+  storage_key          String
+  public_url           String?
+  visibility           String   @default("signed")
+  status               String   @default("processing")
+  size_bytes           Int
+  checksum_sha256      String?
+  width                Int?
+  height               Int?
+  duration_ms          Int?
+  placeholder_data_url String?
+  metadata             Json?
+  processed_at         DateTime?
+  last_error           String?
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  variants ServiceMediaVariant[]
+
+  @@unique([page_id, key])
+  @@index([page_id, kind, created_at])
+  @@index([page_id, status, created_at])
+}
+
+model ServiceMediaVariant {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  asset_id      String
+  asset         ServiceMediaAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+  key           String
+  name          String
+  mime_type     String
+  backend       String
+  storage_scope String   @default("private")
+  storage_key   String
+  public_url    String?
+  size_bytes    Int
+  width         Int?
+  height        Int?
+  metadata      Json?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([asset_id, name])
+  @@unique([page_id, key])
+  @@index([page_id, asset_id])
+}
+
+model ServiceMediaUploadSession {
+  id               String   @id @default(cuid())
+  page_id          String
+  page             Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key              String
+  file_name        String
+  mime_type        String
+  total_size       Int
+  chunk_size       Int
+  received_size    Int      @default(0)
+  storage_scope    String   @default("private")
+  temp_storage_key String
+  visibility       String   @default("public")
+  status           String   @default("open")
+  completed_asset_id String?
+  expires_at       DateTime
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@unique([page_id, key])
+  @@unique([temp_storage_key])
+  @@index([page_id, status, expires_at])
+}
+
+model ServiceBillingAccount {
+  id                    String   @id @default(cuid())
+  page_id               String
+  page                  Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  scope_type            String
+  scope_key             String
+  org_id                String?
+  team_id               String?
+  app_user_id           String?
+  customer_name         String?
+  email                 String?
+  currency              String   @default("KRW")
+  provider_customer_ref String?
+  metadata              Json?
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  subscriptions ServiceBillingSubscription[]
+  usage_records ServiceBillingUsageRecord[]
+  charges       ServiceBillingCharge[]
+  invoices      ServiceBillingInvoice[]
+  settlements   ServiceBillingSettlement[]
+
+  @@unique([page_id, scope_type, scope_key])
+  @@index([page_id, org_id])
+  @@index([page_id, team_id])
+  @@index([page_id, app_user_id])
+}
+
+model ServiceBillingPlan {
+  id                        String   @id @default(cuid())
+  page_id                   String
+  page                      Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key                       String
+  name                      String
+  charge_model              String
+  billing_interval          String   @default("once")
+  unit_amount_cents         Int
+  currency                  String   @default("KRW")
+  usage_metric              String?
+  included_units            Float    @default(0)
+  tax_rate_basis_points     Int      @default(0)
+  platform_fee_basis_points Int      @default(0)
+  provider                  String   @default("mock")
+  provider_price_ref        String?
+  active                    Boolean  @default(true)
+  metadata                  Json?
+  created_at                DateTime @default(now())
+  updated_at                DateTime @updatedAt
+
+  subscriptions ServiceBillingSubscription[]
+  usage_records ServiceBillingUsageRecord[]
+  charges       ServiceBillingCharge[]
+  invoice_lines ServiceBillingInvoiceLine[]
+
+  @@unique([page_id, key])
+  @@index([page_id, active, charge_model])
+}
+
+model ServiceBillingSubscription {
+  id                   String   @id @default(cuid())
+  page_id              String
+  page                 Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  account_id           String
+  account              ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  plan_id              String
+  plan                 ServiceBillingPlan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+  status               String   @default("active")
+  quantity             Int      @default(1)
+  current_period_start DateTime?
+  current_period_end   DateTime?
+  cancel_at_period_end Boolean  @default(false)
+  provider             String   @default("mock")
+  provider_ref         String?
+  metadata             Json?
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  invoice_lines ServiceBillingInvoiceLine[]
+
+  @@index([page_id, account_id, status])
+  @@index([page_id, plan_id, status])
+}
+
+model ServiceBillingUsageRecord {
+  id              String   @id @default(cuid())
+  page_id         String
+  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  account_id      String
+  account         ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  plan_id         String
+  plan            ServiceBillingPlan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+  metric          String
+  quantity        Float
+  window_start    DateTime
+  window_end      DateTime
+  idempotency_key String
+  metadata        Json?
+  invoiced_at     DateTime?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  invoice_lines ServiceBillingInvoiceLine[]
+
+  @@unique([page_id, idempotency_key])
+  @@index([page_id, account_id, invoiced_at])
+  @@index([page_id, plan_id, metric, window_start])
+}
+
+model ServiceBillingCharge {
+  id                        String   @id @default(cuid())
+  page_id                   String
+  page                      Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  account_id                String
+  account                   ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  plan_id                   String?
+  plan                      ServiceBillingPlan? @relation(fields: [plan_id], references: [id], onDelete: SetNull)
+  kind                      String   @default("one_time")
+  status                    String   @default("pending")
+  description               String
+  quantity                  Float    @default(1)
+  unit_amount_cents         Int
+  subtotal_cents            Int
+  tax_rate_basis_points     Int      @default(0)
+  platform_fee_basis_points Int      @default(0)
+  tax_cents                 Int      @default(0)
+  total_cents               Int
+  currency                  String   @default("KRW")
+  external_ref              String?
+  metadata                  Json?
+  invoiced_at               DateTime?
+  created_at                DateTime @default(now())
+  updated_at                DateTime @updatedAt
+
+  invoice_lines ServiceBillingInvoiceLine[]
+
+  @@index([page_id, account_id, status, created_at])
+  @@index([page_id, invoiced_at, status])
+}
+
+model ServiceBillingInvoice {
+  id                String   @id @default(cuid())
+  page_id           String
+  page              Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  account_id        String
+  account           ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  number            String
+  status            String   @default("open")
+  currency          String   @default("KRW")
+  subtotal_cents    Int
+  tax_cents         Int
+  adjustment_cents  Int      @default(0)
+  total_cents       Int
+  amount_paid_cents Int      @default(0)
+  due_at            DateTime?
+  paid_at           DateTime?
+  period_start      DateTime?
+  period_end        DateTime?
+  external_ref      String?
+  metadata          Json?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  lines       ServiceBillingInvoiceLine[]
+  settlements ServiceBillingSettlement[]
+
+  @@unique([page_id, number])
+  @@index([page_id, account_id, status, created_at])
+}
+
+model ServiceBillingInvoiceLine {
+  id              String   @id @default(cuid())
+  page_id         String
+  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  invoice_id      String
+  invoice         ServiceBillingInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  plan_id         String?
+  plan            ServiceBillingPlan? @relation(fields: [plan_id], references: [id], onDelete: SetNull)
+  subscription_id String?
+  subscription    ServiceBillingSubscription? @relation(fields: [subscription_id], references: [id], onDelete: SetNull)
+  usage_record_id String?
+  usage_record    ServiceBillingUsageRecord? @relation(fields: [usage_record_id], references: [id], onDelete: SetNull)
+  charge_id       String?
+  charge          ServiceBillingCharge? @relation(fields: [charge_id], references: [id], onDelete: SetNull)
+  kind            String
+  description     String
+  quantity        Float    @default(1)
+  unit_amount_cents Int
+  amount_cents    Int
+  currency        String   @default("KRW")
+  metadata        Json?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([page_id, invoice_id])
+  @@index([invoice_id, kind])
+}
+
+model ServiceBillingSettlement {
+  id             String   @id @default(cuid())
+  page_id        String
+  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  account_id     String
+  account        ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  invoice_id     String
+  invoice        ServiceBillingInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  recipient_type String
+  recipient_key  String
+  currency       String   @default("KRW")
+  gross_cents    Int
+  fee_cents      Int
+  net_cents      Int
+  status         String   @default("settled")
+  settled_at     DateTime?
+  metadata       Json?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@index([page_id, account_id, created_at])
+  @@index([page_id, invoice_id])
+}
+
+model ServicePolicyRule {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key           String
+  name          String
+  effect        String   @default("allow")
+  action_key    String   @default("*")
+  resource_type String   @default("*")
+  priority      Int      @default(100)
+  enabled       Boolean  @default(true)
+  conditions    Json?
+  metadata      Json?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  approval_requests ServicePolicyApprovalRequest[]
+  overrides         ServicePolicyOverride[]
+
+  @@unique([page_id, key])
+  @@index([page_id, action_key, resource_type, enabled, priority])
+}
+
+model ServicePolicyApprovalRequest {
+  id                       String   @id @default(cuid())
+  page_id                  String
+  page                     Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  rule_id                  String?
+  rule                     ServicePolicyRule? @relation(fields: [rule_id], references: [id], onDelete: SetNull)
+  action_key               String
+  resource_type            String
+  subject_key              String
+  subject_label            String?
+  target_key               String?
+  status                   String   @default("requested")
+  note                     String?
+  context                  Json?
+  requested_by_user_id     String?
+  requested_by_app_user_id String?
+  decided_by_user_id       String?
+  decided_at               DateTime?
+  expires_at               DateTime?
+  created_at               DateTime @default(now())
+  updated_at               DateTime @updatedAt
+
+  @@index([page_id, subject_key, action_key, resource_type, status])
+  @@index([page_id, rule_id, status])
+}
+
+model ServicePolicyOverride {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  rule_id       String?
+  rule          ServicePolicyRule? @relation(fields: [rule_id], references: [id], onDelete: SetNull)
+  key           String
+  subject_key   String
+  effect        String
+  action_key    String?
+  resource_type String?
+  reason        String?
+  enabled       Boolean  @default(true)
+  expires_at    DateTime?
+  metadata      Json?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([page_id, key])
+  @@index([page_id, subject_key, enabled, expires_at])
+}
+
+model ServiceRiskIncident {
+  id           String   @id @default(cuid())
+  page_id      String
+  page         Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key          String
+  subject_key  String
+  category     String
+  source_type  String
+  source_id    String?
+  status       String   @default("open")
+  score        Float    @default(0)
+  signal_count Int      @default(1)
+  detail       Json?
+  metadata     Json?
+  resolved_at  DateTime?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  sanctions ServiceRiskSanction[]
+
+  @@unique([page_id, key])
+  @@index([page_id, subject_key, status, created_at])
+  @@index([page_id, category, status, created_at])
+}
+
+model ServiceRiskSanction {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  incident_id   String?
+  incident      ServiceRiskIncident? @relation(fields: [incident_id], references: [id], onDelete: SetNull)
+  key           String
+  subject_key   String
+  sanction_type String
+  action_key    String?
+  resource_type String?
+  status        String   @default("active")
+  reason        String?
+  metadata      Json?
+  starts_at     DateTime @default(now())
+  expires_at    DateTime?
+  released_at   DateTime?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([page_id, key])
+  @@index([page_id, subject_key, status, expires_at])
+  @@index([page_id, incident_id, status])
+}
+
+model ServiceGeoPlace {
+  id           String   @id @default(cuid())
+  page_id      String
+  page         Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key          String
+  label        String
+  query        String?
+  address      String?
+  lat          Float
+  lng          Float
+  provider     String   @default("local")
+  provider_ref String?
+  metadata     Json?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@unique([page_id, key])
+  @@index([page_id, lat, lng])
+}
+
+model ServiceGeoRegion {
+  id         String   @id @default(cuid())
+  page_id    String
+  page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key        String
+  name       String
+  center_lat Float
+  center_lng Float
+  radius_m   Int
+  active     Boolean  @default(true)
+  policy     Json?
+  metadata   Json?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([page_id, key])
+  @@index([page_id, active, center_lat, center_lng])
+}
+
+model ServiceGeoRouteCache {
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key           String
+  origin_lat    Float
+  origin_lng    Float
+  destination_lat Float
+  destination_lng Float
+  distance_m    Int
+  duration_sec  Int
+  provider      String   @default("local")
+  geometry      Json?
+  metadata      Json?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([page_id, key])
+  @@index([page_id, provider, updated_at])
 }
 
 model Comment {
