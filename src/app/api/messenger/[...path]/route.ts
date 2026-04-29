@@ -223,6 +223,10 @@ async function requireUser(req: Request): Promise<AuthGate> {
   return { user, response: null };
 }
 
+function authError(gate: AuthGate) {
+  return gate.response ?? error("auth_required", 401, "로그인이 필요합니다.");
+}
+
 async function createNotification(input: {
   userId: string;
   type: string;
@@ -396,7 +400,7 @@ async function handleLogout(req: Request) {
 
 async function handleMe(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const [unreadNotifications, conversations] = await Promise.all([
     prisma.messengerNotification.count({ where: { user_id: gate.user.id, read_at: null } }),
     prisma.messengerConversationMember.count({ where: { user_id: gate.user.id } }),
@@ -406,7 +410,7 @@ async function handleMe(req: Request) {
 
 async function handleProfile(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const parsed = profileSchema.safeParse(await parseBody(req));
   if (!parsed.success) return error("invalid_profile_payload", 400);
   const user = await prisma.messengerUser.update({
@@ -423,7 +427,7 @@ async function handleProfile(req: Request) {
 
 async function handleUserSearch(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q")?.trim() ?? "";
   if (q.length < 2) return json({ ok: true, users: [] });
@@ -448,7 +452,7 @@ async function handleUserSearch(req: Request) {
 
 async function handleFriends(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const [friendships, incoming, outgoing] = await Promise.all([
     prisma.messengerFriendship.findMany({
       where: { OR: [{ user_a_id: gate.user.id }, { user_b_id: gate.user.id }] },
@@ -493,7 +497,7 @@ async function handleFriends(req: Request) {
 
 async function handleFriendRequest(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const parsed = friendRequestSchema.safeParse(await parseBody(req));
   if (!parsed.success) return error("invalid_friend_payload", 400);
   const query = parsed.data.query?.trim();
@@ -551,7 +555,7 @@ async function handleFriendRequest(req: Request) {
 
 async function handleFriendRequestAction(req: Request, requestId: string) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const body = await parseBody(req);
   const action = String(body.action ?? "");
   const request = await prisma.messengerFriendRequest.findFirst({
@@ -584,7 +588,7 @@ async function handleFriendRequestAction(req: Request, requestId: string) {
 
 async function handleConversationList(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const memberships = await prisma.messengerConversationMember.findMany({
     where: { user_id: gate.user.id },
     include: {
@@ -617,7 +621,7 @@ async function handleConversationList(req: Request) {
 
 async function handleConversationCreate(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const parsed = conversationSchema.safeParse(await parseBody(req));
   if (!parsed.success) return error("invalid_conversation_payload", 400);
   const memberIds = Array.from(new Set([gate.user.id, ...parsed.data.memberIds])).slice(0, 13);
@@ -670,7 +674,7 @@ async function handleConversationCreate(req: Request) {
 
 async function handleMessages(req: Request, conversationId: string) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const member = await ensureConversationMember(conversationId, gate.user.id);
   if (!member) return error("conversation_not_found", 404);
   const { searchParams } = new URL(req.url);
@@ -693,7 +697,7 @@ async function handleMessages(req: Request, conversationId: string) {
 
 async function handleMessageCreate(req: Request, conversationId: string) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const parsed = messageSchema.safeParse(await parseBody(req));
   if (!parsed.success) return error("invalid_message_payload", 400, "메시지를 입력해 주세요.");
   const member = await ensureConversationMember(conversationId, gate.user.id);
@@ -737,7 +741,7 @@ async function handleMessageCreate(req: Request, conversationId: string) {
 
 async function handleNotifications(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const items = await prisma.messengerNotification.findMany({
     where: { user_id: gate.user.id },
     take: 40,
@@ -748,7 +752,7 @@ async function handleNotifications(req: Request) {
 
 async function handleNotificationPatch(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const body = await parseBody(req);
   const id = typeof body.id === "string" ? body.id : "";
   if (id) {
@@ -767,7 +771,7 @@ async function handleNotificationPatch(req: Request) {
 
 async function handleCalls(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const { searchParams } = new URL(req.url);
   const conversationId = searchParams.get("conversationId");
   const calls = await prisma.messengerCall.findMany({
@@ -787,7 +791,7 @@ async function handleCalls(req: Request) {
 
 async function handleCallStart(req: Request) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const parsed = callStartSchema.safeParse(await parseBody(req));
   if (!parsed.success) return error("invalid_call_payload", 400);
   const conversation = await loadConversationForUser(parsed.data.conversationId, gate.user.id);
@@ -822,7 +826,7 @@ async function handleCallStart(req: Request) {
 
 async function handleCallGet(req: Request, callId: string) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const call = await prisma.messengerCall.findFirst({
     where: {
       id: callId,
@@ -836,7 +840,7 @@ async function handleCallGet(req: Request, callId: string) {
 
 async function handleCallPatch(req: Request, callId: string) {
   const gate = await requireUser(req);
-  if (!gate.user) return gate.response;
+  if (!gate.user) return authError(gate);
   const parsed = callPatchSchema.safeParse(await parseBody(req));
   if (!parsed.success) return error("invalid_call_patch", 400);
   const call = await prisma.messengerCall.findFirst({
