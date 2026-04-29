@@ -537,14 +537,38 @@ a {
 
 .market-store-stat {
   border-color: rgb(255 255 255 / 0.36) !important;
-  background: linear-gradient(150deg, rgb(255 255 255 / 0.84), rgb(255 255 255 / 0.56)) !important;
+  background:
+    linear-gradient(150deg, rgb(255 255 255 / 0.94), rgb(232 248 255 / 0.76)),
+    radial-gradient(circle at 92% 10%, rgb(61 216 229 / 0.2), transparent 34%) !important;
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.84),
     0 12px 30px rgb(11 16 32 / 0.1) !important;
 }
 
+.market-store-hero .market-store-stat .text-slate-950,
+.market-store-hero .market-store-stat .text-slate-900 {
+  color: #07111f !important;
+}
+
+.market-store-hero .market-store-stat .text-slate-600,
+.market-store-hero .market-store-stat .text-slate-500,
+.market-store-hero .market-store-stat .text-slate-400 {
+  color: rgb(43 57 82 / 0.78) !important;
+}
+
+.market-detail-hero a.bg-white,
+.market-detail-hero .bg-white.text-slate-950,
+.market-detail-hero .bg-white.text-slate-900 {
+  background-color: #ffffff !important;
+  color: #07111f !important;
+}
+
+.market-detail-hero .bg-amber-100 {
+  color: #713f12 !important;
+}
+
 .market-store-shell article,
-.market-store-shell > div > section:not(.market-store-hero) {
+.market-store-shell > div > section:not(.market-store-hero):not(.market-detail-hero) {
   border-color: rgb(210 222 244 / 0.82) !important;
   background:
     linear-gradient(145deg, rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.76)),
