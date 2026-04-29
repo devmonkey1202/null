@@ -1,4 +1,5 @@
 import { randomBytes } from "crypto";
+import type { MessengerUser as PrismaMessengerUser } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -7,6 +8,7 @@ import { shouldUseSecureCookies } from "@/lib/cookie-security";
 import { prisma } from "@/lib/db";
 
 type Context = { params: Promise<{ path?: string[] }> };
+type AuthGate = { user: PrismaMessengerUser; response: null } | { user: null; response: NextResponse };
 
 const COOKIE_NAME = "null_messenger_session";
 const SESSION_DAYS = 30;
@@ -215,7 +217,7 @@ async function getSessionUser(req: Request) {
   return session.user;
 }
 
-async function requireUser(req: Request) {
+async function requireUser(req: Request): Promise<AuthGate> {
   const user = await getSessionUser(req);
   if (!user) return { user: null, response: error("auth_required", 401, "로그인이 필요합니다.") };
   return { user, response: null };
