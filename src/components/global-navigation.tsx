@@ -13,6 +13,7 @@ function shouldHideNavigation(pathname: string | null) {
   if (!pathname) return false;
   return (
     pathname.startsWith("/editor") ||
+    pathname.startsWith("/messenger") ||
     pathname.startsWith("/p/") ||
     pathname.startsWith("/live/") ||
     pathname.startsWith("/replay/")

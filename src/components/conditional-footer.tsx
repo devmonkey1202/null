@@ -9,6 +9,7 @@ export default function ConditionalFooter() {
   const pathname = usePathname();
   if (
     pathname?.startsWith("/editor") ||
+    pathname?.startsWith("/messenger") ||
     pathname?.startsWith("/p/") ||
     pathname?.startsWith("/live/") ||
     pathname?.startsWith("/replay/")

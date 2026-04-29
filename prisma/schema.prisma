@@ -11,7 +11,6 @@
 //
 // IMPORTANT:
 
-
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -106,28 +105,28 @@ model Plan {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  anon_id      String   @unique
-  email        String?  @unique
-  password_hash String?
-  email_verified_at DateTime?
-  last_login_at DateTime?
-  plan_id      PlanTier @default(free)
-  plan         Plan     @relation(fields: [plan_id], references: [id])
-  is_suspended Boolean  @default(false)
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
-  pages        Page[]
-  sessions     LiveSession[]
-  upvotes      Upvote[]
-  reports      Report[]
-  comments     Comment[]
-  app_record_versions AppRecordVersion[] @relation("AppRecordVersionActorUser")
+  id                    String               @id @default(cuid())
+  anon_id               String               @unique
+  email                 String?              @unique
+  password_hash         String?
+  email_verified_at     DateTime?
+  last_login_at         DateTime?
+  plan_id               PlanTier             @default(free)
+  plan                  Plan                 @relation(fields: [plan_id], references: [id])
+  is_suspended          Boolean              @default(false)
+  created_at            DateTime             @default(now())
+  updated_at            DateTime             @updatedAt
+  pages                 Page[]
+  sessions              LiveSession[]
+  upvotes               Upvote[]
+  reports               Report[]
+  comments              Comment[]
+  app_record_versions   AppRecordVersion[]   @relation("AppRecordVersionActorUser")
   app_workflow_versions AppWorkflowVersion[] @relation("AppWorkflowVersionActorUser")
-  app_audit_logs AppAuditLog[] @relation("AppAuditActorUser")
-  page_audit_logs PageAuditLog[] @relation("PageAuditActorUser")
-  owned_orgs Organization[] @relation("OrgOwner")
-  org_members OrganizationMember[]
+  app_audit_logs        AppAuditLog[]        @relation("AppAuditActorUser")
+  page_audit_logs       PageAuditLog[]       @relation("PageAuditActorUser")
+  owned_orgs            Organization[]       @relation("OrgOwner")
+  org_members           OrganizationMember[]
 }
 
 model Organization {
@@ -147,18 +146,18 @@ model Organization {
 }
 
 model OrganizationMember {
-  id         String           @id @default(cuid())
+  id         String          @id @default(cuid())
   org_id     String
-  org        Organization     @relation(fields: [org_id], references: [id], onDelete: Cascade)
+  org        Organization    @relation(fields: [org_id], references: [id], onDelete: Cascade)
   user_id    String?
-  user       User?            @relation(fields: [user_id], references: [id])
+  user       User?           @relation(fields: [user_id], references: [id])
   email      String?
-  role       OrgMemberRole    @default(member)
-  status     OrgMemberStatus  @default(invited)
-  invited_at DateTime         @default(now())
+  role       OrgMemberRole   @default(member)
+  status     OrgMemberStatus @default(invited)
+  invited_at DateTime        @default(now())
   joined_at  DateTime?
-  created_at DateTime         @default(now())
-  updated_at DateTime         @updatedAt
+  created_at DateTime        @default(now())
+  updated_at DateTime        @updatedAt
 
   teams TeamMember[]
 
@@ -168,13 +167,13 @@ model OrganizationMember {
 }
 
 model Team {
-  id         String   @id @default(cuid())
+  id         String       @id @default(cuid())
   org_id     String
   org        Organization @relation(fields: [org_id], references: [id], onDelete: Cascade)
   name       String
   slug       String
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  created_at DateTime     @default(now())
+  updated_at DateTime     @updatedAt
 
   members TeamMember[]
 
@@ -183,38 +182,38 @@ model Team {
 }
 
 model TeamMember {
-  id            String         @id @default(cuid())
+  id            String             @id @default(cuid())
   team_id       String
-  team          Team           @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  team          Team               @relation(fields: [team_id], references: [id], onDelete: Cascade)
   org_member_id String
   org_member    OrganizationMember @relation(fields: [org_member_id], references: [id], onDelete: Cascade)
-  role          TeamMemberRole @default(member)
-  created_at    DateTime       @default(now())
+  role          TeamMemberRole     @default(member)
+  created_at    DateTime           @default(now())
 
   @@unique([team_id, org_member_id])
 }
 
 model Page {
-  id                  String       @id @default(cuid())
-  owner_id            String
-  owner               User         @relation(fields: [owner_id], references: [id])
-  org_id              String?
-  org                 Organization? @relation(fields: [org_id], references: [id])
-  title               String?
-  anon_number         Int
-  status              PageStatus   @default(draft)
-  live_started_at     DateTime?
-  live_expires_at     DateTime?
-  deployed_at         DateTime?
-  scheduled_report_enabled Boolean @default(false)
-  auto_drop_alert      Boolean    @default(false)
-  discord_webhook_url  String?
-  snapshot_thumbnail  String?
-  constraints_version String       @default("v1")
-  current_version_id  String?      @unique
-  current_version     PageVersion? @relation("CurrentPageVersion", fields: [current_version_id], references: [id])
-  collab_invite_code  String?      @unique
-  collab_invite_enabled Boolean    @default(false)
+  id                       String        @id @default(cuid())
+  owner_id                 String
+  owner                    User          @relation(fields: [owner_id], references: [id])
+  org_id                   String?
+  org                      Organization? @relation(fields: [org_id], references: [id])
+  title                    String?
+  anon_number              Int
+  status                   PageStatus    @default(draft)
+  live_started_at          DateTime?
+  live_expires_at          DateTime?
+  deployed_at              DateTime?
+  scheduled_report_enabled Boolean       @default(false)
+  auto_drop_alert          Boolean       @default(false)
+  discord_webhook_url      String?
+  snapshot_thumbnail       String?
+  constraints_version      String        @default("v1")
+  current_version_id       String?       @unique
+  current_version          PageVersion?  @relation("CurrentPageVersion", fields: [current_version_id], references: [id])
+  collab_invite_code       String?       @unique
+  collab_invite_enabled    Boolean       @default(false)
   collab_invite_updated_at DateTime?
 
   // Aggregated metrics (lightweight)
@@ -233,88 +232,88 @@ model Page {
   is_hidden  Boolean @default(false)
   is_deleted Boolean @default(false)
 
-  hidden_at           DateTime?
-  hidden_reason       String?
-  hidden_by_admin_id  String?
-  hidden_by_admin     AdminUser? @relation("PageHiddenBy", fields: [hidden_by_admin_id], references: [id])
+  hidden_at          DateTime?
+  hidden_reason      String?
+  hidden_by_admin_id String?
+  hidden_by_admin    AdminUser? @relation("PageHiddenBy", fields: [hidden_by_admin_id], references: [id])
 
-  forced_expired_at   DateTime?
-  forced_by_admin_id  String?
-  forced_by_admin     AdminUser? @relation("PageForcedBy", fields: [forced_by_admin_id], references: [id])
+  forced_expired_at  DateTime?
+  forced_by_admin_id String?
+  forced_by_admin    AdminUser? @relation("PageForcedBy", fields: [forced_by_admin_id], references: [id])
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  versions     PageVersion[] @relation("PageVersions")
-  sessions     LiveSession[]
-  events       Event[]
-  upvotes      Upvote[]
-  reports      Report[]
-  ghost_traces GhostTrace[]
-  comments     Comment[]
+  versions        PageVersion[]    @relation("PageVersions")
+  sessions        LiveSession[]
+  events          Event[]
+  upvotes         Upvote[]
+  reports         Report[]
+  ghost_traces    GhostTrace[]
+  comments        Comment[]
   app_collections AppCollection[]
-  app_records    AppRecord[]
-  daily_stats   DailyPageStats[]
-  segments      Segment[]
+  app_records     AppRecord[]
+  daily_stats     DailyPageStats[]
+  segments        Segment[]
 
-  app_sessions    AppSession[]
-  app_users       AppUser[]
-  app_secrets     AppSecret[]
-  app_workflows   AppWorkflow[]
-  app_record_versions AppRecordVersion[]
+  app_sessions          AppSession[]
+  app_users             AppUser[]
+  app_secrets           AppSecret[]
+  app_workflows         AppWorkflow[]
+  app_record_versions   AppRecordVersion[]
   app_workflow_versions AppWorkflowVersion[]
-  app_audit_logs AppAuditLog[]
-  page_audit_logs PageAuditLog[]
-  sso_connections AppSsoConnection[]
-  sso_accounts    AppSsoAccount[]
+  app_audit_logs        AppAuditLog[]
+  page_audit_logs       PageAuditLog[]
+  sso_connections       AppSsoConnection[]
+  sso_accounts          AppSsoAccount[]
 
-  chat_messages   ChatMessage[]
-  todos           Todo[]
-  calendar_events CalendarEvent[]
-  kanban_columns  KanbanColumn[]
-  kanban_cards    KanbanCard[]
-  note            Note?
-  page_settings   PageSetting[]
-  page_domains    PageDomain[]
-  page_notifications PageNotification[]
-  call_states      CallState[]
-  background_jobs  BackgroundJob[]
-  service_events   ServiceEvent[]
-  service_state_machines ServiceStateMachine[]
-  service_state_instances ServiceStateInstance[]
-  service_state_transitions ServiceStateTransition[]
-  service_realtime_channels ServiceRealtimeChannel[]
-  service_realtime_messages ServiceRealtimeMessage[]
-  service_realtime_presences ServiceRealtimePresence[]
-  service_realtime_receipts ServiceRealtimeReceipt[]
-  service_search_indices ServiceSearchIndex[]
-  service_search_documents ServiceSearchDocument[]
-  service_ranking_rules ServiceRankingRule[]
-  service_ranking_snapshots ServiceRankingSnapshot[]
-  service_notifications ServiceNotification[]
-  service_notification_deliveries ServiceNotificationDelivery[]
+  chat_messages                    ChatMessage[]
+  todos                            Todo[]
+  calendar_events                  CalendarEvent[]
+  kanban_columns                   KanbanColumn[]
+  kanban_cards                     KanbanCard[]
+  note                             Note?
+  page_settings                    PageSetting[]
+  page_domains                     PageDomain[]
+  page_notifications               PageNotification[]
+  call_states                      CallState[]
+  background_jobs                  BackgroundJob[]
+  service_events                   ServiceEvent[]
+  service_state_machines           ServiceStateMachine[]
+  service_state_instances          ServiceStateInstance[]
+  service_state_transitions        ServiceStateTransition[]
+  service_realtime_channels        ServiceRealtimeChannel[]
+  service_realtime_messages        ServiceRealtimeMessage[]
+  service_realtime_presences       ServiceRealtimePresence[]
+  service_realtime_receipts        ServiceRealtimeReceipt[]
+  service_search_indices           ServiceSearchIndex[]
+  service_search_documents         ServiceSearchDocument[]
+  service_ranking_rules            ServiceRankingRule[]
+  service_ranking_snapshots        ServiceRankingSnapshot[]
+  service_notifications            ServiceNotification[]
+  service_notification_deliveries  ServiceNotificationDelivery[]
   service_notification_preferences ServiceNotificationPreference[]
-  service_media_assets ServiceMediaAsset[]
-  service_media_variants ServiceMediaVariant[]
-  service_media_upload_sessions ServiceMediaUploadSession[]
-  service_billing_accounts ServiceBillingAccount[]
-  service_billing_plans ServiceBillingPlan[]
-  service_billing_subscriptions ServiceBillingSubscription[]
-  service_billing_usage_records ServiceBillingUsageRecord[]
-  service_billing_charges ServiceBillingCharge[]
-  service_billing_invoices ServiceBillingInvoice[]
-  service_billing_invoice_lines ServiceBillingInvoiceLine[]
-  service_billing_settlements ServiceBillingSettlement[]
-  service_policy_rules ServicePolicyRule[]
+  service_media_assets             ServiceMediaAsset[]
+  service_media_variants           ServiceMediaVariant[]
+  service_media_upload_sessions    ServiceMediaUploadSession[]
+  service_billing_accounts         ServiceBillingAccount[]
+  service_billing_plans            ServiceBillingPlan[]
+  service_billing_subscriptions    ServiceBillingSubscription[]
+  service_billing_usage_records    ServiceBillingUsageRecord[]
+  service_billing_charges          ServiceBillingCharge[]
+  service_billing_invoices         ServiceBillingInvoice[]
+  service_billing_invoice_lines    ServiceBillingInvoiceLine[]
+  service_billing_settlements      ServiceBillingSettlement[]
+  service_policy_rules             ServicePolicyRule[]
   service_policy_approval_requests ServicePolicyApprovalRequest[]
-  service_policy_overrides ServicePolicyOverride[]
-  service_risk_incidents ServiceRiskIncident[]
-  service_risk_sanctions ServiceRiskSanction[]
-  service_geo_places ServiceGeoPlace[]
-  service_geo_regions ServiceGeoRegion[]
-  service_geo_route_caches ServiceGeoRouteCache[]
-  service_runtime_modules ServiceRuntimeModule[]
-  service_runtime_functions ServiceRuntimeFunction[]
+  service_policy_overrides         ServicePolicyOverride[]
+  service_risk_incidents           ServiceRiskIncident[]
+  service_risk_sanctions           ServiceRiskSanction[]
+  service_geo_places               ServiceGeoPlace[]
+  service_geo_regions              ServiceGeoRegion[]
+  service_geo_route_caches         ServiceGeoRouteCache[]
+  service_runtime_modules          ServiceRuntimeModule[]
+  service_runtime_functions        ServiceRuntimeFunction[]
 
   @@index([owner_id, status])
   @@index([status, live_expires_at])
@@ -322,23 +321,23 @@ model Page {
 }
 
 model BackgroundJob {
-  id           String             @id @default(cuid())
+  id           String              @id @default(cuid())
   page_id      String?
-  page         Page?              @relation(fields: [page_id], references: [id], onDelete: SetNull)
-  queue        String             @default("default")
+  page         Page?               @relation(fields: [page_id], references: [id], onDelete: SetNull)
+  queue        String              @default("default")
   type         String
   payload      Json?
   dedupe_key   String?
   status       BackgroundJobStatus @default(queued)
-  run_at       DateTime           @default(now())
-  priority     Int                @default(100)
+  run_at       DateTime            @default(now())
+  priority     Int                 @default(100)
   locked_at    DateTime?
   locked_by    String?
-  attempts     Int                @default(0)
-  max_attempts Int                @default(3)
+  attempts     Int                 @default(0)
+  max_attempts Int                 @default(3)
   last_error   String?
-  created_at   DateTime           @default(now())
-  updated_at   DateTime           @updatedAt
+  created_at   DateTime            @default(now())
+  updated_at   DateTime            @updatedAt
   finished_at  DateTime?
 
   @@unique([page_id, queue, dedupe_key])
@@ -379,32 +378,32 @@ model ServiceRuntimeModule {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  functions  ServiceRuntimeFunction[]
+  functions ServiceRuntimeFunction[]
 
   @@unique([page_id, key])
   @@index([page_id, kind, enabled])
 }
 
 model ServiceRuntimeFunction {
-  id           String   @id @default(cuid())
-  page_id      String
-  page         Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  module_id    String?
-  module       ServiceRuntimeModule? @relation(fields: [module_id], references: [id], onDelete: SetNull)
-  key          String
-  name         String
-  target       String   @default("generic")
-  enabled      Boolean  @default(true)
-  code         String
-  timeout_ms   Int      @default(10000)
-  memory_mb    Int      @default(128)
-  network_mode String   @default("inherit")
+  id            String                @id @default(cuid())
+  page_id       String
+  page          Page                  @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  module_id     String?
+  module        ServiceRuntimeModule? @relation(fields: [module_id], references: [id], onDelete: SetNull)
+  key           String
+  name          String
+  target        String                @default("generic")
+  enabled       Boolean               @default(true)
+  code          String
+  timeout_ms    Int                   @default(10000)
+  memory_mb     Int                   @default(128)
+  network_mode  String                @default("inherit")
   network_allow Json?
   network_deny  Json?
   secret_keys   Json?
   metadata      Json?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  created_at    DateTime              @default(now())
+  updated_at    DateTime              @updatedAt
 
   @@unique([page_id, key])
   @@index([page_id, target, enabled])
@@ -412,9 +411,9 @@ model ServiceRuntimeFunction {
 }
 
 model ServiceEvent {
-  id                 String   @id @default(cuid())
+  id                 String                   @id @default(cuid())
   page_id            String
-  page               Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page               Page                     @relation(fields: [page_id], references: [id], onDelete: Cascade)
   stream             String
   topic              String
   event_key          String?
@@ -424,18 +423,18 @@ model ServiceEvent {
   source             String?
   payload            Json?
   meta               Json?
-  status             String   @default("published") // "published" | "processed" | "dead_letter" | "compensated"
-  attempts           Int      @default(0)
-  max_attempts       Int      @default(3)
-  available_at       DateTime @default(now())
-  published_at       DateTime @default(now())
+  status             String                   @default("published") // "published" | "processed" | "dead_letter" | "compensated"
+  attempts           Int                      @default(0)
+  max_attempts       Int                      @default(3)
+  available_at       DateTime                 @default(now())
+  published_at       DateTime                 @default(now())
   processed_at       DateTime?
   dead_lettered_at   DateTime?
   compensation_of_id String?
-  compensation_of    ServiceEvent? @relation("ServiceEventCompensations", fields: [compensation_of_id], references: [id], onDelete: SetNull)
-  compensations      ServiceEvent[] @relation("ServiceEventCompensations")
+  compensation_of    ServiceEvent?            @relation("ServiceEventCompensations", fields: [compensation_of_id], references: [id], onDelete: SetNull)
+  compensations      ServiceEvent[]           @relation("ServiceEventCompensations")
   transitions        ServiceStateTransition[]
-  instances          ServiceStateInstance[] @relation("ServiceEventLastInstance")
+  instances          ServiceStateInstance[]   @relation("ServiceEventLastInstance")
 
   @@unique([page_id, stream, event_key])
   @@index([page_id, stream, published_at])
@@ -445,16 +444,16 @@ model ServiceEvent {
 }
 
 model ServiceStateMachine {
-  id          String   @id @default(cuid())
-  page_id     String
-  page        Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  key         String
-  name        String
-  version     Int      @default(1)
-  definition  Json
-  enabled     Boolean  @default(true)
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id         String   @id @default(cuid())
+  page_id    String
+  page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key        String
+  name       String
+  version    Int      @default(1)
+  definition Json
+  enabled    Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   instances   ServiceStateInstance[]
   transitions ServiceStateTransition[]
@@ -464,84 +463,84 @@ model ServiceStateMachine {
 }
 
 model ServiceStateInstance {
-  id            String   @id @default(cuid())
+  id            String              @id @default(cuid())
   page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page          Page                @relation(fields: [page_id], references: [id], onDelete: Cascade)
   machine_id    String
   machine       ServiceStateMachine @relation(fields: [machine_id], references: [id], onDelete: Cascade)
   entity_type   String
   entity_id     String
   current_state String
   data          Json?
-  version       Int      @default(0)
+  version       Int                 @default(0)
   last_event_id String?
-  last_event    ServiceEvent? @relation("ServiceEventLastInstance", fields: [last_event_id], references: [id], onDelete: SetNull)
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  last_event    ServiceEvent?       @relation("ServiceEventLastInstance", fields: [last_event_id], references: [id], onDelete: SetNull)
+  created_at    DateTime            @default(now())
+  updated_at    DateTime            @updatedAt
 
-  transitions   ServiceStateTransition[]
+  transitions ServiceStateTransition[]
 
   @@unique([machine_id, entity_type, entity_id])
   @@index([page_id, entity_type, entity_id])
 }
 
 model ServiceStateTransition {
-  id             String   @id @default(cuid())
+  id             String               @id @default(cuid())
   page_id        String
-  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page           Page                 @relation(fields: [page_id], references: [id], onDelete: Cascade)
   machine_id     String
-  machine        ServiceStateMachine @relation(fields: [machine_id], references: [id], onDelete: Cascade)
+  machine        ServiceStateMachine  @relation(fields: [machine_id], references: [id], onDelete: Cascade)
   instance_id    String
   instance       ServiceStateInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
   event_id       String?
-  event          ServiceEvent? @relation(fields: [event_id], references: [id], onDelete: SetNull)
+  event          ServiceEvent?        @relation(fields: [event_id], references: [id], onDelete: SetNull)
   transition_key String
   from_state     String?
   to_state       String
-  status         String   @default("applied") // "applied" | "rejected" | "compensated"
+  status         String               @default("applied") // "applied" | "rejected" | "compensated"
   reason         String?
   payload        Json?
-  created_at     DateTime @default(now())
+  created_at     DateTime             @default(now())
 
   @@index([page_id, created_at])
   @@index([machine_id, instance_id, created_at])
 }
 
 model ServiceRealtimeChannel {
-  id             String   @id @default(cuid())
-  page_id        String
-  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  key            String
-  topic          String
-  kind           String   @default("generic")
-  config         Json?
-  message_limit  Int      @default(100)
-  created_at     DateTime @default(now())
-  updated_at     DateTime @updatedAt
+  id            String   @id @default(cuid())
+  page_id       String
+  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key           String
+  topic         String
+  kind          String   @default("generic")
+  config        Json?
+  message_limit Int      @default(100)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
 
-  messages       ServiceRealtimeMessage[]
-  presences      ServiceRealtimePresence[]
-  receipts       ServiceRealtimeReceipt[]
+  messages  ServiceRealtimeMessage[]
+  presences ServiceRealtimePresence[]
+  receipts  ServiceRealtimeReceipt[]
 
   @@unique([page_id, key])
   @@index([page_id, topic])
 }
 
 model ServiceRealtimeMessage {
-  id             String   @id @default(cuid())
-  page_id        String
-  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  channel_id     String
-  channel        ServiceRealtimeChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
-  message_key    String?
-  type           String   @default("message")
-  sender_key     String
-  sender_name    String?
-  body           Json?
-  meta           Json?
-  created_at     DateTime @default(now())
+  id          String                 @id @default(cuid())
+  page_id     String
+  page        Page                   @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  channel_id  String
+  channel     ServiceRealtimeChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
+  message_key String?
+  type        String                 @default("message")
+  sender_key  String
+  sender_name String?
+  body        Json?
+  meta        Json?
+  created_at  DateTime               @default(now())
 
-  receipts       ServiceRealtimeReceipt[]
+  receipts ServiceRealtimeReceipt[]
 
   @@index([page_id, created_at])
   @@index([channel_id, created_at])
@@ -549,9 +548,9 @@ model ServiceRealtimeMessage {
 }
 
 model ServiceRealtimePresence {
-  id             String   @id @default(cuid())
+  id             String                 @id @default(cuid())
   page_id        String
-  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page           Page                   @relation(fields: [page_id], references: [id], onDelete: Cascade)
   channel_id     String
   channel        ServiceRealtimeChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
   connection_key String
@@ -559,10 +558,10 @@ model ServiceRealtimePresence {
   session_id     String?
   socket_id      String?
   name           String?
-  status         String   @default("online")
+  status         String                 @default("online")
   meta           Json?
-  joined_at      DateTime @default(now())
-  last_seen_at   DateTime @default(now())
+  joined_at      DateTime               @default(now())
+  last_seen_at   DateTime               @default(now())
 
   @@unique([channel_id, connection_key])
   @@index([page_id, member_key])
@@ -570,9 +569,9 @@ model ServiceRealtimePresence {
 }
 
 model ServiceRealtimeReceipt {
-  id            String   @id @default(cuid())
+  id            String                 @id @default(cuid())
   page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page          Page                   @relation(fields: [page_id], references: [id], onDelete: Cascade)
   channel_id    String
   channel       ServiceRealtimeChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
   message_id    String
@@ -580,8 +579,8 @@ model ServiceRealtimeReceipt {
   recipient_key String
   delivered_at  DateTime?
   read_at       DateTime?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  created_at    DateTime               @default(now())
+  updated_at    DateTime               @updatedAt
 
   @@unique([message_id, recipient_key])
   @@index([page_id, recipient_key])
@@ -607,16 +606,16 @@ model ServiceSearchIndex {
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
-  documents    ServiceSearchDocument[]
+  documents ServiceSearchDocument[]
 
   @@unique([page_id, key])
   @@index([page_id, source_type, source_key])
 }
 
 model ServiceSearchDocument {
-  id          String   @id @default(cuid())
+  id          String             @id @default(cuid())
   page_id     String
-  page        Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page        Page               @relation(fields: [page_id], references: [id], onDelete: Cascade)
   index_id    String
   index       ServiceSearchIndex @relation(fields: [index_id], references: [id], onDelete: Cascade)
   source_type String
@@ -630,8 +629,8 @@ model ServiceSearchDocument {
   sort_date   DateTime?
   app_user_id String?
   payload     Json?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  created_at  DateTime           @default(now())
+  updated_at  DateTime           @updatedAt
 
   @@unique([index_id, source_id])
   @@index([page_id, index_id])
@@ -641,47 +640,47 @@ model ServiceSearchDocument {
 }
 
 model ServiceRankingRule {
-  id            String   @id @default(cuid())
-  page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  key           String
-  name          String
-  source_type   String
-  source_key    String
-  title_fields  Json?
+  id             String   @id @default(cuid())
+  page_id        String
+  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key            String
+  name           String
+  source_type    String
+  source_key     String
+  title_fields   Json?
   excerpt_fields Json?
-  facet_fields  Json?
-  visibility    String   @default("owner")
-  scope_mode    String   @default("all")
-  enabled       Boolean  @default(true)
-  config        Json?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  facet_fields   Json?
+  visibility     String   @default("owner")
+  scope_mode     String   @default("all")
+  enabled        Boolean  @default(true)
+  config         Json?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
 
-  snapshots     ServiceRankingSnapshot[]
+  snapshots ServiceRankingSnapshot[]
 
   @@unique([page_id, key])
   @@index([page_id, source_type, source_key])
 }
 
 model ServiceRankingSnapshot {
-  id            String   @id @default(cuid())
-  page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  rule_id       String
-  rule          ServiceRankingRule @relation(fields: [rule_id], references: [id], onDelete: Cascade)
-  source_type   String
-  source_key    String
-  source_id     String
-  title         String?
-  excerpt       String?
-  score         Float
-  rank          Int?
-  facets        Json?
-  app_user_id   String?
-  payload       Json?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  id          String             @id @default(cuid())
+  page_id     String
+  page        Page               @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  rule_id     String
+  rule        ServiceRankingRule @relation(fields: [rule_id], references: [id], onDelete: Cascade)
+  source_type String
+  source_key  String
+  source_id   String
+  title       String?
+  excerpt     String?
+  score       Float
+  rank        Int?
+  facets      Json?
+  app_user_id String?
+  payload     Json?
+  created_at  DateTime           @default(now())
+  updated_at  DateTime           @updatedAt
 
   @@unique([rule_id, source_id])
   @@index([page_id, rule_id])
@@ -691,28 +690,28 @@ model ServiceRankingSnapshot {
 }
 
 model ServiceNotification {
-  id                 String   @id @default(cuid())
-  page_id            String
-  page               Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  recipient_key      String
-  recipient_label    String?
-  app_user_id        String?
-  type               String   @default("generic")
-  topic              String   @default("general")
-  title              String?
-  body               String?
-  payload            Json?
-  delivery_channels  Json?
-  source_type        String?
-  source_id          String?
-  status             String   @default("queued")
-  scheduled_for      DateTime @default(now())
-  sent_at            DateTime?
-  read_at            DateTime?
-  created_at         DateTime @default(now())
-  updated_at         DateTime @updatedAt
+  id                String    @id @default(cuid())
+  page_id           String
+  page              Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  recipient_key     String
+  recipient_label   String?
+  app_user_id       String?
+  type              String    @default("generic")
+  topic             String    @default("general")
+  title             String?
+  body              String?
+  payload           Json?
+  delivery_channels Json?
+  source_type       String?
+  source_id         String?
+  status            String    @default("queued")
+  scheduled_for     DateTime  @default(now())
+  sent_at           DateTime?
+  read_at           DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
 
-  deliveries         ServiceNotificationDelivery[]
+  deliveries ServiceNotificationDelivery[]
 
   @@index([page_id, recipient_key, read_at, created_at])
   @@index([page_id, status, scheduled_for])
@@ -720,55 +719,55 @@ model ServiceNotification {
 }
 
 model ServiceNotificationDelivery {
-  id               String   @id @default(cuid())
-  page_id          String
-  page             Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  notification_id  String
-  notification     ServiceNotification @relation(fields: [notification_id], references: [id], onDelete: Cascade)
-  channel          String
-  provider         String?
-  status           String   @default("queued")
-  error            String?
-  meta             Json?
-  delivered_at     DateTime?
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
+  id              String              @id @default(cuid())
+  page_id         String
+  page            Page                @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  notification_id String
+  notification    ServiceNotification @relation(fields: [notification_id], references: [id], onDelete: Cascade)
+  channel         String
+  provider        String?
+  status          String              @default("queued")
+  error           String?
+  meta            Json?
+  delivered_at    DateTime?
+  created_at      DateTime            @default(now())
+  updated_at      DateTime            @updatedAt
 
   @@index([page_id, channel, status, created_at])
   @@index([notification_id, channel])
 }
 
 model ServiceNotificationPreference {
-  id               String   @id @default(cuid())
-  page_id          String
-  page             Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  recipient_key    String
-  channel          String
-  topic            String
-  enabled          Boolean  @default(true)
-  muted_until      DateTime?
-  config           Json?
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
+  id            String    @id @default(cuid())
+  page_id       String
+  page          Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  recipient_key String
+  channel       String
+  topic         String
+  enabled       Boolean   @default(true)
+  muted_until   DateTime?
+  config        Json?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
 
   @@unique([page_id, recipient_key, channel, topic])
   @@index([page_id, recipient_key, channel])
 }
 
 model ServiceMediaAsset {
-  id                   String   @id @default(cuid())
+  id                   String    @id @default(cuid())
   page_id              String
-  page                 Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page                 Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
   key                  String
   original_name        String
   kind                 String
   mime_type            String
   backend              String
-  storage_scope        String   @default("private")
+  storage_scope        String    @default("private")
   storage_key          String
   public_url           String?
-  visibility           String   @default("signed")
-  status               String   @default("processing")
+  visibility           String    @default("signed")
+  status               String    @default("processing")
   size_bytes           Int
   checksum_sha256      String?
   width                Int?
@@ -778,8 +777,8 @@ model ServiceMediaAsset {
   metadata             Json?
   processed_at         DateTime?
   last_error           String?
-  created_at           DateTime @default(now())
-  updated_at           DateTime @updatedAt
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
 
   variants ServiceMediaVariant[]
 
@@ -789,24 +788,24 @@ model ServiceMediaAsset {
 }
 
 model ServiceMediaVariant {
-  id            String   @id @default(cuid())
+  id            String            @id @default(cuid())
   page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page          Page              @relation(fields: [page_id], references: [id], onDelete: Cascade)
   asset_id      String
   asset         ServiceMediaAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
   key           String
   name          String
   mime_type     String
   backend       String
-  storage_scope String   @default("private")
+  storage_scope String            @default("private")
   storage_key   String
   public_url    String?
   size_bytes    Int
   width         Int?
   height        Int?
   metadata      Json?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  created_at    DateTime          @default(now())
+  updated_at    DateTime          @updatedAt
 
   @@unique([asset_id, name])
   @@unique([page_id, key])
@@ -814,23 +813,23 @@ model ServiceMediaVariant {
 }
 
 model ServiceMediaUploadSession {
-  id               String   @id @default(cuid())
-  page_id          String
-  page             Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  key              String
-  file_name        String
-  mime_type        String
-  total_size       Int
-  chunk_size       Int
-  received_size    Int      @default(0)
-  storage_scope    String   @default("private")
-  temp_storage_key String
-  visibility       String   @default("public")
-  status           String   @default("open")
+  id                 String   @id @default(cuid())
+  page_id            String
+  page               Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key                String
+  file_name          String
+  mime_type          String
+  total_size         Int
+  chunk_size         Int
+  received_size      Int      @default(0)
+  storage_scope      String   @default("private")
+  temp_storage_key   String
+  visibility         String   @default("public")
+  status             String   @default("open")
   completed_asset_id String?
-  expires_at       DateTime
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
+  expires_at         DateTime
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
 
   @@unique([page_id, key])
   @@unique([temp_storage_key])
@@ -897,23 +896,23 @@ model ServiceBillingPlan {
 }
 
 model ServiceBillingSubscription {
-  id                   String   @id @default(cuid())
+  id                   String                @id @default(cuid())
   page_id              String
-  page                 Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page                 Page                  @relation(fields: [page_id], references: [id], onDelete: Cascade)
   account_id           String
   account              ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
   plan_id              String
-  plan                 ServiceBillingPlan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
-  status               String   @default("active")
-  quantity             Int      @default(1)
+  plan                 ServiceBillingPlan    @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+  status               String                @default("active")
+  quantity             Int                   @default(1)
   current_period_start DateTime?
   current_period_end   DateTime?
-  cancel_at_period_end Boolean  @default(false)
-  provider             String   @default("mock")
+  cancel_at_period_end Boolean               @default(false)
+  provider             String                @default("mock")
   provider_ref         String?
   metadata             Json?
-  created_at           DateTime @default(now())
-  updated_at           DateTime @updatedAt
+  created_at           DateTime              @default(now())
+  updated_at           DateTime              @updatedAt
 
   invoice_lines ServiceBillingInvoiceLine[]
 
@@ -922,13 +921,13 @@ model ServiceBillingSubscription {
 }
 
 model ServiceBillingUsageRecord {
-  id              String   @id @default(cuid())
+  id              String                @id @default(cuid())
   page_id         String
-  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page            Page                  @relation(fields: [page_id], references: [id], onDelete: Cascade)
   account_id      String
   account         ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
   plan_id         String
-  plan            ServiceBillingPlan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+  plan            ServiceBillingPlan    @relation(fields: [plan_id], references: [id], onDelete: Cascade)
   metric          String
   quantity        Float
   window_start    DateTime
@@ -936,8 +935,8 @@ model ServiceBillingUsageRecord {
   idempotency_key String
   metadata        Json?
   invoiced_at     DateTime?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime              @default(now())
+  updated_at      DateTime              @updatedAt
 
   invoice_lines ServiceBillingInvoiceLine[]
 
@@ -947,29 +946,29 @@ model ServiceBillingUsageRecord {
 }
 
 model ServiceBillingCharge {
-  id                        String   @id @default(cuid())
+  id                        String                @id @default(cuid())
   page_id                   String
-  page                      Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page                      Page                  @relation(fields: [page_id], references: [id], onDelete: Cascade)
   account_id                String
   account                   ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
   plan_id                   String?
-  plan                      ServiceBillingPlan? @relation(fields: [plan_id], references: [id], onDelete: SetNull)
-  kind                      String   @default("one_time")
-  status                    String   @default("pending")
+  plan                      ServiceBillingPlan?   @relation(fields: [plan_id], references: [id], onDelete: SetNull)
+  kind                      String                @default("one_time")
+  status                    String                @default("pending")
   description               String
-  quantity                  Float    @default(1)
+  quantity                  Float                 @default(1)
   unit_amount_cents         Int
   subtotal_cents            Int
-  tax_rate_basis_points     Int      @default(0)
-  platform_fee_basis_points Int      @default(0)
-  tax_cents                 Int      @default(0)
+  tax_rate_basis_points     Int                   @default(0)
+  platform_fee_basis_points Int                   @default(0)
+  tax_cents                 Int                   @default(0)
   total_cents               Int
-  currency                  String   @default("KRW")
+  currency                  String                @default("KRW")
   external_ref              String?
   metadata                  Json?
   invoiced_at               DateTime?
-  created_at                DateTime @default(now())
-  updated_at                DateTime @updatedAt
+  created_at                DateTime              @default(now())
+  updated_at                DateTime              @updatedAt
 
   invoice_lines ServiceBillingInvoiceLine[]
 
@@ -978,27 +977,27 @@ model ServiceBillingCharge {
 }
 
 model ServiceBillingInvoice {
-  id                String   @id @default(cuid())
+  id                String                @id @default(cuid())
   page_id           String
-  page              Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page              Page                  @relation(fields: [page_id], references: [id], onDelete: Cascade)
   account_id        String
   account           ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
   number            String
-  status            String   @default("open")
-  currency          String   @default("KRW")
+  status            String                @default("open")
+  currency          String                @default("KRW")
   subtotal_cents    Int
   tax_cents         Int
-  adjustment_cents  Int      @default(0)
+  adjustment_cents  Int                   @default(0)
   total_cents       Int
-  amount_paid_cents Int      @default(0)
+  amount_paid_cents Int                   @default(0)
   due_at            DateTime?
   paid_at           DateTime?
   period_start      DateTime?
   period_end        DateTime?
   external_ref      String?
   metadata          Json?
-  created_at        DateTime @default(now())
-  updated_at        DateTime @updatedAt
+  created_at        DateTime              @default(now())
+  updated_at        DateTime              @updatedAt
 
   lines       ServiceBillingInvoiceLine[]
   settlements ServiceBillingSettlement[]
@@ -1008,52 +1007,52 @@ model ServiceBillingInvoice {
 }
 
 model ServiceBillingInvoiceLine {
-  id              String   @id @default(cuid())
-  page_id         String
-  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  invoice_id      String
-  invoice         ServiceBillingInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
-  plan_id         String?
-  plan            ServiceBillingPlan? @relation(fields: [plan_id], references: [id], onDelete: SetNull)
-  subscription_id String?
-  subscription    ServiceBillingSubscription? @relation(fields: [subscription_id], references: [id], onDelete: SetNull)
-  usage_record_id String?
-  usage_record    ServiceBillingUsageRecord? @relation(fields: [usage_record_id], references: [id], onDelete: SetNull)
-  charge_id       String?
-  charge          ServiceBillingCharge? @relation(fields: [charge_id], references: [id], onDelete: SetNull)
-  kind            String
-  description     String
-  quantity        Float    @default(1)
+  id                String                      @id @default(cuid())
+  page_id           String
+  page              Page                        @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  invoice_id        String
+  invoice           ServiceBillingInvoice       @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  plan_id           String?
+  plan              ServiceBillingPlan?         @relation(fields: [plan_id], references: [id], onDelete: SetNull)
+  subscription_id   String?
+  subscription      ServiceBillingSubscription? @relation(fields: [subscription_id], references: [id], onDelete: SetNull)
+  usage_record_id   String?
+  usage_record      ServiceBillingUsageRecord?  @relation(fields: [usage_record_id], references: [id], onDelete: SetNull)
+  charge_id         String?
+  charge            ServiceBillingCharge?       @relation(fields: [charge_id], references: [id], onDelete: SetNull)
+  kind              String
+  description       String
+  quantity          Float                       @default(1)
   unit_amount_cents Int
-  amount_cents    Int
-  currency        String   @default("KRW")
-  metadata        Json?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  amount_cents      Int
+  currency          String                      @default("KRW")
+  metadata          Json?
+  created_at        DateTime                    @default(now())
+  updated_at        DateTime                    @updatedAt
 
   @@index([page_id, invoice_id])
   @@index([invoice_id, kind])
 }
 
 model ServiceBillingSettlement {
-  id             String   @id @default(cuid())
+  id             String                @id @default(cuid())
   page_id        String
-  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page           Page                  @relation(fields: [page_id], references: [id], onDelete: Cascade)
   account_id     String
   account        ServiceBillingAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
   invoice_id     String
   invoice        ServiceBillingInvoice @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
   recipient_type String
   recipient_key  String
-  currency       String   @default("KRW")
+  currency       String                @default("KRW")
   gross_cents    Int
   fee_cents      Int
   net_cents      Int
-  status         String   @default("settled")
+  status         String                @default("settled")
   settled_at     DateTime?
   metadata       Json?
-  created_at     DateTime @default(now())
-  updated_at     DateTime @updatedAt
+  created_at     DateTime              @default(now())
+  updated_at     DateTime              @updatedAt
 
   @@index([page_id, account_id, created_at])
   @@index([page_id, invoice_id])
@@ -1083,9 +1082,9 @@ model ServicePolicyRule {
 }
 
 model ServicePolicyApprovalRequest {
-  id                       String   @id @default(cuid())
+  id                       String             @id @default(cuid())
   page_id                  String
-  page                     Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page                     Page               @relation(fields: [page_id], references: [id], onDelete: Cascade)
   rule_id                  String?
   rule                     ServicePolicyRule? @relation(fields: [rule_id], references: [id], onDelete: SetNull)
   action_key               String
@@ -1093,7 +1092,7 @@ model ServicePolicyApprovalRequest {
   subject_key              String
   subject_label            String?
   target_key               String?
-  status                   String   @default("requested")
+  status                   String             @default("requested")
   note                     String?
   context                  Json?
   requested_by_user_id     String?
@@ -1101,17 +1100,17 @@ model ServicePolicyApprovalRequest {
   decided_by_user_id       String?
   decided_at               DateTime?
   expires_at               DateTime?
-  created_at               DateTime @default(now())
-  updated_at               DateTime @updatedAt
+  created_at               DateTime           @default(now())
+  updated_at               DateTime           @updatedAt
 
   @@index([page_id, subject_key, action_key, resource_type, status])
   @@index([page_id, rule_id, status])
 }
 
 model ServicePolicyOverride {
-  id            String   @id @default(cuid())
+  id            String             @id @default(cuid())
   page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page          Page               @relation(fields: [page_id], references: [id], onDelete: Cascade)
   rule_id       String?
   rule          ServicePolicyRule? @relation(fields: [rule_id], references: [id], onDelete: SetNull)
   key           String
@@ -1120,33 +1119,33 @@ model ServicePolicyOverride {
   action_key    String?
   resource_type String?
   reason        String?
-  enabled       Boolean  @default(true)
+  enabled       Boolean            @default(true)
   expires_at    DateTime?
   metadata      Json?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  created_at    DateTime           @default(now())
+  updated_at    DateTime           @updatedAt
 
   @@unique([page_id, key])
   @@index([page_id, subject_key, enabled, expires_at])
 }
 
 model ServiceRiskIncident {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   page_id      String
-  page         Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page         Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
   key          String
   subject_key  String
   category     String
   source_type  String
   source_id    String?
-  status       String   @default("open")
-  score        Float    @default(0)
-  signal_count Int      @default(1)
+  status       String    @default("open")
+  score        Float     @default(0)
+  signal_count Int       @default(1)
   detail       Json?
   metadata     Json?
   resolved_at  DateTime?
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
 
   sanctions ServiceRiskSanction[]
 
@@ -1156,9 +1155,9 @@ model ServiceRiskIncident {
 }
 
 model ServiceRiskSanction {
-  id            String   @id @default(cuid())
+  id            String               @id @default(cuid())
   page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page          Page                 @relation(fields: [page_id], references: [id], onDelete: Cascade)
   incident_id   String?
   incident      ServiceRiskIncident? @relation(fields: [incident_id], references: [id], onDelete: SetNull)
   key           String
@@ -1166,14 +1165,14 @@ model ServiceRiskSanction {
   sanction_type String
   action_key    String?
   resource_type String?
-  status        String   @default("active")
+  status        String               @default("active")
   reason        String?
   metadata      Json?
-  starts_at     DateTime @default(now())
+  starts_at     DateTime             @default(now())
   expires_at    DateTime?
   released_at   DateTime?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  created_at    DateTime             @default(now())
+  updated_at    DateTime             @updatedAt
 
   @@unique([page_id, key])
   @@index([page_id, subject_key, status, expires_at])
@@ -1220,21 +1219,21 @@ model ServiceGeoRegion {
 }
 
 model ServiceGeoRouteCache {
-  id            String   @id @default(cuid())
-  page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  key           String
-  origin_lat    Float
-  origin_lng    Float
+  id              String   @id @default(cuid())
+  page_id         String
+  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key             String
+  origin_lat      Float
+  origin_lng      Float
   destination_lat Float
   destination_lng Float
-  distance_m    Int
-  duration_sec  Int
-  provider      String   @default("local")
-  geometry      Json?
-  metadata      Json?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  distance_m      Int
+  duration_sec    Int
+  provider        String   @default("local")
+  geometry        Json?
+  metadata        Json?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
 
   @@unique([page_id, key])
   @@index([page_id, provider, updated_at])
@@ -1264,24 +1263,24 @@ model Comment {
 }
 
 model PageVersion {
-  id          String   @id @default(cuid())
-  page_id     String
-  page        Page     @relation("PageVersions", fields: [page_id], references: [id])
-  current_for Page?    @relation("CurrentPageVersion")
+  id           String   @id @default(cuid())
+  page_id      String
+  page         Page     @relation("PageVersions", fields: [page_id], references: [id])
+  current_for  Page?    @relation("CurrentPageVersion")
   content_json Json
-  created_at  DateTime @default(now())
+  created_at   DateTime @default(now())
 
   @@index([page_id, created_at])
 }
 
 model LiveSession {
-  id          String  @id @default(cuid())
-  session_id  String  @unique
+  id          String    @id @default(cuid())
+  session_id  String    @unique
   page_id     String
-  page        Page    @relation(fields: [page_id], references: [id])
+  page        Page      @relation(fields: [page_id], references: [id])
   viewer_id   String?
-  viewer      User?   @relation(fields: [viewer_id], references: [id])
-  started_at  DateTime @default(now())
+  viewer      User?     @relation(fields: [viewer_id], references: [id])
+  started_at  DateTime  @default(now())
   ended_at    DateTime?
   duration_ms Int?
   last_x      Float?
@@ -1289,8 +1288,8 @@ model LiveSession {
   referrer    String?
   viewport_w  Int?
   viewport_h  Int?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
   events      Event[]
 
   @@index([page_id, started_at])
@@ -1320,12 +1319,12 @@ model Event {
 }
 
 model DailyPageStats {
-  id        String   @id @default(cuid())
-  page_id   String
-  page      Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  date      DateTime @db.Date
-  visits    Int      @default(0)
-  clicks    Int      @default(0)
+  id         String   @id @default(cuid())
+  page_id    String
+  page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  date       DateTime @db.Date
+  visits     Int      @default(0)
+  clicks     Int      @default(0)
   created_at DateTime @default(now())
 
   @@unique([page_id, date])
@@ -1337,7 +1336,7 @@ model Segment {
   page_id    String
   page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
   name       String
-  conditions Json     // { op: "and"|"or", rules: [{ type, value, not?: boolean }] }
+  conditions Json // { op: "and"|"or", rules: [{ type, value, not?: boolean }] }
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -1364,7 +1363,7 @@ model GhostTrace {
 model GhostPoint {
   id             String     @id @default(cuid())
   ghost_trace_id String
-  ghost_trace    GhostTrace  @relation(fields: [ghost_trace_id], references: [id], onDelete: Cascade)
+  ghost_trace    GhostTrace @relation(fields: [ghost_trace_id], references: [id], onDelete: Cascade)
   seq            Int
   t              Float
   x              Float
@@ -1388,13 +1387,13 @@ model Upvote {
 }
 
 model Report {
-  id         String       @id @default(cuid())
-  page_id    String
-  page       Page         @relation(fields: [page_id], references: [id])
-  user_id    String?
-  user       User?        @relation(fields: [user_id], references: [id])
-  reason     String?
-  status     ReportStatus @default(open)
+  id      String       @id @default(cuid())
+  page_id String
+  page    Page         @relation(fields: [page_id], references: [id])
+  user_id String?
+  user    User?        @relation(fields: [user_id], references: [id])
+  reason  String?
+  status  ReportStatus @default(open)
 
   // Step 7 handling metadata
   action              ReportAction @default(none)
@@ -1403,7 +1402,7 @@ model Report {
   handled_by_admin_id String?
   handled_by_admin    AdminUser?   @relation("ReportHandledBy", fields: [handled_by_admin_id], references: [id])
 
-  created_at DateTime @default(now())
+  created_at DateTime      @default(now())
   abuses     ReportAbuse[]
 
   @@index([page_id, status])
@@ -1432,28 +1431,28 @@ model AdminUser {
   updated_at    DateTime  @updatedAt
 
   sessions        AdminSession[]
-  handled_reports Report[]      @relation("ReportHandledBy")
-  hidden_pages    Page[]        @relation("PageHiddenBy")
-  forced_pages    Page[]        @relation("PageForcedBy")
+  handled_reports Report[]        @relation("ReportHandledBy")
+  hidden_pages    Page[]          @relation("PageHiddenBy")
+  forced_pages    Page[]          @relation("PageForcedBy")
   ip_blocks       IpBlock[]
   audit_logs      AdminAuditLog[] @relation("AdminAuditLogAdmin")
 }
 
 model AdminSession {
-  id          String   @id @default(cuid())
-  admin_id    String
-  admin       AdminUser @relation(fields: [admin_id], references: [id])
-  token_hash  String   @unique
-  ip_hash     String?
-  created_at  DateTime @default(now())
-  last_seen_at DateTime @default(now())
-  expires_at  DateTime
+  id           String    @id @default(cuid())
+  admin_id     String
+  admin        AdminUser @relation(fields: [admin_id], references: [id])
+  token_hash   String    @unique
+  ip_hash      String?
+  created_at   DateTime  @default(now())
+  last_seen_at DateTime  @default(now())
+  expires_at   DateTime
 
   @@index([admin_id, expires_at])
 }
 
 model AdminAuditLog {
-  id          String    @id @default(cuid())
+  id          String     @id @default(cuid())
   admin_id    String?
   admin       AdminUser? @relation("AdminAuditLogAdmin", fields: [admin_id], references: [id])
   action      String
@@ -1462,20 +1461,20 @@ model AdminAuditLog {
   ip_hash     String?
   user_agent  String?
   meta        Json?
-  created_at  DateTime  @default(now())
+  created_at  DateTime   @default(now())
 
   @@index([admin_id, created_at])
   @@index([action, created_at])
 }
 
 model IpBlock {
-  id                 String   @id @default(cuid())
-  ip_hash            String   @unique
-  reason             String?
+  id                  String     @id @default(cuid())
+  ip_hash             String     @unique
+  reason              String?
   created_by_admin_id String?
-  created_by_admin   AdminUser? @relation(fields: [created_by_admin_id], references: [id])
-  created_at         DateTime @default(now())
-  expires_at         DateTime?
+  created_by_admin    AdminUser? @relation(fields: [created_by_admin_id], references: [id])
+  created_at          DateTime   @default(now())
+  expires_at          DateTime?
 
   @@index([expires_at])
 }
@@ -1487,31 +1486,31 @@ model SystemSetting {
 }
 
 model AppCollection {
-  id        String   @id @default(cuid())
-  page_id   String
-  page      Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  slug      String
-  name      String
-  strict    Boolean  @default(false)
-  fields    Json     // [{ name, type: string|number|boolean|date|json|relation, required?: boolean }]
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-  records   AppRecord[]  // AppRecord.collection_slug = slug
+  id         String      @id @default(cuid())
+  page_id    String
+  page       Page        @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  slug       String
+  name       String
+  strict     Boolean     @default(false)
+  fields     Json // [{ name, type: string|number|boolean|date|json|relation, required?: boolean }]
+  created_at DateTime    @default(now())
+  updated_at DateTime    @updatedAt
+  records    AppRecord[] // AppRecord.collection_slug = slug
 
   @@unique([page_id, slug])
   @@index([page_id])
 }
 
 model AppRecord {
-  id              String   @id @default(cuid())
+  id              String        @id @default(cuid())
   page_id         String
-  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page            Page          @relation(fields: [page_id], references: [id], onDelete: Cascade)
   collection_slug String
   data            Json
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
   app_user_id     String?
-  app_user        AppUser? @relation("AppRecordAppUser", fields: [app_user_id], references: [id], onDelete: SetNull)
+  app_user        AppUser?      @relation("AppRecordAppUser", fields: [app_user_id], references: [id], onDelete: SetNull)
   collection      AppCollection @relation(fields: [page_id, collection_slug], references: [page_id, slug], onDelete: Cascade)
 
   @@index([page_id, collection_slug])
@@ -1521,19 +1520,19 @@ model AppRecord {
 }
 
 model AppRecordVersion {
-  id              String   @id @default(cuid())
-  page_id         String
-  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  record_id       String
-  collection_slug String
-  action          String   // created | updated | deleted
-  data            Json
-  actor_user_id   String?
-  actor_user      User?    @relation("AppRecordVersionActorUser", fields: [actor_user_id], references: [id])
+  id                String   @id @default(cuid())
+  page_id           String
+  page              Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  record_id         String
+  collection_slug   String
+  action            String // created | updated | deleted
+  data              Json
+  actor_user_id     String?
+  actor_user        User?    @relation("AppRecordVersionActorUser", fields: [actor_user_id], references: [id])
   actor_app_user_id String?
-  actor_app_user  AppUser? @relation("AppRecordVersionActorAppUser", fields: [actor_app_user_id], references: [id])
-  actor_anon_id   String?
-  created_at      DateTime @default(now())
+  actor_app_user    AppUser? @relation("AppRecordVersionActorAppUser", fields: [actor_app_user_id], references: [id])
+  actor_anon_id     String?
+  created_at        DateTime @default(now())
 
   @@index([page_id, record_id, created_at])
   @@index([page_id, collection_slug])
@@ -1542,28 +1541,28 @@ model AppRecordVersion {
 }
 
 model AppUser {
-  id            String   @id @default(cuid())
-  page_id       String
-  page          Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  email         String
-  password_hash String
-  display_name  String?
-  avatar_url    String?
-  role          String   @default("user")
-  metadata      Json?
-  otp_enabled   Boolean  @default(false)
-  otp_secret    String?
+  id               String    @id @default(cuid())
+  page_id          String
+  page             Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  email            String
+  password_hash    String
+  display_name     String?
+  avatar_url       String?
+  role             String    @default("user")
+  metadata         Json?
+  otp_enabled      Boolean   @default(false)
+  otp_secret       String?
   otp_backup_codes Json?
   otp_last_used_at DateTime?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
 
-  sessions      AppSession[]
-  records       AppRecord[] @relation("AppRecordAppUser")
-  app_record_versions AppRecordVersion[] @relation("AppRecordVersionActorAppUser")
+  sessions              AppSession[]
+  records               AppRecord[]          @relation("AppRecordAppUser")
+  app_record_versions   AppRecordVersion[]   @relation("AppRecordVersionActorAppUser")
   app_workflow_versions AppWorkflowVersion[] @relation("AppWorkflowVersionActorAppUser")
-  app_audit_logs AppAuditLog[] @relation("AppAuditActorAppUser")
-  sso_accounts AppSsoAccount[]
+  app_audit_logs        AppAuditLog[]        @relation("AppAuditActorAppUser")
+  sso_accounts          AppSsoAccount[]
 
   @@unique([page_id, email])
   @@index([page_id])
@@ -1583,48 +1582,220 @@ model AppSession {
   @@index([app_user_id])
 }
 
-model AppSsoConnection {
-  id          String          @id @default(cuid())
-  page_id     String
-  page        Page            @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  provider    AppSsoProvider
-  name        String
-  enabled     Boolean         @default(true)
-  issuer      String?
-  client_id   String?
-  client_secret String?
-  authorization_url String?
-  token_url   String?
-  metadata_url String?
-  certificate_pem String?
-  entity_id   String?
-  acs_url     String?
-  sign_requests Boolean       @default(false)
-  auto_provision Boolean      @default(false)
-  allow_unlinked Boolean      @default(false)
-  default_role String?
-  created_at  DateTime        @default(now())
-  updated_at  DateTime        @updatedAt
+model MessengerUser {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  handle         String   @unique
+  password_hash  String
+  display_name   String
+  avatar_url     String?
+  status_message String?
+  accent         String   @default("#111827")
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
 
-  accounts    AppSsoAccount[]
+  sessions                 MessengerSession[]
+  sent_friend_requests     MessengerFriendRequest[]      @relation("MessengerFriendRequestRequester")
+  received_friend_requests MessengerFriendRequest[]      @relation("MessengerFriendRequestReceiver")
+  friendships_as_a         MessengerFriendship[]         @relation("MessengerFriendshipA")
+  friendships_as_b         MessengerFriendship[]         @relation("MessengerFriendshipB")
+  conversation_memberships MessengerConversationMember[]
+  messages                 MessengerMessage[]
+  notifications            MessengerNotification[]
+  calls_started            MessengerCall[]               @relation("MessengerCallCaller")
+  calls_received           MessengerCall[]               @relation("MessengerCallReceiver")
+
+  @@index([handle])
+  @@index([display_name])
+}
+
+model MessengerSession {
+  id         String        @id @default(cuid())
+  token      String        @unique
+  user_id    String
+  user       MessengerUser @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  expires_at DateTime
+  created_at DateTime      @default(now())
+
+  @@index([token])
+  @@index([user_id])
+}
+
+model MessengerFriendRequest {
+  id           String   @id @default(cuid())
+  requester_id String
+  receiver_id  String
+  status       String   @default("pending")
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  requester MessengerUser @relation("MessengerFriendRequestRequester", fields: [requester_id], references: [id], onDelete: Cascade)
+  receiver  MessengerUser @relation("MessengerFriendRequestReceiver", fields: [receiver_id], references: [id], onDelete: Cascade)
+
+  @@unique([requester_id, receiver_id])
+  @@index([receiver_id, status])
+  @@index([requester_id, status])
+}
+
+model MessengerFriendship {
+  id         String   @id @default(cuid())
+  user_a_id  String
+  user_b_id  String
+  nickname_a String?
+  nickname_b String?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user_a MessengerUser @relation("MessengerFriendshipA", fields: [user_a_id], references: [id], onDelete: Cascade)
+  user_b MessengerUser @relation("MessengerFriendshipB", fields: [user_b_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_a_id, user_b_id])
+  @@index([user_a_id])
+  @@index([user_b_id])
+}
+
+model MessengerConversation {
+  id              String    @id @default(cuid())
+  type            String    @default("direct")
+  title           String?
+  avatar_url      String?
+  created_by_id   String?
+  last_message_at DateTime?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  members  MessengerConversationMember[]
+  messages MessengerMessage[]
+  calls    MessengerCall[]
+
+  @@index([last_message_at])
+  @@index([created_by_id])
+}
+
+model MessengerConversationMember {
+  id                   String    @id @default(cuid())
+  conversation_id      String
+  user_id              String
+  role                 String    @default("member")
+  nickname             String?
+  last_read_message_id String?
+  last_read_at         DateTime?
+  muted_at             DateTime?
+  joined_at            DateTime  @default(now())
+
+  conversation MessengerConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+  user         MessengerUser         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([conversation_id, user_id])
+  @@index([user_id])
+  @@index([conversation_id])
+}
+
+model MessengerMessage {
+  id              String    @id @default(cuid())
+  conversation_id String
+  sender_id       String
+  body            String
+  kind            String    @default("text")
+  meta            Json?
+  created_at      DateTime  @default(now())
+  edited_at       DateTime?
+  deleted_at      DateTime?
+
+  conversation  MessengerConversation   @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+  sender        MessengerUser           @relation(fields: [sender_id], references: [id], onDelete: Cascade)
+  notifications MessengerNotification[]
+
+  @@index([conversation_id, created_at])
+  @@index([sender_id, created_at])
+}
+
+model MessengerNotification {
+  id              String    @id @default(cuid())
+  user_id         String
+  conversation_id String?
+  message_id      String?
+  call_id         String?
+  type            String
+  title           String
+  body            String?
+  read_at         DateTime?
+  created_at      DateTime  @default(now())
+
+  user    MessengerUser     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  message MessengerMessage? @relation(fields: [message_id], references: [id], onDelete: SetNull)
+  call    MessengerCall?    @relation(fields: [call_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, read_at, created_at])
+  @@index([conversation_id, created_at])
+}
+
+model MessengerCall {
+  id              String    @id @default(cuid())
+  conversation_id String
+  caller_id       String
+  receiver_id     String?
+  status          String    @default("ringing")
+  offer           Json?
+  answer          Json?
+  started_at      DateTime  @default(now())
+  answered_at     DateTime?
+  ended_at        DateTime?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  conversation  MessengerConversation   @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+  caller        MessengerUser           @relation("MessengerCallCaller", fields: [caller_id], references: [id], onDelete: Cascade)
+  receiver      MessengerUser?          @relation("MessengerCallReceiver", fields: [receiver_id], references: [id], onDelete: SetNull)
+  notifications MessengerNotification[]
+
+  @@index([conversation_id, status])
+  @@index([caller_id, created_at])
+  @@index([receiver_id, created_at])
+}
+
+model AppSsoConnection {
+  id                String         @id @default(cuid())
+  page_id           String
+  page              Page           @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  provider          AppSsoProvider
+  name              String
+  enabled           Boolean        @default(true)
+  issuer            String?
+  client_id         String?
+  client_secret     String?
+  authorization_url String?
+  token_url         String?
+  metadata_url      String?
+  certificate_pem   String?
+  entity_id         String?
+  acs_url           String?
+  sign_requests     Boolean        @default(false)
+  auto_provision    Boolean        @default(false)
+  allow_unlinked    Boolean        @default(false)
+  default_role      String?
+  created_at        DateTime       @default(now())
+  updated_at        DateTime       @updatedAt
+
+  accounts AppSsoAccount[]
 
   @@unique([page_id, provider, name])
   @@index([page_id, provider])
 }
 
 model AppSsoAccount {
-  id           String          @id @default(cuid())
-  page_id      String
-  page         Page            @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  id            String           @id @default(cuid())
+  page_id       String
+  page          Page             @relation(fields: [page_id], references: [id], onDelete: Cascade)
   connection_id String
-  connection   AppSsoConnection @relation(fields: [connection_id], references: [id], onDelete: Cascade)
-  app_user_id  String
-  app_user     AppUser         @relation(fields: [app_user_id], references: [id], onDelete: Cascade)
-  provider     AppSsoProvider
-  subject      String
-  email        String?
-  created_at   DateTime        @default(now())
-  updated_at   DateTime        @updatedAt
+  connection    AppSsoConnection @relation(fields: [connection_id], references: [id], onDelete: Cascade)
+  app_user_id   String
+  app_user      AppUser          @relation(fields: [app_user_id], references: [id], onDelete: Cascade)
+  provider      AppSsoProvider
+  subject       String
+  email         String?
+  created_at    DateTime         @default(now())
+  updated_at    DateTime         @updatedAt
 
   @@unique([connection_id, subject])
   @@index([page_id, app_user_id])
@@ -1632,11 +1803,11 @@ model AppSsoAccount {
 }
 
 model AppSecret {
-  id        String   @id @default(cuid())
-  page_id   String
-  page      Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  key       String
-  value     String
+  id         String   @id @default(cuid())
+  page_id    String
+  page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key        String
+  value      String
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -1649,8 +1820,8 @@ model AppWorkflow {
   page_id    String
   page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
   name       String
-  trigger    Json     // WorkflowTrigger
-  steps      Json     // WorkflowStep[]
+  trigger    Json // WorkflowTrigger
+  steps      Json // WorkflowStep[]
   enabled    Boolean  @default(true)
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -1659,21 +1830,21 @@ model AppWorkflow {
 }
 
 model AppWorkflowVersion {
-  id              String   @id @default(cuid())
-  page_id         String
-  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  workflow_id     String
-  name            String
-  trigger         Json
-  steps           Json
-  enabled         Boolean
-  version         Int
-  actor_user_id   String?
-  actor_user      User?    @relation("AppWorkflowVersionActorUser", fields: [actor_user_id], references: [id])
+  id                String   @id @default(cuid())
+  page_id           String
+  page              Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  workflow_id       String
+  name              String
+  trigger           Json
+  steps             Json
+  enabled           Boolean
+  version           Int
+  actor_user_id     String?
+  actor_user        User?    @relation("AppWorkflowVersionActorUser", fields: [actor_user_id], references: [id])
   actor_app_user_id String?
-  actor_app_user  AppUser? @relation("AppWorkflowVersionActorAppUser", fields: [actor_app_user_id], references: [id])
-  actor_anon_id   String?
-  created_at      DateTime @default(now())
+  actor_app_user    AppUser? @relation("AppWorkflowVersionActorAppUser", fields: [actor_app_user_id], references: [id])
+  actor_anon_id     String?
+  created_at        DateTime @default(now())
 
   @@index([page_id, workflow_id, version])
   @@index([page_id, created_at])
@@ -1721,14 +1892,14 @@ model PageAuditLog {
 }
 
 model AppWorkflowLog {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   workflow_id String
   page_id     String
-  status      String   // "success" | "error" | "running"
+  status      String // "success" | "error" | "running"
   input       Json?
   output      Json?
   error       String?
-  started_at  DateTime @default(now())
+  started_at  DateTime  @default(now())
   finished_at DateTime?
 
   @@index([workflow_id])
@@ -1789,16 +1960,16 @@ model KanbanColumn {
 }
 
 model KanbanCard {
-  id         String        @id @default(cuid())
+  id         String       @id @default(cuid())
   page_id    String
-  page       Page          @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  page       Page         @relation(fields: [page_id], references: [id], onDelete: Cascade)
   column_id  String
-  column     KanbanColumn  @relation(fields: [column_id], references: [id], onDelete: Cascade)
+  column     KanbanColumn @relation(fields: [column_id], references: [id], onDelete: Cascade)
   title      String
   body       String?
-  sort_order Int           @default(0)
-  created_at DateTime      @default(now())
-  updated_at DateTime      @updatedAt
+  sort_order Int          @default(0)
+  created_at DateTime     @default(now())
+  updated_at DateTime     @updatedAt
 
   @@index([page_id, column_id, sort_order])
 }
@@ -1817,11 +1988,11 @@ model Note {
 }
 
 model PageSetting {
-  id        String   @id @default(cuid())
-  page_id   String
-  page      Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  key       String
-  value     Json
+  id         String   @id @default(cuid())
+  page_id    String
+  page       Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  key        String
+  value      Json
   updated_at DateTime @default(now()) @updatedAt
 
   @@unique([page_id, key])
@@ -1829,49 +2000,47 @@ model PageSetting {
 }
 
 model PageDomain {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   page_id         String
-  page            Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  domain          String   @unique
-  status          String   @default("pending")
+  page            Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  domain          String    @unique
+  status          String    @default("pending")
   verified_at     DateTime?
-  force_https     Boolean  @default(false)
-  redirect_www    Boolean  @default(false)
+  force_https     Boolean   @default(false)
+  redirect_www    Boolean   @default(false)
   last_checked_at DateTime?
   last_error      String?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
 
   @@index([page_id])
 }
 
 model PageNotification {
-  id          String    @id @default(cuid())
-  page_id     String
-  page        Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  id                String    @id @default(cuid())
+  page_id           String
+  page              Page      @relation(fields: [page_id], references: [id], onDelete: Cascade)
   recipient_user_id String?
   recipient_anon_id String?
-  type        String    // mention, comment_reply, chat_mention, etc.
-  ref_id      String?   // comment_id, chat_message_id
-  title       String?
-  body        String?
-  read_at     DateTime?
-  created_at  DateTime  @default(now())
+  type              String // mention, comment_reply, chat_mention, etc.
+  ref_id            String? // comment_id, chat_message_id
+  title             String?
+  body              String?
+  read_at           DateTime?
+  created_at        DateTime  @default(now())
 
   @@index([page_id, recipient_user_id, read_at])
   @@index([page_id, recipient_anon_id, read_at])
 }
 
 model CallState {
-  id           String   @id @default(cuid())
-  page_id      String
-  page         Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
-  participant_id String  // anon_id or user_id
-  status       String   // idle, ringing, in_call, ended
-  updated_at   DateTime @default(now()) @updatedAt
+  id             String   @id @default(cuid())
+  page_id        String
+  page           Page     @relation(fields: [page_id], references: [id], onDelete: Cascade)
+  participant_id String // anon_id or user_id
+  status         String // idle, ringing, in_call, ended
+  updated_at     DateTime @default(now()) @updatedAt
 
   @@unique([page_id, participant_id])
   @@index([page_id])
 }
-
-
