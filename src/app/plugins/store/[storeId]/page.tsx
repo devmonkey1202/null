@@ -21,9 +21,9 @@ export default async function PluginStoreDetailPage({ params }: Props) {
   const permissions = (plugin.permissions ?? []).map((permission) => PERMISSION_LABELS[permission] ?? permission);
 
   return (
-    <main className="min-h-screen bg-[#F5F7FB] px-6 py-10 text-slate-900">
+    <main className="market-store-shell min-h-screen px-6 py-10 text-slate-900">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-        <section className="overflow-hidden rounded-[32px] border border-[#D7E0F8] bg-[radial-gradient(circle_at_top_left,_rgba(125,211,252,0.18),_transparent_34%),linear-gradient(135deg,#0F172A_0%,#172554_52%,#1D4ED8_100%)] p-8 text-white shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
+        <section className="market-detail-hero overflow-hidden rounded-[32px] border border-[#D7E0F8] bg-[radial-gradient(circle_at_top_left,_rgba(125,211,252,0.18),_transparent_34%),linear-gradient(135deg,#0F172A_0%,#172554_52%,#1D4ED8_100%)] p-8 text-white shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-medium text-blue-50">
               {CATEGORY_LABELS[plugin.category]}

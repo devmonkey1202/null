@@ -10,7 +10,13 @@ type NavItem = {
 };
 
 function shouldHideNavigation(pathname: string | null) {
-  return pathname?.startsWith("/editor") ?? false;
+  if (!pathname) return false;
+  return (
+    pathname.startsWith("/editor") ||
+    pathname.startsWith("/p/") ||
+    pathname.startsWith("/live/") ||
+    pathname.startsWith("/replay/")
+  );
 }
 
 function getOpsRoot(pathname: string) {

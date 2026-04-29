@@ -17,9 +17,9 @@ export default async function WidgetStoreDetailPage({ params }: Props) {
   if (!widget) notFound();
 
   return (
-    <main className="min-h-screen bg-[#F5F7FB] px-6 py-10 text-slate-900">
+    <main className="market-store-shell min-h-screen px-6 py-10 text-slate-900">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-        <section className="overflow-hidden rounded-[32px] border border-[#D8E3F5] bg-[radial-gradient(circle_at_top_left,_rgba(45,212,191,0.2),_transparent_34%),linear-gradient(135deg,#0F172A_0%,#115E59_52%,#0891B2_100%)] p-8 text-white shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
+        <section className="market-detail-hero overflow-hidden rounded-[32px] border border-[#D8E3F5] bg-[radial-gradient(circle_at_top_left,_rgba(45,212,191,0.2),_transparent_34%),linear-gradient(135deg,#0F172A_0%,#115E59_52%,#0891B2_100%)] p-8 text-white shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-medium text-cyan-50">
               {CATEGORY_LABELS[widget.category]}

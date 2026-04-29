@@ -7,7 +7,14 @@ import ThemeToggle from "@/components/theme-toggle";
 
 export default function ConditionalFooter() {
   const pathname = usePathname();
-  if (pathname?.startsWith("/editor")) return null;
+  if (
+    pathname?.startsWith("/editor") ||
+    pathname?.startsWith("/p/") ||
+    pathname?.startsWith("/live/") ||
+    pathname?.startsWith("/replay/")
+  ) {
+    return null;
+  }
 
   return (
     <footer className="border-t border-black/[0.06] bg-white py-5 text-center text-xs text-[#666666]">
