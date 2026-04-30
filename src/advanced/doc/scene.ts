@@ -1485,6 +1485,24 @@ export function hydrateDoc(raw: unknown): Doc {
 
   const base = createDoc();
   const nodes = r.nodes && typeof r.nodes === "object" ? (r.nodes as Record<string, Node>) : base.nodes;
+  const rawVariableModes = Array.isArray(r.variableModes) ? (r.variableModes as unknown[]) : null;
+  const variableModes = rawVariableModes
+    ? rawVariableModes
+        .map((mode) => {
+          if (typeof mode === "string") return mode;
+          if (mode && typeof mode === "object") {
+            const namedMode = mode as { name?: unknown; id?: unknown };
+            if (typeof namedMode.name === "string" && namedMode.name.trim()) return namedMode.name;
+            if (typeof namedMode.id === "string" && namedMode.id.trim()) return namedMode.id;
+          }
+          return "";
+        })
+        .filter(Boolean)
+    : base.variableModes ?? ["기본"];
+  const variableMode =
+    typeof r.variableMode === "string" && r.variableMode.trim()
+      ? r.variableMode
+      : variableModes[0] ?? base.variableMode;
 
   return {
     ...base,
@@ -1502,6 +1520,8 @@ export function hydrateDoc(raw: unknown): Doc {
     branchReviews: Array.isArray(r.branchReviews) ? (r.branchReviews as Doc["branchReviews"]) : base.branchReviews,
     libraries: Array.isArray(r.libraries) ? (r.libraries as Doc["libraries"]) : base.libraries,
     imports: r.imports && typeof r.imports === "object" ? (r.imports as Doc["imports"]) : base.imports,
+    variableModes,
+    variableMode,
     prototype: r.prototype && typeof r.prototype === "object" ? (r.prototype as DocPrototype) : base.prototype,
   };
 }

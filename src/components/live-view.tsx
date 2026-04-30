@@ -22,6 +22,7 @@ const MOVE_THROTTLE_MAX_MS = 166;
 const MOVE_THROTTLE_DEFAULT_MS = 100;
 const SPEED_SLOW_PER_MS = 0.0005;
 const SPEED_FAST_PER_MS = 0.005;
+const RUNTIME_PAGE_SWITCHER_ENABLED = false;
 
 function safeNumber(value: unknown) {
   return typeof value === "number" && !Number.isNaN(value) ? value : null;
@@ -446,7 +447,7 @@ export default function LiveView({ pageId }: { pageId: string }) {
           </div>
         </header>
 
-        {advancedPages.length > 1 ? (
+        {RUNTIME_PAGE_SWITCHER_ENABLED && advancedPages.length > 1 ? (
           <section className="rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 py-3 shadow-[0_2px_8px_rgba(0,0,0,0.03)]">
             <div className="mb-2 text-[11px] font-semibold text-[#64748B]">페이지 전환</div>
             <div className="flex flex-wrap gap-2">

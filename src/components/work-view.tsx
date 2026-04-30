@@ -26,6 +26,7 @@ const MOVE_THROTTLE_MAX_MS = 166;
 const MOVE_THROTTLE_DEFAULT_MS = 100;
 const SPEED_SLOW_PER_MS = 0.0005;
 const SPEED_FAST_PER_MS = 0.005;
+const RUNTIME_PAGE_SWITCHER_ENABLED = false;
 
 function safeNumber(value: unknown) {
   return typeof value === "number" && !Number.isNaN(value) ? value : null;
@@ -716,27 +717,6 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
     return (
       <div className="min-h-screen overflow-auto bg-[#F8FAFC]">
         <div className="flex min-h-full w-full flex-col items-center justify-start px-4 py-6">
-          {advancedPages.length > 1 ? (
-            <div className="mb-4 flex w-full max-w-[1680px] flex-wrap gap-2 rounded-[18px] border border-[#E2E8F0] bg-white/90 p-3 shadow-[0_10px_28px_rgba(15,23,42,0.06)] backdrop-blur">
-              {advancedPages.map((page) => {
-                const active = page.id === advancedPageId;
-                return (
-                  <button
-                    key={page.id}
-                    type="button"
-                    onClick={() => setAdvancedPageId(page.id)}
-                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                      active
-                        ? "bg-[#1D4ED8] text-white shadow-[0_8px_20px_rgba(29,78,216,0.28)]"
-                        : "border border-[#E2E8F0] bg-white text-[#334155] hover:border-[#BFDBFE] hover:text-[#1D4ED8]"
-                    }`}
-                  >
-                    {page.name}
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
           <div className="flex min-h-full w-full items-start justify-center p-0">
             {pageLoading ? (
               <div
@@ -885,7 +865,7 @@ export default function WorkView({ pageId, standalone = false }: { pageId: strin
           </div>
         </header>
 
-        {advancedPages.length > 1 ? (
+        {RUNTIME_PAGE_SWITCHER_ENABLED && advancedPages.length > 1 ? (
           <section className="rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] px-4 py-3 shadow-[0_2px_8px_rgba(0,0,0,0.03)]">
             <div className="mb-2 text-[11px] font-semibold text-[#64748B]">페이지 전환</div>
             <div className="flex flex-wrap gap-2">
