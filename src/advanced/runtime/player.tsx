@@ -4880,8 +4880,12 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
   }, [appPageId, applyVariableOverrides, chatRefetchSignal]);
 
+  const appUserLoggedIn =
+    variableOverrides["$app_user.logged_in"] === true ||
+    variableOverrides["$app_user.logged_in"] === "true";
+
   const refetchAppMessages = useCallback(async () => {
-    if (!appPageId) return false;
+    if (!appPageId || !appUserLoggedIn) return false;
 
     try {
       const res = await fetch(`/api/app/${appPageId}/messages?limit=50&orderBy=created_at&orderDir=asc`, {
@@ -4918,10 +4922,10 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     } catch {
       return false;
     }
-  }, [appPageId, applyVariableOverrides]);
+  }, [appPageId, appUserLoggedIn, applyVariableOverrides]);
 
   useEffect(() => {
-    if (!appPageId) return;
+    if (!appPageId || !appUserLoggedIn) return;
 
     let cancelled = false;
     const tick = async () => {
@@ -4935,7 +4939,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
       cancelled = true;
       clearInterval(interval);
     };
-  }, [appPageId, refetchAppMessages]);
+  }, [appPageId, appUserLoggedIn, refetchAppMessages]);
 
 
 
