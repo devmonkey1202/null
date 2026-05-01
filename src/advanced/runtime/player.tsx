@@ -4880,6 +4880,62 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
   }, [appPageId, applyVariableOverrides, chatRefetchSignal]);
 
+  const refetchAppMessages = useCallback(async () => {
+    if (!appPageId) return false;
+
+    try {
+      const res = await fetch(`/api/app/${appPageId}/messages?limit=50&orderBy=created_at&orderDir=asc`, {
+        credentials: "include",
+      });
+
+      if (!res.ok) return false;
+
+      const data = await res.json().catch(() => null);
+      const items = Array.isArray(data?.items) ? data.items : [];
+
+      if (!items.length) return false;
+
+      const sep = "|";
+      const titles = items
+        .map((item: { sender?: string; display_name?: string; email?: string }) => item.sender ?? item.display_name ?? item.email ?? "User")
+        .join(sep);
+      const messages = items
+        .map((item: { message?: string; body?: string; content?: string }) => item.message ?? item.body ?? item.content ?? "")
+        .join(sep);
+      const times = items.map((item: { created_at?: string; createdAt?: string }) => item.created_at ?? item.createdAt ?? "").join(sep);
+
+      applyVariableOverrides({
+        chat_titles: titles,
+        chat_titles_list: titles,
+        chat_previews: messages,
+        chat_messages: messages,
+        chat_times: times,
+        chatTimes: times,
+      });
+
+      return true;
+    } catch {
+      return false;
+    }
+  }, [appPageId, applyVariableOverrides]);
+
+  useEffect(() => {
+    if (!appPageId) return;
+
+    let cancelled = false;
+    const tick = async () => {
+      if (!cancelled) await refetchAppMessages();
+    };
+
+    void tick();
+    const interval = setInterval(tick, 1500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [appPageId, refetchAppMessages]);
+
 
 
   useEffect(() => {
@@ -17580,6 +17636,34 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               const sep = "|";
 
+              if (appPageId && pathname === `/api/app/${appPageId}/messages`) {
+
+                setControlTextState((prev) => {
+
+                  const next = { ...prev };
+
+                  controlRootRoles.forEach((role, rootId) => {
+
+                    if (!scopeIds.has(rootId)) return;
+
+                    if (role.type !== "input") return;
+
+                    const key = controlFields.get(rootId)?.key ?? "";
+
+                    if (key === "message" || key === "content" || key === "text") next[rootId] = "";
+
+                  });
+
+                  return next;
+
+                });
+
+                await refetchAppMessages();
+
+                onChatSent?.();
+
+              }
+
               if (pathname.includes("/chat") && appPageId) {
 
                 try {
@@ -17907,6 +17991,8 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     previewMode,
 
     pushNotice,
+
+    refetchAppMessages,
 
     resolveRequiredStatus,
 
