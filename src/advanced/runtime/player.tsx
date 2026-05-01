@@ -4896,11 +4896,12 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
       if (!items.length) return false;
 
       const sep = "|";
+      const cleanListValue = (value: string | undefined) => (value ?? "").replace(/[|,;]+/g, " ").replace(/\s+/g, " ").trim();
       const titles = items
-        .map((item: { sender?: string; display_name?: string; email?: string }) => item.sender ?? item.display_name ?? item.email ?? "User")
+        .map((item: { sender?: string; display_name?: string; email?: string }) => cleanListValue(item.sender ?? item.display_name ?? item.email ?? "User"))
         .join(sep);
       const messages = items
-        .map((item: { message?: string; body?: string; content?: string }) => item.message ?? item.body ?? item.content ?? "")
+        .map((item: { message?: string; body?: string; content?: string }) => cleanListValue(item.message ?? item.body ?? item.content ?? ""))
         .join(sep);
       const times = items.map((item: { created_at?: string; createdAt?: string }) => item.created_at ?? item.createdAt ?? "").join(sep);
 
