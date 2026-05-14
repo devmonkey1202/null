@@ -32,6 +32,113 @@ import type { Variable } from "../doc/scene";
 type CollectionCache = Record<string, Array<Record<string, unknown>>>;
 type GlobalStateValue = string | number | boolean | Record<string, unknown> | unknown[] | null;
 
+type MessengerRuntimeUser = {
+  id: string;
+  email: string;
+  handle: string;
+  displayName: string;
+  avatarUrl: string | null;
+  statusMessage: string | null;
+  accent: string;
+};
+
+type MessengerRuntimeFriend = {
+  id: string;
+  user: MessengerRuntimeUser;
+  nickname: string | null;
+  createdAt: string;
+};
+
+type MessengerRuntimeFriendRequest = {
+  id: string;
+  requester?: MessengerRuntimeUser;
+  receiver?: MessengerRuntimeUser;
+  createdAt: string;
+};
+
+type MessengerRuntimeConversationMember = {
+  id: string;
+  userId: string;
+  role: string;
+  nickname: string | null;
+  lastReadAt: string | null;
+  user: MessengerRuntimeUser;
+};
+
+type MessengerRuntimeMessage = {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  sender: MessengerRuntimeUser | null;
+  body: string;
+  kind: string;
+  createdAt: string;
+};
+
+type MessengerRuntimeConversation = {
+  id: string;
+  type: "direct" | "group" | string;
+  title: string;
+  avatarUrl: string | null;
+  members: MessengerRuntimeConversationMember[];
+  lastMessage: MessengerRuntimeMessage | null;
+  unreadCount: number;
+  lastMessageAt: string | null;
+};
+
+type MessengerRuntimeNotification = {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  conversationId: string | null;
+  readAt: string | null;
+  createdAt: string;
+};
+
+type MessengerApiError = {
+  error?: string;
+  message?: string;
+};
+
+type MessengerFriendEntry = {
+  kind: "incoming" | "outgoing" | "friend";
+  key: string;
+  requestId?: string;
+  user: MessengerRuntimeUser;
+  title: string;
+  body: string;
+  badge: string;
+};
+
+const MESSENGER_API_BASE = "/api/messenger";
+const NATIVE_MESSENGER_PAGE_IDS = new Set(["page_auth", "page_chat", "page_friends", "page_alerts", "page_settings"]);
+
+function isNativeMessengerDoc(doc: Doc | SerializableDoc) {
+  const pageIds = Array.isArray(doc.pages) ? doc.pages.map((page) => page.id) : [];
+  const hasPages = pageIds.every((pageId) => NATIVE_MESSENGER_PAGE_IDS.has(pageId));
+  const hasShells = ["auth_form", "chat_shell", "friends_shell", "alerts_shell", "settings_shell"].every((id) => Boolean(doc.nodes[id]));
+  return hasPages && hasShells;
+}
+
+function compactMessengerText(value: string | null | undefined, limit = 84) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trim()}…`;
+}
+
+function relativeMessengerTime(value: string | null | undefined) {
+  if (!value) return "";
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return "";
+  const diffMs = Date.now() - parsed;
+  if (diffMs < 60_000) return "방금";
+  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}분 전`;
+  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}시간 전`;
+  return `${Math.floor(diffMs / 86_400_000)}일 전`;
+}
+
 
 function evaluateFormula(formula: string, vars: Record<string, string | number | boolean>, allVars: Variable[], collectionCache?: CollectionCache): string | number | boolean {
 
@@ -4612,6 +4719,18 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
   const [variableOverrides, setVariableOverrides] = useState<Record<string, string | number | boolean>>(() =>
     buildVariableOverridesFromQuery(doc, initialQueryParams)
   );
+  const nativeMessenger = useMemo(() => isNativeMessengerDoc(doc), [doc]);
+  const [messengerAuthReady, setMessengerAuthReady] = useState(false);
+  const [messengerAuthMode, setMessengerAuthMode] = useState<"login" | "register">("login");
+  const [messengerUser, setMessengerUser] = useState<MessengerRuntimeUser | null>(null);
+  const [messengerFriends, setMessengerFriends] = useState<MessengerRuntimeFriend[]>([]);
+  const [messengerIncoming, setMessengerIncoming] = useState<MessengerRuntimeFriendRequest[]>([]);
+  const [messengerOutgoing, setMessengerOutgoing] = useState<MessengerRuntimeFriendRequest[]>([]);
+  const [messengerConversations, setMessengerConversations] = useState<MessengerRuntimeConversation[]>([]);
+  const [messengerNotifications, setMessengerNotifications] = useState<MessengerRuntimeNotification[]>([]);
+  const [messengerMessages, setMessengerMessages] = useState<MessengerRuntimeMessage[]>([]);
+  const [messengerActiveConversationId, setMessengerActiveConversationId] = useState<string>("");
+  const [messengerHiddenNodeIds, setMessengerHiddenNodeIds] = useState<Set<string>>(new Set());
   const globalStateDefs = useMemo(
     () => (Array.isArray((doc as Doc).globalState) ? ((doc as Doc).globalState as GlobalStateItem[]) : []),
     [doc],
@@ -4747,10 +4866,321 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     [globalStateDefsByKey],
   );
 
+  const messengerApi = useCallback(async <T,>(path: string, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    const response = await fetch(`${MESSENGER_API_BASE}${path}`, {
+      ...init,
+      headers,
+      credentials: "include",
+    });
+    const data = (await response.json().catch(() => ({}))) as MessengerApiError & T;
+    if (!response.ok) {
+      throw new Error(data.message || data.error || "messenger_request_failed");
+    }
+    return data as T;
+  }, []);
+
+  const syncMessengerUserVariables = useCallback((user: MessengerRuntimeUser | null) => {
+    applyVariableOverrides({
+      "$app_user.id": user?.id ?? "",
+      "$app_user.email": user?.email ?? "",
+      "$app_user.display_name": user?.displayName ?? "",
+      "$app_user.role": user ? "user" : "",
+      "$app_user.logged_in": Boolean(user),
+    });
+  }, [applyVariableOverrides]);
+
+  const loadMessengerMe = useCallback(async () => {
+    try {
+      const data = await messengerApi<{ ok: boolean; user: MessengerRuntimeUser; unreadNotifications?: number; conversations?: number }>("/me");
+      setMessengerUser(data.user);
+      syncMessengerUserVariables(data.user);
+      return data.user;
+    } catch {
+      setMessengerUser(null);
+      setMessengerFriends([]);
+      setMessengerIncoming([]);
+      setMessengerOutgoing([]);
+      setMessengerConversations([]);
+      setMessengerNotifications([]);
+      setMessengerMessages([]);
+      setMessengerActiveConversationId("");
+      syncMessengerUserVariables(null);
+      return null;
+    } finally {
+      setMessengerAuthReady(true);
+    }
+  }, [messengerApi, syncMessengerUserVariables]);
+
+  const loadMessengerFriends = useCallback(async () => {
+    if (!nativeMessenger || !messengerUser) return;
+    const data = await messengerApi<{
+      ok: boolean;
+      friends: MessengerRuntimeFriend[];
+      incoming: MessengerRuntimeFriendRequest[];
+      outgoing: MessengerRuntimeFriendRequest[];
+    }>("/friends");
+    setMessengerFriends(Array.isArray(data.friends) ? data.friends : []);
+    setMessengerIncoming(Array.isArray(data.incoming) ? data.incoming : []);
+    setMessengerOutgoing(Array.isArray(data.outgoing) ? data.outgoing : []);
+  }, [messengerApi, messengerUser, nativeMessenger]);
+
+  const loadMessengerConversations = useCallback(async () => {
+    if (!nativeMessenger || !messengerUser) return [];
+    const data = await messengerApi<{ ok: boolean; conversations: MessengerRuntimeConversation[] }>("/conversations");
+    const conversations = Array.isArray(data.conversations) ? data.conversations : [];
+    setMessengerConversations(conversations);
+    setMessengerActiveConversationId((prev) => {
+      if (prev && conversations.some((conversation) => conversation.id === prev)) return prev;
+      return conversations[0]?.id ?? "";
+    });
+    applyVariableOverrides({
+      chat_titles: conversations.map((conversation) => conversation.title).join("|"),
+      chat_previews: conversations.map((conversation) => compactMessengerText(conversation.lastMessage?.body, 48)).join("|"),
+      chat_times: conversations.map((conversation) => conversation.lastMessageAt ?? "").join("|"),
+      chat_unread: conversations.map((conversation) => String(conversation.unreadCount ?? 0)).join("|"),
+    });
+    return conversations;
+  }, [applyVariableOverrides, messengerApi, messengerUser, nativeMessenger]);
+
+  const loadMessengerNotifications = useCallback(async () => {
+    if (!nativeMessenger || !messengerUser) return;
+    const data = await messengerApi<{ ok: boolean; notifications: MessengerRuntimeNotification[] }>("/notifications");
+    setMessengerNotifications(Array.isArray(data.notifications) ? data.notifications : []);
+  }, [messengerApi, messengerUser, nativeMessenger]);
+
+  const loadMessengerMessages = useCallback(async (conversationId: string) => {
+    if (!nativeMessenger || !messengerUser || !conversationId) return [];
+    const data = await messengerApi<{ ok: boolean; messages: MessengerRuntimeMessage[] }>(`/conversations/${conversationId}/messages`);
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    setMessengerMessages(messages);
+    return messages;
+  }, [messengerApi, messengerUser, nativeMessenger]);
+
+  const refreshMessenger = useCallback(async () => {
+    if (!nativeMessenger || !messengerUser) return;
+    await Promise.all([loadMessengerFriends(), loadMessengerConversations(), loadMessengerNotifications()]);
+  }, [loadMessengerConversations, loadMessengerFriends, loadMessengerNotifications, messengerUser, nativeMessenger]);
+
+  const openMessengerConversation = useCallback(async (memberId: string) => {
+    if (!memberId) return null;
+    const data = await messengerApi<{ ok: boolean; conversation: MessengerRuntimeConversation }>("/conversations", {
+      method: "POST",
+      body: JSON.stringify({ memberIds: [memberId], type: "direct" }),
+    });
+    const conversation = data.conversation;
+    if (!conversation) return null;
+    setMessengerActiveConversationId(conversation.id);
+    await loadMessengerConversations();
+    await loadMessengerMessages(conversation.id);
+    setBasePageId("page_chat");
+    return conversation;
+  }, [loadMessengerConversations, loadMessengerMessages, messengerApi]);
+
+  const messengerFriendEntries = useMemo<MessengerFriendEntry[]>(() => {
+    const incoming = messengerIncoming.map((request) => ({
+      kind: "incoming" as const,
+      key: `incoming:${request.id}`,
+      requestId: request.id,
+      user: request.requester!,
+      title: request.requester?.displayName ?? "Friend request",
+      body: `@${request.requester?.handle ?? "user"} · incoming request`,
+      badge: "Accept",
+    })).filter((entry) => Boolean(entry.user?.id));
+    const friends = messengerFriends.map((friend) => ({
+      kind: "friend" as const,
+      key: `friend:${friend.id}`,
+      user: friend.user,
+      title: friend.nickname || friend.user.displayName,
+      body: `@${friend.user.handle} · ${friend.user.statusMessage || "connected"}`,
+      badge: "Chat",
+    }));
+    const outgoing = messengerOutgoing.map((request) => ({
+      kind: "outgoing" as const,
+      key: `outgoing:${request.id}`,
+      requestId: request.id,
+      user: request.receiver!,
+      title: request.receiver?.displayName ?? "Pending request",
+      body: `@${request.receiver?.handle ?? "user"} · waiting`,
+      badge: "Pending",
+    })).filter((entry) => Boolean(entry.user?.id));
+    return [...incoming, ...friends, ...outgoing];
+  }, [messengerFriends, messengerIncoming, messengerOutgoing]);
+
+  useEffect(() => {
+    if (!nativeMessenger) return;
+    void loadMessengerMe();
+  }, [loadMessengerMe, nativeMessenger]);
+
+  useEffect(() => {
+    if (!nativeMessenger || !messengerUser) return;
+    void refreshMessenger();
+  }, [messengerUser, nativeMessenger, refreshMessenger]);
+
+  useEffect(() => {
+    if (!nativeMessenger || !messengerUser || !messengerActiveConversationId) return;
+    void loadMessengerMessages(messengerActiveConversationId);
+  }, [loadMessengerMessages, messengerActiveConversationId, messengerUser, nativeMessenger]);
+
+  useEffect(() => {
+    if (!nativeMessenger || !messengerUser) return;
+    const timer = window.setInterval(() => {
+      void refreshMessenger();
+      if (messengerActiveConversationId) void loadMessengerMessages(messengerActiveConversationId);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [loadMessengerMessages, messengerActiveConversationId, messengerUser, nativeMessenger, refreshMessenger]);
+
+  useEffect(() => {
+    if (!nativeMessenger || !messengerAuthReady) return;
+    if (messengerUser && basePageId === "page_auth") {
+      setBasePageId("page_chat");
+      return;
+    }
+    if (!messengerUser && basePageId && basePageId !== "page_auth") {
+      setBasePageId("page_auth");
+    }
+  }, [basePageId, messengerAuthReady, messengerUser, nativeMessenger]);
+
+  useEffect(() => {
+    if (!nativeMessenger) return;
+    setControlTextState((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      const assign = (id: string, value: string) => {
+        if (next[id] === value) return;
+        next[id] = value;
+        changed = true;
+      };
+      assign("profile_name_input", messengerUser?.displayName ?? "");
+      assign("profile_status_input", messengerUser?.statusMessage ?? "");
+      if (messengerAuthMode !== "register") assign("auth_display_input", "");
+      return changed ? next : prev;
+    });
+  }, [messengerAuthMode, messengerUser, nativeMessenger]);
+
+  useEffect(() => {
+    if (!nativeMessenger) return;
+    const hidden = new Set<string>([
+      "alert_form",
+      "chat_room_create",
+      "chat_metric_call",
+      "call_settings",
+      "chat_voice_btn",
+      "chat_search_input",
+      "profile_handle_input",
+      "alerts_card_a",
+      "alerts_card_b",
+    ]);
+    if (messengerAuthMode !== "register") hidden.add("auth_display_input");
+
+    const chatItemIds = ["chat_list_item_0", "chat_list_item_1", "chat_list_item_2", "chat_list_item_3"];
+    const roomItemIds = ["chat_room_item_0", "chat_room_item_1", "chat_room_item_2", "chat_room_item_3"];
+    const friendItemIds = ["friend_list_item", "friend_list_item_1", "friend_list_item_2", "friend_list_item_3"];
+    const alertItemIds = ["alert_list_item", "alert_list_item_1", "alert_list_item_2", "alert_list_item_3"];
+
+    chatItemIds.slice(Math.min(chatItemIds.length, messengerConversations.length)).forEach((id) => hidden.add(id));
+    const visibleRoomCount =
+      messengerMessages.length > 0
+        ? Math.min(roomItemIds.length, messengerMessages.slice(-roomItemIds.length).length)
+        : (messengerActiveConversationId ? 1 : 0);
+    roomItemIds.slice(visibleRoomCount).forEach((id) => hidden.add(id));
+    friendItemIds.slice(Math.min(friendItemIds.length, messengerFriendEntries.length)).forEach((id) => hidden.add(id));
+    alertItemIds.slice(Math.min(alertItemIds.length, messengerNotifications.length)).forEach((id) => hidden.add(id));
+
+    setMessengerHiddenNodeIds(hidden);
+  }, [messengerActiveConversationId, messengerAuthMode, messengerConversations.length, messengerFriendEntries, messengerMessages, messengerNotifications.length, nativeMessenger]);
+
+  useEffect(() => {
+    if (!nativeMessenger) return;
+    const raw = variableOverrides.messenger_chat_index;
+    const index =
+      typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : Number.NaN;
+    if (!Number.isInteger(index) || index < 0) return;
+    const conversation = messengerConversations[index];
+    setVariableOverrides((prev) => ({ ...prev, messenger_chat_index: -1 }));
+    if (!conversation) return;
+    setMessengerActiveConversationId(conversation.id);
+    setBasePageId("page_chat");
+    void (async () => {
+      await loadMessengerMessages(conversation.id);
+      await loadMessengerConversations();
+      await loadMessengerNotifications();
+    })();
+  }, [
+    loadMessengerConversations,
+    loadMessengerMessages,
+    loadMessengerNotifications,
+    messengerConversations,
+    nativeMessenger,
+    variableOverrides.messenger_chat_index,
+  ]);
+
+  useEffect(() => {
+    if (!nativeMessenger) return;
+    const raw = variableOverrides.messenger_friend_index;
+    const index =
+      typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : Number.NaN;
+    if (!Number.isInteger(index) || index < 0) return;
+    const entry = messengerFriendEntries[index];
+    setVariableOverrides((prev) => ({ ...prev, messenger_friend_index: -1 }));
+    if (!entry) return;
+    if (entry.kind === "incoming" && entry.requestId) {
+      void (async () => {
+        try {
+          await messengerApi(`/friend-requests/${entry.requestId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ action: "accept" }),
+          });
+          await refreshMessenger();
+          await openMessengerConversation(entry.user.id);
+        } catch (error) {
+          pushNotice({ type: "error", message: error instanceof Error ? error.message : "친구 요청 처리에 실패했습니다." });
+        }
+      })();
+      return;
+    }
+    if (entry.kind === "outgoing") {
+      pushNotice({ type: "info", message: "상대 수락을 기다리는 중입니다." });
+      return;
+    }
+    void openMessengerConversation(entry.user.id).catch((error) => {
+      pushNotice({ type: "error", message: error instanceof Error ? error.message : "대화를 열지 못했습니다." });
+    });
+  }, [messengerApi, messengerFriendEntries, nativeMessenger, openMessengerConversation, pushNotice, refreshMessenger, variableOverrides.messenger_friend_index]);
+
+  useEffect(() => {
+    if (!nativeMessenger) return;
+    const raw = variableOverrides.messenger_alert_index;
+    const index =
+      typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : Number.NaN;
+    if (!Number.isInteger(index) || index < 0) return;
+    const item = messengerNotifications[index];
+    setVariableOverrides((prev) => ({ ...prev, messenger_alert_index: -1 }));
+    if (!item) return;
+    void (async () => {
+      try {
+        await messengerApi("/notifications", { method: "PATCH", body: JSON.stringify({ id: item.id }) });
+        await loadMessengerNotifications();
+        if (item.conversationId) {
+          setMessengerActiveConversationId(item.conversationId);
+          setBasePageId("page_chat");
+          await loadMessengerMessages(item.conversationId);
+          await loadMessengerConversations();
+        } else if (item.type.includes("friend")) {
+          setBasePageId("page_friends");
+        }
+      } catch (error) {
+        pushNotice({ type: "error", message: error instanceof Error ? error.message : "알림을 열지 못했습니다." });
+      }
+    })();
+  }, [loadMessengerMessages, loadMessengerNotifications, messengerApi, messengerNotifications, nativeMessenger, pushNotice, variableOverrides.messenger_alert_index]);
+
 
   useEffect(() => {
 
-    if (!appPageId) return;
+    if (!appPageId || nativeMessenger) return;
 
     let active = true;
 
@@ -4788,13 +5218,13 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     return () => { active = false; };
 
-  }, [appPageId, applyVariableOverrides]);
+  }, [appPageId, applyVariableOverrides, nativeMessenger]);
 
 
 
   useEffect(() => {
 
-    if (!appPageId) return;
+    if (!appPageId || nativeMessenger) return;
 
     let cancelled = false;
 
@@ -4878,68 +5308,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     return () => { cancelled = true; clearInterval(interval); };
 
-  }, [appPageId, applyVariableOverrides, chatRefetchSignal]);
-
-  const appUserLoggedIn =
-    variableOverrides["$app_user.logged_in"] === true ||
-    variableOverrides["$app_user.logged_in"] === "true";
-
-  const refetchAppMessages = useCallback(async () => {
-    if (!appPageId || !appUserLoggedIn) return false;
-
-    try {
-      const res = await fetch(`/api/app/${appPageId}/messages?limit=50&orderBy=created_at&orderDir=asc`, {
-        credentials: "include",
-      });
-
-      if (!res.ok) return false;
-
-      const data = await res.json().catch(() => null);
-      const items = Array.isArray(data?.items) ? data.items : [];
-
-      if (!items.length) return false;
-
-      const sep = "|";
-      const cleanListValue = (value: string | undefined) => (value ?? "").replace(/[|,;]+/g, " ").replace(/\s+/g, " ").trim();
-      const titles = items
-        .map((item: { sender?: string; display_name?: string; email?: string }) => cleanListValue(item.sender ?? item.display_name ?? item.email ?? "User"))
-        .join(sep);
-      const messages = items
-        .map((item: { message?: string; body?: string; content?: string }) => cleanListValue(item.message ?? item.body ?? item.content ?? ""))
-        .join(sep);
-      const times = items.map((item: { created_at?: string; createdAt?: string }) => item.created_at ?? item.createdAt ?? "").join(sep);
-
-      applyVariableOverrides({
-        chat_titles: titles,
-        chat_titles_list: titles,
-        chat_previews: messages,
-        chat_messages: messages,
-        chat_times: times,
-        chatTimes: times,
-      });
-
-      return true;
-    } catch {
-      return false;
-    }
-  }, [appPageId, appUserLoggedIn, applyVariableOverrides]);
-
-  useEffect(() => {
-    if (!appPageId || !appUserLoggedIn) return;
-
-    let cancelled = false;
-    const tick = async () => {
-      if (!cancelled) await refetchAppMessages();
-    };
-
-    void tick();
-    const interval = setInterval(tick, 1500);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [appPageId, appUserLoggedIn, refetchAppMessages]);
+  }, [appPageId, applyVariableOverrides, chatRefetchSignal, nativeMessenger]);
 
 
 
@@ -5723,7 +6092,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
   useEffect(() => {
 
-    if (!appPageId || typeof window === "undefined") return;
+    if (!appPageId || nativeMessenger || typeof window === "undefined") return;
 
     const origin = window.location.origin;
 
@@ -5895,7 +6264,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     void run();
 
-  }, [appPageId, applyVariableOverrides]);
+  }, [appPageId, applyVariableOverrides, nativeMessenger]);
 
 
 
@@ -8882,6 +9251,8 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
     const next = new Set(hiddenNodeIds);
 
+    messengerHiddenNodeIds.forEach((id) => next.add(id));
+
     searchHiddenNodeIds.forEach((id) => next.add(id));
 
     notificationHiddenNodeIds.forEach((id) => next.add(id));
@@ -8939,6 +9310,8 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
   }, [
 
     hiddenNodeIds,
+
+    messengerHiddenNodeIds,
 
     searchHiddenNodeIds,
 
@@ -11871,6 +12244,95 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
 
 
+
+  const messengerActiveConversation = useMemo(
+    () => messengerConversations.find((conversation) => conversation.id === messengerActiveConversationId) ?? null,
+    [messengerActiveConversationId, messengerConversations],
+  );
+
+  const messengerTextOverrides = useMemo(() => {
+    const overrides: Record<string, string> = {};
+    if (!nativeMessenger) return overrides;
+
+    const chatItems = messengerConversations.slice(0, 4);
+    chatItems.forEach((conversation, index) => {
+      overrides[`chat_list_title_${index}`] = conversation.title;
+      const preview = compactMessengerText(conversation.lastMessage?.body, 48);
+      const unread = conversation.unreadCount > 0 ? ` · ${conversation.unreadCount}` : "";
+      overrides[`chat_list_meta_${index}`] = `${preview || relativeMessengerTime(conversation.lastMessageAt) || "No messages yet"}${unread}`;
+    });
+
+    const roomMessages = messengerMessages.slice(-4);
+    if (roomMessages.length === 0 && messengerActiveConversation) {
+      overrides.chat_room_sender_0 = messengerActiveConversation.title;
+      overrides.chat_room_body_0 = "아직 메시지가 없습니다.";
+    }
+    roomMessages.forEach((message, index) => {
+      const senderName =
+        message.senderId === messengerUser?.id
+          ? messengerUser?.displayName || "Me"
+          : message.sender?.displayName || message.sender?.handle || "User";
+      overrides[`chat_room_sender_${index}`] = senderName;
+      overrides[`chat_room_body_${index}`] = compactMessengerText(message.body, 220);
+    });
+
+    messengerFriendEntries.slice(0, 4).forEach((entry, index) => {
+      const prefix = index === 0 ? "friend_list_item" : `friend_list_item_${index}`;
+      overrides[`${prefix}_title`] = entry.title;
+      overrides[`${prefix}_body`] = entry.body;
+      overrides[`${prefix}_badge_label`] = entry.badge;
+    });
+
+    messengerNotifications.slice(0, 4).forEach((item, index) => {
+      const prefix = index === 0 ? "alert_list_item" : `alert_list_item_${index}`;
+      overrides[`${prefix}_title`] = item.title;
+      overrides[`${prefix}_body`] = `${compactMessengerText(item.body, 84) || item.type} · ${relativeMessengerTime(item.createdAt) || ""}`.trim();
+      overrides[`${prefix}_badge_label`] = item.readAt ? "read" : "unread";
+    });
+
+    if (messengerUser) {
+      overrides.profile_list_item_title = messengerUser.displayName;
+      overrides.profile_list_item_body = `@${messengerUser.handle} · ${messengerUser.statusMessage || messengerUser.email}`;
+    } else {
+      overrides.profile_list_item_title = "NULL Messenger";
+      overrides.profile_list_item_body = "Sign in to sync friends and conversations";
+    }
+
+    if (messengerAuthMode === "register") {
+      overrides.auth_form_title = "Create account";
+      overrides.auth_form_meta = "Enter a display name once, then create your account.";
+    } else {
+      overrides.auth_form_title = "Log in";
+      overrides.auth_form_meta = "Use email and password to continue your conversations.";
+    }
+
+    const unreadNotifications = messengerNotifications.filter((item) => !item.readAt).length;
+    overrides.chat_metric_room_value = messengerActiveConversation?.title || "No room";
+    overrides.chat_metric_room_sub =
+      messengerActiveConversation?.type === "group"
+        ? `${messengerActiveConversation.members.length} members`
+        : messengerActiveConversation
+          ? "Direct conversation"
+          : "Choose a friend to start";
+    overrides.chat_metric_unread_value = String(unreadNotifications);
+    overrides.chat_metric_unread_sub = `${messengerConversations.length} rooms connected`;
+
+    return overrides;
+  }, [
+    messengerActiveConversation,
+    messengerAuthMode,
+    messengerConversations,
+    messengerFriendEntries,
+    messengerMessages,
+    messengerNotifications,
+    messengerUser,
+    nativeMessenger,
+  ]);
+
+  const runtimeTextOverrides = useMemo(
+    () => (nativeMessenger ? { ...textOverrides, ...messengerTextOverrides } : textOverrides),
+    [messengerTextOverrides, nativeMessenger, textOverrides],
+  );
 
   const resolveRequiredStatus = useCallback((scopeIds: Set<string>) => {
 
@@ -16683,6 +17145,82 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
         }
 
+        if (nativeMessenger) {
+          if (action.action === "logout") {
+            void (async () => {
+              try {
+                await messengerApi("/auth/logout", { method: "POST" });
+              } catch {
+                // ignore logout failures
+              }
+              setMessengerUser(null);
+              setMessengerFriends([]);
+              setMessengerIncoming([]);
+              setMessengerOutgoing([]);
+              setMessengerConversations([]);
+              setMessengerNotifications([]);
+              setMessengerMessages([]);
+              setMessengerActiveConversationId("");
+              syncMessengerUserVariables(null);
+              setMessengerAuthMode("login");
+              setMessengerAuthReady(true);
+              setBasePageId(action.nextPageId ?? "page_auth");
+            })();
+            return;
+          }
+
+          const pageId = source?.pageId ?? currentPageId;
+          const scopeIds = resolveSubmitScopeIds(currentDoc, pageId, source?.nodeId ?? null);
+          const payload = buildSubmitPayload({ pageId, scopeIds });
+          const email = String(payload.fields.email ?? "").trim();
+          const password = String(payload.fields.password ?? "");
+          const displayName = String(payload.fields.display_name ?? "").trim();
+
+          if (action.action === "login") {
+            setMessengerAuthMode("login");
+          }
+
+          if (action.action === "register" && messengerAuthMode !== "register") {
+            setMessengerAuthMode("register");
+            pushNotice({ type: "info", message: "표시 이름을 입력한 뒤 다시 회원가입을 눌러 주세요." });
+            return;
+          }
+
+          if (!email || !password || (action.action === "register" && !displayName)) {
+            pushNotice({ type: "error", message: "필수 항목을 입력해 주세요." });
+            return;
+          }
+
+          void (async () => {
+            try {
+              const data = await messengerApi<{ ok: boolean; user: MessengerRuntimeUser }>(
+                action.action === "register" ? "/auth/register" : "/auth/login",
+                {
+                  method: "POST",
+                  body: JSON.stringify(
+                    action.action === "register"
+                      ? { email, password, displayName, handle: email.split("@")[0] || "user" }
+                      : { email, password },
+                  ),
+                },
+              );
+              setMessengerUser(data.user);
+              syncMessengerUserVariables(data.user);
+              setMessengerAuthReady(true);
+              setMessengerAuthMode("login");
+              setControlTextState((prev) => {
+                const next: Record<string, string> = { ...prev, auth_password_input: "" };
+                if (action.action === "register") next.auth_display_input = "";
+                return next;
+              });
+              setBasePageId(action.nextPageId ?? "page_chat");
+            } catch (error) {
+              pushNotice({ type: "error", message: error instanceof Error ? error.message : "로그인에 실패했습니다." });
+            }
+          })();
+          return;
+        }
+
         if (action.action === "logout") {
 
           (async () => {
@@ -16846,6 +17384,115 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
         const scopeIds = resolveSubmitScopeIds(currentDoc, pageId, source?.nodeId ?? null);
 
         const payload = buildSubmitPayload({ pageId, scopeIds });
+
+        if (nativeMessenger) {
+          const message =
+            (typeof payload.fields.message === "string" && payload.fields.message.trim()) ||
+            (typeof payload.fields.content === "string" && payload.fields.content.trim()) ||
+            (typeof payload.fields.text === "string" && payload.fields.text.trim()) ||
+            "";
+
+          if (endpoint.includes("/messages")) {
+            if (!messengerActiveConversationId) {
+              pushNotice({ type: "error", message: "대화를 먼저 선택해 주세요." });
+              return;
+            }
+            if (!message) {
+              pushNotice({ type: "error", message: "메시지를 입력해 주세요." });
+              return;
+            }
+            void (async () => {
+              try {
+                await messengerApi(`/conversations/${messengerActiveConversationId}/messages`, {
+                  method: "POST",
+                  body: JSON.stringify({ body: message }),
+                });
+                await loadMessengerMessages(messengerActiveConversationId);
+                await loadMessengerConversations();
+                await loadMessengerNotifications();
+                setControlTextState((prev) => ({ ...prev, chat_message_input: "" }));
+                setBasePageId(action.nextPageId ?? "page_chat");
+              } catch (error) {
+                pushNotice({ type: "error", message: error instanceof Error ? error.message : "메시지 전송에 실패했습니다." });
+              }
+            })();
+            return;
+          }
+
+          if (endpoint.includes("/friends")) {
+            const query =
+              (typeof payload.fields.handle === "string" && payload.fields.handle.trim()) ||
+              (typeof payload.fields.display_name === "string" && payload.fields.display_name.trim()) ||
+              (typeof payload.fields.email === "string" && payload.fields.email.trim()) ||
+              "";
+            if (!query) {
+              pushNotice({ type: "error", message: "친구를 찾을 핸들 또는 이름을 입력해 주세요." });
+              return;
+            }
+            void (async () => {
+              try {
+                const data = await messengerApi<{ ok: boolean; status: string; user?: MessengerRuntimeUser }>("/friends", {
+                  method: "POST",
+                  body: JSON.stringify({ query: query.replace(/^@/, "") }),
+                });
+                await refreshMessenger();
+                setControlTextState((prev) => ({
+                  ...prev,
+                  friend_handle_input: "",
+                  friend_name_input: "",
+                }));
+                if (data.status === "friend" && data.user?.id) {
+                  await openMessengerConversation(data.user.id);
+                } else {
+                  pushNotice({ type: "success", message: "친구 요청을 보냈습니다." });
+                  setBasePageId(action.nextPageId ?? "page_friends");
+                }
+              } catch (error) {
+                pushNotice({ type: "error", message: error instanceof Error ? error.message : "친구 요청에 실패했습니다." });
+              }
+            })();
+            return;
+          }
+
+          if (endpoint.includes("/profiles")) {
+            const displayName = String(payload.fields.display_name ?? "").trim();
+            const statusMessage = String(payload.fields.status_message ?? "").trim();
+            if (!displayName) {
+              pushNotice({ type: "error", message: "표시 이름을 입력해 주세요." });
+              return;
+            }
+            void (async () => {
+              try {
+                const data = await messengerApi<{ ok: boolean; user: MessengerRuntimeUser }>("/me", {
+                  method: "PATCH",
+                  body: JSON.stringify({ displayName, statusMessage }),
+                });
+                setMessengerUser(data.user);
+                syncMessengerUserVariables(data.user);
+                pushNotice({ type: "success", message: "프로필을 저장했습니다." });
+                setBasePageId(action.nextPageId ?? "page_settings");
+              } catch (error) {
+                pushNotice({ type: "error", message: error instanceof Error ? error.message : "프로필 저장에 실패했습니다." });
+              }
+            })();
+            return;
+          }
+
+          if (endpoint.includes("/alerts")) {
+            pushNotice({ type: "info", message: "알림은 자동으로 생성됩니다." });
+            return;
+          }
+
+          if (endpoint.includes("/rooms")) {
+            pushNotice({ type: "info", message: "그룹 대화 생성은 아직 연결되지 않았습니다." });
+            return;
+          }
+
+          if (endpoint.includes("/calls")) {
+            pushNotice({ type: "info", message: "통화 기능은 현재 비활성화되어 있습니다." });
+            return;
+          }
+        }
 
 
 
@@ -17641,34 +18288,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               const sep = "|";
 
-              if (appPageId && pathname === `/api/app/${appPageId}/messages`) {
-
-                setControlTextState((prev) => {
-
-                  const next = { ...prev };
-
-                  controlRootRoles.forEach((role, rootId) => {
-
-                    if (!scopeIds.has(rootId)) return;
-
-                    if (role.type !== "input") return;
-
-                    const key = controlFields.get(rootId)?.key ?? "";
-
-                    if (key === "message" || key === "content" || key === "text") next[rootId] = "";
-
-                  });
-
-                  return next;
-
-                });
-
-                await refetchAppMessages();
-
-                onChatSent?.();
-
-              }
-
               if (pathname.includes("/chat") && appPageId) {
 
                 try {
@@ -17996,8 +18615,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
     previewMode,
 
     pushNotice,
-
-    refetchAppMessages,
 
     resolveRequiredStatus,
 
@@ -19600,7 +20217,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
               childOrderOverrides={combinedOrderOverrides}
 
-              textOverrides={textOverrides}
+              textOverrides={runtimeTextOverrides}
 
               headerCompact={headerCompact}
 
@@ -19644,7 +20261,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
                 childOrderOverrides={combinedOrderOverrides}
 
-                textOverrides={textOverrides}
+                textOverrides={runtimeTextOverrides}
 
                 headerCompact={headerCompact}
 
@@ -19746,7 +20363,7 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
 
                   childOrderOverrides={combinedOrderOverrides}
 
-                  textOverrides={textOverrides}
+                  textOverrides={runtimeTextOverrides}
 
                   headerCompact={headerCompact}
 
@@ -19765,17 +20382,6 @@ export default function AdvancedRuntimePlayer({ doc, initialPageId, initialQuery
         );
 
       })}
-
-      <div className="sr-only" aria-live="polite">
-        {[
-          typeof variableOverrides.ops_latest_release_note === "string" ? variableOverrides.ops_latest_release_note : "",
-          typeof variableOverrides.billing_latest_invoice_id === "string" ? variableOverrides.billing_latest_invoice_id : "",
-          typeof variableOverrides.ops_current_version_id === "string" ? variableOverrides.ops_current_version_id : "",
-          typeof variableOverrides.ops_latest_release_env === "string" ? variableOverrides.ops_latest_release_env : "",
-        ]
-          .filter((value) => typeof value === "string" && value.trim().length > 0)
-          .join(" | ")}
-      </div>
 
     </div>
 
