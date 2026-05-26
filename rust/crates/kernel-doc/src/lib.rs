@@ -82,12 +82,33 @@ impl Default for EditorViewport {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionSetMode {
+    Replace,
+    Add,
+    Toggle,
+}
+
+impl Default for SelectionSetMode {
+    fn default() -> Self {
+        Self::Replace
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EditorCommand {
     SelectNodes {
         #[serde(rename = "nodeIds")]
         node_ids: Vec<String>,
+    },
+    SelectInRect {
+        #[serde(rename = "pageId")]
+        page_id: String,
+        rect: EditorRect,
+        #[serde(default)]
+        mode: SelectionSetMode,
     },
     SetViewport { viewport: EditorViewport },
     RenameNode {

@@ -1,7 +1,7 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch,
-    SceneDoc, SceneNode, ValidationReport,
+    SceneDoc, SceneNode, SelectionSetMode, ValidationReport,
 };
 use std::collections::HashSet;
 
@@ -16,6 +16,27 @@ pub struct HitTestResult {
     pub page_id: String,
     pub node_ids: Vec<String>,
     pub top_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformHandleKind {
+    N,
+    Ne,
+    E,
+    Se,
+    S,
+    Sw,
+    W,
+    Nw,
+    Rotate,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransformHandle {
+    pub kind: TransformHandleKind,
+    pub x: f32,
+    pub y: f32,
+    pub cursor: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +94,15 @@ pub fn dispatch_commands(
                     .filter(|node_id| node_exists(&state.doc, node_id))
                     .collect();
                 applied_commands.push("select_nodes".to_string());
+            }
+            EditorCommand::SelectInRect {
+                page_id,
+                rect,
+                mode,
+            } => {
+                state.selection =
+                    select_in_rect(&state.doc, &state.selection, &page_id, &rect, mode)?;
+                applied_commands.push("select_in_rect".to_string());
             }
             EditorCommand::SetViewport { viewport } => {
                 state.viewport = viewport;
@@ -213,6 +243,73 @@ pub fn selection_bounds(doc: &SceneDoc, selection: &[String]) -> Option<EditorRe
         h: bottom - top,
         rotation: 0.0,
     })
+}
+
+pub fn selection_handles(bounds: &EditorRect) -> Vec<TransformHandle> {
+    let left = bounds.x;
+    let center_x = bounds.x + bounds.w / 2.0;
+    let right = bounds.x + bounds.w;
+    let top = bounds.y;
+    let center_y = bounds.y + bounds.h / 2.0;
+    let bottom = bounds.y + bounds.h;
+    let rotate_offset = 28.0;
+
+    vec![
+        TransformHandle {
+            kind: TransformHandleKind::Nw,
+            x: left,
+            y: top,
+            cursor: "nwse-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::N,
+            x: center_x,
+            y: top,
+            cursor: "ns-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::Ne,
+            x: right,
+            y: top,
+            cursor: "nesw-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::E,
+            x: right,
+            y: center_y,
+            cursor: "ew-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::Se,
+            x: right,
+            y: bottom,
+            cursor: "nwse-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::S,
+            x: center_x,
+            y: bottom,
+            cursor: "ns-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::Sw,
+            x: left,
+            y: bottom,
+            cursor: "nesw-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::W,
+            x: left,
+            y: center_y,
+            cursor: "ew-resize",
+        },
+        TransformHandle {
+            kind: TransformHandleKind::Rotate,
+            x: center_x,
+            y: top - rotate_offset,
+            cursor: "grab",
+        },
+    ]
 }
 
 fn touch_doc(doc: &mut SceneDoc) {
@@ -359,8 +456,67 @@ fn apply_frame_patch(frame: &mut EditorRect, patch: FramePatch) {
     }
 }
 
+fn select_in_rect(
+    doc: &SceneDoc,
+    current_selection: &[String],
+    page_id: &str,
+    rect: &EditorRect,
+    mode: SelectionSetMode,
+) -> Result<Vec<String>, CoreError> {
+    let page = doc
+        .pages
+        .iter()
+        .find(|page| page.id == page_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.page.not_found",
+                format!("Page '{}' was not found.", page_id),
+            )
+        })?;
+
+    let hit_ids: Vec<String> = page
+        .nodes
+        .iter()
+        .filter(|node| rects_intersect(&node.frame, rect))
+        .map(|node| node.id.clone())
+        .collect();
+
+    let next = match mode {
+        SelectionSetMode::Replace => hit_ids,
+        SelectionSetMode::Add => dedupe_ids(
+            current_selection
+                .iter()
+                .cloned()
+                .chain(hit_ids)
+                .collect(),
+        ),
+        SelectionSetMode::Toggle => {
+            let hits: HashSet<&str> = hit_ids.iter().map(String::as_str).collect();
+            let mut toggled: Vec<String> = current_selection
+                .iter()
+                .filter(|selected| !hits.contains(selected.as_str()))
+                .cloned()
+                .collect();
+
+            for hit in hit_ids {
+                if !current_selection.iter().any(|selected| selected == &hit) {
+                    toggled.push(hit);
+                }
+            }
+
+            toggled
+        }
+    };
+
+    Ok(next)
+}
+
 fn point_inside_rect(frame: &EditorRect, x: f32, y: f32) -> bool {
     x >= frame.x && y >= frame.y && x <= frame.x + frame.w && y <= frame.y + frame.h
+}
+
+fn rects_intersect(a: &EditorRect, b: &EditorRect) -> bool {
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 }
 
 fn dedupe_ids(ids: Vec<String>) -> Vec<String> {
@@ -523,5 +679,42 @@ mod tests {
         assert_eq!(bounds.y, 0.0);
         assert_eq!(bounds.w, 100.0);
         assert_eq!(bounds.h, 100.0);
+    }
+
+    #[test]
+    fn select_in_rect_replaces_selection() {
+        let doc = sample_doc();
+        let selected = select_in_rect(
+            &doc,
+            &[],
+            "page-1",
+            &EditorRect {
+                x: 5.0,
+                y: 5.0,
+                w: 50.0,
+                h: 40.0,
+                rotation: 0.0,
+            },
+            SelectionSetMode::Replace,
+        )
+        .expect("select in rect should succeed");
+
+        assert_eq!(selected, vec!["root".to_string(), "title".to_string()]);
+    }
+
+    #[test]
+    fn selection_handles_include_rotate_handle() {
+        let handles = selection_handles(&EditorRect {
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 30.0,
+            rotation: 0.0,
+        });
+
+        assert_eq!(handles.len(), 9);
+        assert!(handles
+            .iter()
+            .any(|handle| handle.kind == TransformHandleKind::Rotate));
     }
 }

@@ -3,12 +3,15 @@ import {
   type EditorApplyResult,
   type EditorBridge,
   type EditorCommand,
+  type EditorRect,
   type EditorSnapshot,
   type EditorViewport,
   type HitTestResult,
   type RuntimeGraph,
   type SceneDoc,
   type SceneNode,
+  type SelectionSetMode,
+  type TransformHandle,
   type ValidationReport,
   V2_EDITOR_SCHEMA_VERSION,
 } from "@/v2/editor/contracts";
@@ -71,6 +74,10 @@ function pointInsideRect(node: SceneNode, x: number, y: number) {
   );
 }
 
+function rectsIntersect(a: EditorRect, b: EditorRect) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
 function buildSelectionBounds(document: SceneDoc, selection: string[]) {
   const nodes = document.pages
     .flatMap((page) => page.nodes)
@@ -92,6 +99,58 @@ function buildSelectionBounds(document: SceneDoc, selection: string[]) {
     h: bottom - top,
     rotation: 0,
   };
+}
+
+function buildTransformHandles(bounds: ReturnType<typeof buildSelectionBounds>): TransformHandle[] {
+  if (!bounds) {
+    return [];
+  }
+
+  const left = bounds.x;
+  const centerX = bounds.x + bounds.w / 2;
+  const right = bounds.x + bounds.w;
+  const top = bounds.y;
+  const centerY = bounds.y + bounds.h / 2;
+  const bottom = bounds.y + bounds.h;
+  const rotateOffset = 28;
+
+  return [
+    { kind: "nw", x: left, y: top, cursor: "nwse-resize" },
+    { kind: "n", x: centerX, y: top, cursor: "ns-resize" },
+    { kind: "ne", x: right, y: top, cursor: "nesw-resize" },
+    { kind: "e", x: right, y: centerY, cursor: "ew-resize" },
+    { kind: "se", x: right, y: bottom, cursor: "nwse-resize" },
+    { kind: "s", x: centerX, y: bottom, cursor: "ns-resize" },
+    { kind: "sw", x: left, y: bottom, cursor: "nesw-resize" },
+    { kind: "w", x: left, y: centerY, cursor: "ew-resize" },
+    { kind: "rotate", x: centerX, y: top - rotateOffset, cursor: "grab" },
+  ];
+}
+
+function selectInRect(
+  document: SceneDoc,
+  currentSelection: string[],
+  pageId: string,
+  rect: EditorRect,
+  mode: SelectionSetMode,
+) {
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (!page) {
+    return currentSelection;
+  }
+
+  const hitIds = page.nodes.filter((node) => rectsIntersect(node.frame, rect)).map((node) => node.id);
+
+  switch (mode) {
+    case "add":
+      return [...new Set([...currentSelection, ...hitIds])];
+    case "toggle":
+      return currentSelection
+        .filter((id) => !hitIds.includes(id))
+        .concat(hitIds.filter((id) => !currentSelection.includes(id)));
+    default:
+      return hitIds;
+  }
 }
 
 function runHitTest(
@@ -157,6 +216,15 @@ export class NoopEditorBridge implements EditorBridge {
       switch (command.kind) {
         case "select_nodes":
           this.selection = [...command.nodeIds];
+          break;
+        case "select_in_rect":
+          this.selection = selectInRect(
+            this.document,
+            this.selection,
+            command.pageId,
+            command.rect,
+            command.mode ?? "replace",
+          );
           break;
         case "set_viewport":
           this.viewport = { ...command.viewport };
@@ -271,6 +339,8 @@ export class NoopEditorBridge implements EditorBridge {
         );
       case "selection_bounds":
         return buildSelectionBounds(this.document, this.selection);
+      case "transform_handles":
+        return buildTransformHandles(buildSelectionBounds(this.document, this.selection));
     }
   }
 

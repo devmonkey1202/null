@@ -1,7 +1,10 @@
 use core_error::CoreError;
 use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, ValidationReport};
 use kernel_history::HistoryStore;
-use kernel_scene::{dispatch_commands, hit_test, query_node, selection_bounds, EditorState, HitTestMode};
+use kernel_scene::{
+    dispatch_commands, hit_test, query_node, selection_bounds, selection_handles, EditorState,
+    HitTestMode, TransformHandleKind,
+};
 use serde_json::json;
 use std::cell::RefCell;
 
@@ -151,6 +154,32 @@ impl EditorBridgeHandle {
             .map_err(|error| CoreError::new("editor.selection_bounds.serialize_failed", error.to_string()))
     }
 
+    pub fn transform_handles(&self) -> Result<String, CoreError> {
+        let state = self.state.borrow();
+        let editor_state = state
+            .as_ref()
+            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+
+        let handles = selection_bounds(&editor_state.doc, &editor_state.selection)
+            .map(|bounds| selection_handles(&bounds))
+            .unwrap_or_default();
+
+        serde_json::to_string(
+            &handles
+                .into_iter()
+                .map(|handle| {
+                    json!({
+                        "kind": transform_handle_kind_name(handle.kind),
+                        "x": handle.x,
+                        "y": handle.y,
+                        "cursor": handle.cursor,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| CoreError::new("editor.transform_handles.serialize_failed", error.to_string()))
+    }
+
     pub fn run_validation(&self) -> Result<String, CoreError> {
         let state = self.state.borrow();
         let editor_state = state
@@ -173,6 +202,20 @@ impl EditorBridgeHandle {
 fn serialize_validation(report: ValidationReport) -> Result<String, CoreError> {
     serde_json::to_string(&report)
         .map_err(|error| CoreError::new("editor.validation.serialize_failed", error.to_string()))
+}
+
+fn transform_handle_kind_name(kind: TransformHandleKind) -> &'static str {
+    match kind {
+        TransformHandleKind::N => "n",
+        TransformHandleKind::Ne => "ne",
+        TransformHandleKind::E => "e",
+        TransformHandleKind::Se => "se",
+        TransformHandleKind::S => "s",
+        TransformHandleKind::Sw => "sw",
+        TransformHandleKind::W => "w",
+        TransformHandleKind::Nw => "nw",
+        TransformHandleKind::Rotate => "rotate",
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +341,10 @@ mod tests {
         let bounds = bridge.selection_bounds().expect("selection bounds should serialize");
         assert!(bounds.contains("\"w\":50.0"));
         assert!(bounds.contains("\"h\":20.0"));
+
+        let handles = bridge
+            .transform_handles()
+            .expect("transform handles should serialize");
+        assert!(handles.contains("\"kind\":\"rotate\""));
     }
 }

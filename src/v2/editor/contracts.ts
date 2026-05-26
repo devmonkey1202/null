@@ -24,6 +24,8 @@ export type EditorViewport = {
   y: number;
 };
 
+export type SelectionSetMode = "replace" | "add" | "toggle";
+
 export type SceneNode = {
   id: string;
   kind: EditorNodeKind;
@@ -67,6 +69,7 @@ export type ValidationReport = {
 
 export type EditorCommand =
   | { kind: "select_nodes"; nodeIds: string[] }
+  | { kind: "select_in_rect"; pageId: string; rect: EditorRect; mode?: SelectionSetMode }
   | { kind: "set_viewport"; viewport: EditorViewport }
   | { kind: "rename_node"; nodeId: string; name: string }
   | { kind: "move_node"; nodeId: string; frame: Partial<EditorRect> }
@@ -97,12 +100,31 @@ export type HitTestResult = {
   topNodeId: string | null;
 };
 
+export type TransformHandleKind =
+  | "n"
+  | "ne"
+  | "e"
+  | "se"
+  | "s"
+  | "sw"
+  | "w"
+  | "nw"
+  | "rotate";
+
+export type TransformHandle = {
+  kind: TransformHandleKind;
+  x: number;
+  y: number;
+  cursor: string;
+};
+
 export type BridgeQuery =
   | { kind: "selection" }
   | { kind: "document" }
   | { kind: "node"; nodeId: string }
   | { kind: "hit_test"; pageId: string; x: number; y: number; mode?: HitTestMode }
-  | { kind: "selection_bounds" };
+  | { kind: "selection_bounds" }
+  | { kind: "transform_handles" };
 
 export type ServiceBinding = {
   id: string;
