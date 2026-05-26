@@ -1,7 +1,6 @@
 use core_error::CoreError;
-use kernel_doc::SceneDocHandle;
+use kernel_doc::SceneDoc;
 
 pub trait DocumentService {
-    fn load_document(&self, document_id: &str) -> Result<SceneDocHandle, CoreError>;
+    fn load_document(&self, document_id: &str) -> Result<SceneDoc, CoreError>;
 }
-

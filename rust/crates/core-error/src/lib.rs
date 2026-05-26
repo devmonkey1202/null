@@ -13,3 +13,10 @@ impl CoreError {
     }
 }
 
+impl std::fmt::Display for CoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for CoreError {}
