@@ -1,0 +1,13 @@
+[package]
+name = "kernel-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-error = { path = "../core-error" }
+
+[lib]
+path = "src/lib.rs"
+
