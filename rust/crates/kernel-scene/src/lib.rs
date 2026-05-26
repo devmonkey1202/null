@@ -18,6 +18,7 @@ pub struct EditorApplyResult {
     pub snapshot: EditorSnapshot,
     pub validation: ValidationReport,
     pub applied_commands: Vec<String>,
+    pub dirty_node_ids: Vec<String>,
 }
 
 impl EditorState {
@@ -49,6 +50,7 @@ pub fn dispatch_commands(
     commands: Vec<EditorCommand>,
 ) -> Result<EditorApplyResult, CoreError> {
     let mut applied_commands = Vec::with_capacity(commands.len());
+    let mut dirty_node_ids = Vec::new();
 
     for command in commands {
         match command {
@@ -69,6 +71,7 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("rename_node".to_string());
+                dirty_node_ids.push(node_id);
             }
             EditorCommand::MoveNode { node_id, frame } => {
                 let node = find_node_mut(&mut state.doc, &node_id)?;
@@ -76,19 +79,39 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("move_node".to_string());
+                dirty_node_ids.push(node_id);
             }
             EditorCommand::CreateNode { page_id, node } => {
+                let dirty_node_id = node.id.clone();
+                let dirty_parent_id = node.parent_id.clone();
                 create_node(&mut state.doc, &page_id, node)?;
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("create_node".to_string());
+                dirty_node_ids.push(dirty_node_id);
+                if let Some(parent_id) = dirty_parent_id {
+                    dirty_node_ids.push(parent_id);
+                }
             }
             EditorCommand::DeleteNode { node_id } => {
-                delete_node(&mut state.doc, &node_id)?;
+                let deleted = delete_node(&mut state.doc, &node_id)?;
                 state.selection.retain(|selected| selected != &node_id);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("delete_node".to_string());
+                dirty_node_ids.extend(deleted);
+            }
+            EditorCommand::Undo => {
+                return Err(CoreError::new(
+                    "history.undo.session_required",
+                    "Undo commands must be handled by the editor session layer.",
+                ));
+            }
+            EditorCommand::Redo => {
+                return Err(CoreError::new(
+                    "history.redo.session_required",
+                    "Redo commands must be handled by the editor session layer.",
+                ));
             }
         }
     }
@@ -97,6 +120,7 @@ pub fn dispatch_commands(
         snapshot: state.snapshot(),
         validation: state.validation(),
         applied_commands,
+        dirty_node_ids: dedupe_ids(dirty_node_ids),
     })
 }
 
@@ -169,7 +193,7 @@ fn create_node(doc: &mut SceneDoc, page_id: &str, node: SceneNode) -> Result<(),
     Ok(())
 }
 
-fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<(), CoreError> {
+fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreError> {
     for page in &mut doc.pages {
         if page.root_id == node_id {
             return Err(CoreError::new(
@@ -192,7 +216,7 @@ fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<(), CoreError> {
         }
 
         page.nodes.retain(|node| !delete_set.contains(node.id.as_str()));
-        return Ok(());
+        return Ok(to_delete);
     }
 
     Err(CoreError::new(
@@ -249,6 +273,19 @@ fn apply_frame_patch(frame: &mut EditorRect, patch: FramePatch) {
     if let Some(rotation) = patch.rotation {
         frame.rotation = rotation;
     }
+}
+
+fn dedupe_ids(ids: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+
+    for id in ids {
+        if seen.insert(id.clone()) {
+            ordered.push(id);
+        }
+    }
+
+    ordered
 }
 
 #[cfg(test)]
@@ -328,6 +365,7 @@ mod tests {
         assert_eq!(node.name, "Hero Title");
         assert_eq!(node.frame.x, 20.0);
         assert_eq!(result.snapshot.version, 3);
+        assert_eq!(result.dirty_node_ids, vec!["title".to_string()]);
     }
 
     #[test]

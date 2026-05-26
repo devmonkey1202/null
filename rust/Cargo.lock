@@ -60,7 +60,7 @@ name = "kernel-layout"
 version = "0.1.0"
 dependencies = [
  "core-error",
- "kernel-scene",
+ "kernel-doc",
 ]
 
 [[package]]

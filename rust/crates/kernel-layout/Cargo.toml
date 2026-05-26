@@ -7,8 +7,7 @@ publish.workspace = true
 
 [dependencies]
 core-error = { path = "../core-error" }
-kernel-scene = { path = "../kernel-scene" }
+kernel-doc = { path = "../kernel-doc" }
 
 [lib]
 path = "src/lib.rs"
-

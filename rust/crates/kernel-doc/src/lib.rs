@@ -91,6 +91,8 @@ pub enum EditorCommand {
     MoveNode { node_id: String, frame: FramePatch },
     CreateNode { page_id: String, node: SceneNode },
     DeleteNode { node_id: String },
+    Undo,
+    Redo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

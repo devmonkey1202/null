@@ -18,6 +18,10 @@ function cloneDoc(document: SceneDoc): SceneDoc {
   return structuredClone(document);
 }
 
+function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
+  return structuredClone(snapshot);
+}
+
 function buildValidation(document: SceneDoc): ValidationReport {
   const issues = [];
 
@@ -62,9 +66,12 @@ export class NoopEditorBridge implements EditorBridge {
   private selection: string[] = [];
   private viewport: EditorViewport = DEFAULT_VIEWPORT;
   private version = 1;
+  private history: EditorSnapshot[] = [];
+  private historyCursor = -1;
 
   constructor(initialDocument: SceneDoc) {
     this.document = cloneDoc(initialDocument);
+    this.seedHistory();
   }
 
   async info() {
@@ -80,10 +87,13 @@ export class NoopEditorBridge implements EditorBridge {
     this.selection = [];
     this.viewport = DEFAULT_VIEWPORT;
     this.version = 1;
+    this.seedHistory();
     return this.snapshot();
   }
 
   async dispatch(commands: EditorCommand[]): Promise<EditorApplyResult> {
+    const dirtyNodeIds: string[] = [];
+
     for (const command of commands) {
       switch (command.kind) {
         case "select_nodes":
@@ -102,6 +112,8 @@ export class NoopEditorBridge implements EditorBridge {
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };
           this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
           break;
         case "move_node":
           this.document = {
@@ -116,6 +128,8 @@ export class NoopEditorBridge implements EditorBridge {
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };
           this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
           break;
         case "create_node":
           this.document = {
@@ -128,6 +142,11 @@ export class NoopEditorBridge implements EditorBridge {
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };
           this.version += 1;
+          dirtyNodeIds.push(command.node.id);
+          if (command.node.parentId) {
+            dirtyNodeIds.push(command.node.parentId);
+          }
+          this.recordHistory();
           break;
         case "delete_node":
           this.document = {
@@ -140,7 +159,28 @@ export class NoopEditorBridge implements EditorBridge {
           };
           this.selection = this.selection.filter((id) => id !== command.nodeId);
           this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
           break;
+        case "undo": {
+          const snapshot = this.historyCursor > 0 ? cloneSnapshot(this.history[this.historyCursor - 1]!) : null;
+          if (snapshot) {
+            this.restoreSnapshot(snapshot);
+            this.historyCursor -= 1;
+          }
+          break;
+        }
+        case "redo": {
+          const snapshot =
+            this.historyCursor + 1 < this.history.length
+              ? cloneSnapshot(this.history[this.historyCursor + 1]!)
+              : null;
+          if (snapshot) {
+            this.restoreSnapshot(snapshot);
+            this.historyCursor += 1;
+          }
+          break;
+        }
       }
     }
 
@@ -148,6 +188,7 @@ export class NoopEditorBridge implements EditorBridge {
       snapshot: this.snapshot(),
       validation: buildValidation(this.document),
       appliedCommands: commands.map((command) => command.kind),
+      dirtyNodeIds: [...new Set(dirtyNodeIds)],
     };
   }
 
@@ -201,9 +242,30 @@ export class NoopEditorBridge implements EditorBridge {
       viewport: { ...this.viewport },
     };
   }
+
+  private recordHistory() {
+    const next = this.snapshot();
+    if (this.historyCursor + 1 < this.history.length) {
+      this.history = this.history.slice(0, this.historyCursor + 1);
+    }
+    this.history.push(cloneSnapshot(next));
+    this.historyCursor = this.history.length - 1;
+  }
+
+  private restoreSnapshot(snapshot: EditorSnapshot) {
+    this.version = snapshot.version;
+    this.document = cloneDoc(snapshot.doc);
+    this.selection = [...snapshot.selection];
+    this.viewport = { ...snapshot.viewport };
+  }
+
+  private seedHistory() {
+    const snapshot = this.snapshot();
+    this.history = [cloneSnapshot(snapshot)];
+    this.historyCursor = 0;
+  }
 }
 
 export function createNoopEditorBridge(initialDocument: SceneDoc) {
   return new NoopEditorBridge(initialDocument);
 }
-

@@ -1,5 +1,6 @@
 use core_error::CoreError;
 use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, ValidationReport};
+use kernel_history::HistoryStore;
 use kernel_scene::{dispatch_commands, query_node, EditorState};
 use serde_json::json;
 use std::cell::RefCell;
@@ -7,6 +8,7 @@ use std::cell::RefCell;
 #[derive(Default)]
 pub struct EditorBridgeHandle {
     state: RefCell<Option<EditorState>>,
+    history: RefCell<HistoryStore>,
 }
 
 impl EditorBridgeHandle {
@@ -22,6 +24,7 @@ impl EditorBridgeHandle {
         let doc = parse_scene_doc(serialized_doc)?;
         let state = EditorState::new(doc);
         let snapshot = state.snapshot();
+        self.history.borrow_mut().seed(snapshot.clone());
         *self.state.borrow_mut() = Some(state);
 
         serde_json::to_string(&snapshot)
@@ -41,12 +44,66 @@ impl EditorBridgeHandle {
             .as_mut()
             .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
 
-        let result = dispatch_commands(editor_state, commands)?;
+        let mut history = self.history.borrow_mut();
+        let mut scene_commands = Vec::new();
+        let mut history_result = None;
+
+        for command in commands {
+            match command {
+                EditorCommand::Undo => {
+                    let snapshot = history.undo()?;
+                    *editor_state = EditorState {
+                        version: snapshot.version,
+                        doc: snapshot.doc.clone(),
+                        selection: snapshot.selection.clone(),
+                        viewport: snapshot.viewport.clone(),
+                    };
+
+                    history_result = Some(json!({
+                        "snapshot": snapshot,
+                        "validation": editor_state.validation(),
+                        "appliedCommands": ["undo"],
+                        "dirtyNodeIds": [],
+                    }));
+                }
+                EditorCommand::Redo => {
+                    let snapshot = history.redo()?;
+                    *editor_state = EditorState {
+                        version: snapshot.version,
+                        doc: snapshot.doc.clone(),
+                        selection: snapshot.selection.clone(),
+                        viewport: snapshot.viewport.clone(),
+                    };
+
+                    history_result = Some(json!({
+                        "snapshot": snapshot,
+                        "validation": editor_state.validation(),
+                        "appliedCommands": ["redo"],
+                        "dirtyNodeIds": [],
+                    }));
+                }
+                other => scene_commands.push(other),
+            }
+        }
+
+        if let Some(history_only) = history_result {
+            if scene_commands.is_empty() {
+                return serde_json::to_string(&history_only).map_err(|error| {
+                    CoreError::new("editor.apply.serialize_failed", error.to_string())
+                });
+            }
+        }
+
+        let result = dispatch_commands(editor_state, scene_commands)?;
+        if !result.applied_commands.is_empty() {
+            history.push(result.snapshot.clone());
+        }
 
         serde_json::to_string(&json!({
             "snapshot": result.snapshot,
             "validation": result.validation,
             "appliedCommands": result.applied_commands,
+            "dirtyNodeIds": result.dirty_node_ids,
         }))
         .map_err(|error| CoreError::new("editor.apply.serialize_failed", error.to_string()))
     }
@@ -165,5 +222,33 @@ mod tests {
 
         assert!(result_raw.contains("\"Headline\""));
         assert!(result_raw.contains("\"appliedCommands\":[\"select_nodes\",\"rename_node\"]"));
+        assert!(result_raw.contains("\"dirtyNodeIds\":[\"title\"]"));
+    }
+
+    #[test]
+    fn bridge_supports_undo_and_redo() {
+        let bridge = EditorBridgeHandle::new();
+        let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
+
+        let rename_commands = serde_json::to_string(&vec![EditorCommand::RenameNode {
+            node_id: "title".to_string(),
+            name: "Updated Hero".to_string(),
+        }])
+        .expect("rename commands should serialize");
+
+        let renamed = bridge
+            .dispatch_editor_commands(&rename_commands)
+            .expect("rename should succeed");
+        assert!(renamed.contains("\"Updated Hero\""));
+
+        let undo = bridge
+            .dispatch_editor_commands(r#"[{"kind":"undo"}]"#)
+            .expect("undo should succeed");
+        assert!(undo.contains("\"Title\""));
+
+        let redo = bridge
+            .dispatch_editor_commands(r#"[{"kind":"redo"}]"#)
+            .expect("redo should succeed");
+        assert!(redo.contains("\"Updated Hero\""));
     }
 }

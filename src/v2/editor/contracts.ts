@@ -71,7 +71,9 @@ export type EditorCommand =
   | { kind: "rename_node"; nodeId: string; name: string }
   | { kind: "move_node"; nodeId: string; frame: Partial<EditorRect> }
   | { kind: "create_node"; pageId: string; node: SceneNode }
-  | { kind: "delete_node"; nodeId: string };
+  | { kind: "delete_node"; nodeId: string }
+  | { kind: "undo" }
+  | { kind: "redo" };
 
 export type EditorSnapshot = {
   version: number;
@@ -84,6 +86,7 @@ export type EditorApplyResult = {
   snapshot: EditorSnapshot;
   validation: ValidationReport;
   appliedCommands: string[];
+  dirtyNodeIds: string[];
 };
 
 export type BridgeQuery =
@@ -124,4 +127,3 @@ export interface EditorBridge {
   runValidation(): Promise<ValidationReport>;
   exportRuntimeGraph(): Promise<RuntimeGraph>;
 }
-
