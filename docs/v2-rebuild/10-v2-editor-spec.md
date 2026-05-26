@@ -237,6 +237,14 @@ v2 편집기는 다음을 동시에 만족해야 합니다.
 - right inspector
 - bottom status/devtools/AI console
 
+레이아웃 원칙:
+
+- 전체 구조는 Figma형 작업 리듬을 따른다
+- top / left / center / right / bottom의 5축은 고정 의미를 가진다
+- 좌우 패널은 문서 구조 탐색과 속성 수정에 집중하고, 캔버스 면적을 침범하지 않는다
+- NULL 시그니처 색은 상태 강조에 제한적으로 사용하고, 패널 전체 배경을 브랜드 색으로 덮지 않는다
+- decorative card layout보다 dense work surface 구조를 우선한다
+
 ### 5.2 Inspector 원칙
 
 - 현재 selection 기준으로만 렌더
