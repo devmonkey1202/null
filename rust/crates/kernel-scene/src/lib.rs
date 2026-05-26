@@ -5,6 +5,19 @@ use kernel_doc::{
 };
 use std::collections::HashSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitTestMode {
+    Topmost,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HitTestResult {
+    pub page_id: String,
+    pub node_ids: Vec<String>,
+    pub top_node_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EditorState {
     pub version: u64,
@@ -129,6 +142,77 @@ pub fn query_node<'a>(doc: &'a SceneDoc, node_id: &str) -> Option<&'a SceneNode>
         .iter()
         .flat_map(|page| page.nodes.iter())
         .find(|node| node.id == node_id)
+}
+
+pub fn hit_test(
+    doc: &SceneDoc,
+    page_id: &str,
+    x: f32,
+    y: f32,
+    mode: HitTestMode,
+) -> Result<HitTestResult, CoreError> {
+    let page = doc
+        .pages
+        .iter()
+        .find(|page| page.id == page_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.page.not_found",
+                format!("Page '{}' was not found.", page_id),
+            )
+        })?;
+
+    let mut hits = Vec::new();
+    for node in page.nodes.iter().rev() {
+        if point_inside_rect(&node.frame, x, y) {
+            hits.push(node.id.clone());
+            if matches!(mode, HitTestMode::Topmost) {
+                break;
+            }
+        }
+    }
+
+    Ok(HitTestResult {
+        page_id: page.id.clone(),
+        top_node_id: hits.first().cloned(),
+        node_ids: hits,
+    })
+}
+
+pub fn selection_bounds(doc: &SceneDoc, selection: &[String]) -> Option<EditorRect> {
+    let nodes: Vec<&SceneNode> = selection
+        .iter()
+        .filter_map(|node_id| query_node(doc, node_id))
+        .collect();
+
+    if nodes.is_empty() {
+        return None;
+    }
+
+    let left = nodes
+        .iter()
+        .map(|node| node.frame.x)
+        .fold(f32::INFINITY, f32::min);
+    let top = nodes
+        .iter()
+        .map(|node| node.frame.y)
+        .fold(f32::INFINITY, f32::min);
+    let right = nodes
+        .iter()
+        .map(|node| node.frame.x + node.frame.w)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = nodes
+        .iter()
+        .map(|node| node.frame.y + node.frame.h)
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    Some(EditorRect {
+        x: left,
+        y: top,
+        w: right - left,
+        h: bottom - top,
+        rotation: 0.0,
+    })
 }
 
 fn touch_doc(doc: &mut SceneDoc) {
@@ -275,6 +359,10 @@ fn apply_frame_patch(frame: &mut EditorRect, patch: FramePatch) {
     }
 }
 
+fn point_inside_rect(frame: &EditorRect, x: f32, y: f32) -> bool {
+    x >= frame.x && y >= frame.y && x <= frame.x + frame.w && y <= frame.y + frame.h
+}
+
 fn dedupe_ids(ids: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
@@ -398,5 +486,42 @@ mod tests {
 
         assert!(query_node(&state.doc, "title").is_none());
         assert!(query_node(&state.doc, "leaf").is_none());
+    }
+
+    #[test]
+    fn hit_test_returns_topmost_node() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes.push(SceneNode {
+            id: "overlay".to_string(),
+            kind: SceneNodeKind::Shape,
+            name: "Overlay".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 5.0,
+                y: 5.0,
+                w: 50.0,
+                h: 40.0,
+                rotation: 0.0,
+            },
+        });
+
+        let result = hit_test(&doc, "page-1", 15.0, 15.0, HitTestMode::Topmost)
+            .expect("hit test should succeed");
+
+        assert_eq!(result.top_node_id.as_deref(), Some("overlay"));
+        assert_eq!(result.node_ids, vec!["overlay".to_string()]);
+    }
+
+    #[test]
+    fn selection_bounds_unions_selected_nodes() {
+        let doc = sample_doc();
+        let bounds = selection_bounds(&doc, &["root".to_string(), "title".to_string()])
+            .expect("selection bounds should exist");
+
+        assert_eq!(bounds.x, 0.0);
+        assert_eq!(bounds.y, 0.0);
+        assert_eq!(bounds.w, 100.0);
+        assert_eq!(bounds.h, 100.0);
     }
 }

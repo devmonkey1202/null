@@ -1,7 +1,7 @@
 use core_error::CoreError;
 use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, ValidationReport};
 use kernel_history::HistoryStore;
-use kernel_scene::{dispatch_commands, query_node, EditorState};
+use kernel_scene::{dispatch_commands, hit_test, query_node, selection_bounds, EditorState, HitTestMode};
 use serde_json::json;
 use std::cell::RefCell;
 
@@ -119,6 +119,36 @@ impl EditorBridgeHandle {
 
         serde_json::to_string(node)
             .map_err(|error| CoreError::new("editor.node.serialize_failed", error.to_string()))
+    }
+
+    pub fn hit_test(&self, page_id: &str, x: f32, y: f32, mode: &str) -> Result<String, CoreError> {
+        let state = self.state.borrow();
+        let editor_state = state
+            .as_ref()
+            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+
+        let mode = match mode {
+            "all" => HitTestMode::All,
+            _ => HitTestMode::Topmost,
+        };
+
+        let result = hit_test(&editor_state.doc, page_id, x, y, mode)?;
+        serde_json::to_string(&json!({
+            "pageId": result.page_id,
+            "nodeIds": result.node_ids,
+            "topNodeId": result.top_node_id,
+        }))
+        .map_err(|error| CoreError::new("editor.hit_test.serialize_failed", error.to_string()))
+    }
+
+    pub fn selection_bounds(&self) -> Result<String, CoreError> {
+        let state = self.state.borrow();
+        let editor_state = state
+            .as_ref()
+            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+
+        serde_json::to_string(&selection_bounds(&editor_state.doc, &editor_state.selection))
+            .map_err(|error| CoreError::new("editor.selection_bounds.serialize_failed", error.to_string()))
     }
 
     pub fn run_validation(&self) -> Result<String, CoreError> {
@@ -250,5 +280,23 @@ mod tests {
             .dispatch_editor_commands(r#"[{"kind":"redo"}]"#)
             .expect("redo should succeed");
         assert!(redo.contains("\"Updated Hero\""));
+    }
+
+    #[test]
+    fn bridge_supports_hit_test_and_selection_bounds() {
+        let bridge = EditorBridgeHandle::new();
+        let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
+
+        let hit = bridge
+            .hit_test("page-1", 15.0, 15.0, "topmost")
+            .expect("hit test should succeed");
+        assert!(hit.contains("\"topNodeId\":\"title\""));
+
+        let _ = bridge
+            .dispatch_editor_commands(r#"[{"kind":"select_nodes","nodeIds":["title"]}]"#)
+            .expect("select should succeed");
+        let bounds = bridge.selection_bounds().expect("selection bounds should serialize");
+        assert!(bounds.contains("\"w\":50.0"));
+        assert!(bounds.contains("\"h\":20.0"));
     }
 }

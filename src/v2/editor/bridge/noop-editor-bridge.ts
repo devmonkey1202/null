@@ -5,6 +5,7 @@ import {
   type EditorCommand,
   type EditorSnapshot,
   type EditorViewport,
+  type HitTestResult,
   type RuntimeGraph,
   type SceneDoc,
   type SceneNode,
@@ -59,6 +60,64 @@ function updateNode(
     ...page,
     nodes: page.nodes.map((node) => (node.id === nodeId ? updater(node) : node)),
   }));
+}
+
+function pointInsideRect(node: SceneNode, x: number, y: number) {
+  return (
+    x >= node.frame.x &&
+    y >= node.frame.y &&
+    x <= node.frame.x + node.frame.w &&
+    y <= node.frame.y + node.frame.h
+  );
+}
+
+function buildSelectionBounds(document: SceneDoc, selection: string[]) {
+  const nodes = document.pages
+    .flatMap((page) => page.nodes)
+    .filter((node) => selection.includes(node.id));
+
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  const left = Math.min(...nodes.map((node) => node.frame.x));
+  const top = Math.min(...nodes.map((node) => node.frame.y));
+  const right = Math.max(...nodes.map((node) => node.frame.x + node.frame.w));
+  const bottom = Math.max(...nodes.map((node) => node.frame.y + node.frame.h));
+
+  return {
+    x: left,
+    y: top,
+    w: right - left,
+    h: bottom - top,
+    rotation: 0,
+  };
+}
+
+function runHitTest(
+  document: SceneDoc,
+  pageId: string,
+  x: number,
+  y: number,
+  mode: "topmost" | "all",
+): HitTestResult {
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (!page) {
+    return {
+      pageId,
+      nodeIds: [],
+      topNodeId: null,
+    };
+  }
+
+  const hitNodes = [...page.nodes].reverse().filter((node) => pointInsideRect(node, x, y));
+  const nodeIds = mode === "topmost" ? hitNodes.slice(0, 1).map((node) => node.id) : hitNodes.map((node) => node.id);
+
+  return {
+    pageId,
+    nodeIds,
+    topNodeId: nodeIds[0] ?? null,
+  };
 }
 
 export class NoopEditorBridge implements EditorBridge {
@@ -202,6 +261,16 @@ export class NoopEditorBridge implements EditorBridge {
         return this.document.pages
           .flatMap((page) => page.nodes)
           .find((node) => node.id === selector.nodeId);
+      case "hit_test":
+        return runHitTest(
+          this.document,
+          selector.pageId,
+          selector.x,
+          selector.y,
+          selector.mode ?? "topmost",
+        );
+      case "selection_bounds":
+        return buildSelectionBounds(this.document, this.selection);
     }
   }
 

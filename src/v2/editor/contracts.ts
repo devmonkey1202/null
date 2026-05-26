@@ -89,10 +89,20 @@ export type EditorApplyResult = {
   dirtyNodeIds: string[];
 };
 
+export type HitTestMode = "topmost" | "all";
+
+export type HitTestResult = {
+  pageId: string;
+  nodeIds: string[];
+  topNodeId: string | null;
+};
+
 export type BridgeQuery =
   | { kind: "selection" }
   | { kind: "document" }
-  | { kind: "node"; nodeId: string };
+  | { kind: "node"; nodeId: string }
+  | { kind: "hit_test"; pageId: string; x: number; y: number; mode?: HitTestMode }
+  | { kind: "selection_bounds" };
 
 export type ServiceBinding = {
   id: string;

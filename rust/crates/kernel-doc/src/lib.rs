@@ -85,12 +85,30 @@ impl Default for EditorViewport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EditorCommand {
-    SelectNodes { node_ids: Vec<String> },
+    SelectNodes {
+        #[serde(rename = "nodeIds")]
+        node_ids: Vec<String>,
+    },
     SetViewport { viewport: EditorViewport },
-    RenameNode { node_id: String, name: String },
-    MoveNode { node_id: String, frame: FramePatch },
-    CreateNode { page_id: String, node: SceneNode },
-    DeleteNode { node_id: String },
+    RenameNode {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        name: String,
+    },
+    MoveNode {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        frame: FramePatch,
+    },
+    CreateNode {
+        #[serde(rename = "pageId")]
+        page_id: String,
+        node: SceneNode,
+    },
+    DeleteNode {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+    },
     Undo,
     Redo,
 }
