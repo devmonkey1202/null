@@ -1,7 +1,7 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch,
-    SceneDoc, SceneNode, SelectionSetMode, ValidationReport,
+    SceneDoc, SceneNode, SelectionSetMode, TransformHandleKind, ValidationReport,
 };
 use std::collections::HashSet;
 
@@ -16,19 +16,6 @@ pub struct HitTestResult {
     pub page_id: String,
     pub node_ids: Vec<String>,
     pub top_node_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransformHandleKind {
-    N,
-    Ne,
-    E,
-    Se,
-    S,
-    Sw,
-    W,
-    Nw,
-    Rotate,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +110,25 @@ pub fn dispatch_commands(
                 touch_doc(&mut state.doc);
                 applied_commands.push("move_node".to_string());
                 dirty_node_ids.push(node_id);
+            }
+            EditorCommand::ResizeSelection {
+                handle,
+                delta_x,
+                delta_y,
+                lock_aspect,
+            } => {
+                let resized = resize_selection(
+                    &mut state.doc,
+                    &state.selection,
+                    handle,
+                    delta_x,
+                    delta_y,
+                    lock_aspect,
+                )?;
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("resize_selection".to_string());
+                dirty_node_ids.extend(resized);
             }
             EditorCommand::CreateNode { page_id, node } => {
                 let dirty_node_id = node.id.clone();
@@ -312,6 +318,56 @@ pub fn selection_handles(bounds: &EditorRect) -> Vec<TransformHandle> {
     ]
 }
 
+pub fn resize_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+    handle: TransformHandleKind,
+    delta_x: f32,
+    delta_y: f32,
+    lock_aspect: bool,
+) -> Result<Vec<String>, CoreError> {
+    let bounds = selection_bounds(doc, selection).ok_or_else(|| {
+        CoreError::new(
+            "scene.selection.empty",
+            "Cannot resize because the current selection is empty.",
+        )
+    })?;
+
+    if matches!(handle, TransformHandleKind::Rotate) {
+        return Err(CoreError::new(
+            "scene.transform.rotate.unimplemented",
+            "Rotate transform is not implemented yet.",
+        ));
+    }
+
+    let next_bounds = resize_bounds(&bounds, handle, delta_x, delta_y, lock_aspect);
+    let scale_x = next_bounds.w / bounds.w.max(1.0);
+    let scale_y = next_bounds.h / bounds.h.max(1.0);
+
+    let mut resized_ids = Vec::new();
+    for node_id in selection {
+        let node = find_node_mut(doc, node_id)?;
+        let left_offset = node.frame.x - bounds.x;
+        let top_offset = node.frame.y - bounds.y;
+        let right_offset = (node.frame.x + node.frame.w) - bounds.x;
+        let bottom_offset = (node.frame.y + node.frame.h) - bounds.y;
+
+        let next_left = next_bounds.x + left_offset * scale_x;
+        let next_top = next_bounds.y + top_offset * scale_y;
+        let next_right = next_bounds.x + right_offset * scale_x;
+        let next_bottom = next_bounds.y + bottom_offset * scale_y;
+
+        node.frame.x = next_left;
+        node.frame.y = next_top;
+        node.frame.w = (next_right - next_left).max(1.0);
+        node.frame.h = (next_bottom - next_top).max(1.0);
+
+        resized_ids.push(node_id.clone());
+    }
+
+    Ok(resized_ids)
+}
+
 fn touch_doc(doc: &mut SceneDoc) {
     doc.meta.updated_at = "editor-kernel-updated".to_string();
 }
@@ -453,6 +509,151 @@ fn apply_frame_patch(frame: &mut EditorRect, patch: FramePatch) {
     }
     if let Some(rotation) = patch.rotation {
         frame.rotation = rotation;
+    }
+}
+
+fn resize_bounds(
+    bounds: &EditorRect,
+    handle: TransformHandleKind,
+    delta_x: f32,
+    delta_y: f32,
+    lock_aspect: bool,
+) -> EditorRect {
+    let min_size = 1.0;
+    let mut left = bounds.x;
+    let mut top = bounds.y;
+    let mut right = bounds.x + bounds.w;
+    let mut bottom = bounds.y + bounds.h;
+
+    match handle {
+        TransformHandleKind::N => top += delta_y,
+        TransformHandleKind::Ne => {
+            top += delta_y;
+            right += delta_x;
+        }
+        TransformHandleKind::E => right += delta_x,
+        TransformHandleKind::Se => {
+            right += delta_x;
+            bottom += delta_y;
+        }
+        TransformHandleKind::S => bottom += delta_y,
+        TransformHandleKind::Sw => {
+            left += delta_x;
+            bottom += delta_y;
+        }
+        TransformHandleKind::W => left += delta_x,
+        TransformHandleKind::Nw => {
+            left += delta_x;
+            top += delta_y;
+        }
+        TransformHandleKind::Rotate => {}
+    }
+
+    if lock_aspect {
+        let aspect = if bounds.h.abs() > f32::EPSILON {
+            bounds.w / bounds.h
+        } else {
+            1.0
+        };
+
+        let current_w = (right - left).max(min_size);
+        let current_h = (bottom - top).max(min_size);
+        let width_driven_h = current_w / aspect.max(f32::EPSILON);
+        let height_driven_w = current_h * aspect;
+
+        if delta_x.abs() >= delta_y.abs() {
+            match handle {
+                TransformHandleKind::N | TransformHandleKind::S => {
+                    let centered_w = current_h * aspect;
+                    let center_x = bounds.x + bounds.w / 2.0;
+                    left = center_x - centered_w / 2.0;
+                    right = center_x + centered_w / 2.0;
+                }
+                TransformHandleKind::W | TransformHandleKind::E => {
+                    let centered_h = current_w / aspect.max(f32::EPSILON);
+                    let center_y = bounds.y + bounds.h / 2.0;
+                    top = center_y - centered_h / 2.0;
+                    bottom = center_y + centered_h / 2.0;
+                }
+                TransformHandleKind::Nw
+                | TransformHandleKind::Ne
+                | TransformHandleKind::Se
+                | TransformHandleKind::Sw => {
+                    let adjusted_h = width_driven_h.max(min_size);
+                    match handle {
+                        TransformHandleKind::Nw | TransformHandleKind::Ne => {
+                            top = bottom - adjusted_h;
+                        }
+                        TransformHandleKind::Se | TransformHandleKind::Sw => {
+                            bottom = top + adjusted_h;
+                        }
+                        _ => {}
+                    }
+                }
+                TransformHandleKind::Rotate => {}
+            }
+        } else {
+            match handle {
+                TransformHandleKind::N | TransformHandleKind::S => {
+                    let centered_w = current_h * aspect;
+                    let center_x = bounds.x + bounds.w / 2.0;
+                    left = center_x - centered_w / 2.0;
+                    right = center_x + centered_w / 2.0;
+                }
+                TransformHandleKind::W | TransformHandleKind::E => {
+                    let centered_h = current_w / aspect.max(f32::EPSILON);
+                    let center_y = bounds.y + bounds.h / 2.0;
+                    top = center_y - centered_h / 2.0;
+                    bottom = center_y + centered_h / 2.0;
+                }
+                TransformHandleKind::Nw
+                | TransformHandleKind::Ne
+                | TransformHandleKind::Se
+                | TransformHandleKind::Sw => {
+                    let adjusted_w = height_driven_w.max(min_size);
+                    match handle {
+                        TransformHandleKind::Nw | TransformHandleKind::Sw => {
+                            left = right - adjusted_w;
+                        }
+                        TransformHandleKind::Ne | TransformHandleKind::Se => {
+                            right = left + adjusted_w;
+                        }
+                        _ => {}
+                    }
+                }
+                TransformHandleKind::Rotate => {}
+            }
+        }
+    }
+
+    if right - left < min_size {
+        match handle {
+            TransformHandleKind::W | TransformHandleKind::Nw | TransformHandleKind::Sw => {
+                left = right - min_size;
+            }
+            _ => {
+                right = left + min_size;
+            }
+        }
+    }
+
+    if bottom - top < min_size {
+        match handle {
+            TransformHandleKind::N | TransformHandleKind::Nw | TransformHandleKind::Ne => {
+                top = bottom - min_size;
+            }
+            _ => {
+                bottom = top + min_size;
+            }
+        }
+    }
+
+    EditorRect {
+        x: left,
+        y: top,
+        w: (right - left).max(min_size),
+        h: (bottom - top).max(min_size),
+        rotation: bounds.rotation,
     }
 }
 
@@ -716,5 +917,24 @@ mod tests {
         assert!(handles
             .iter()
             .any(|handle| handle.kind == TransformHandleKind::Rotate));
+    }
+
+    #[test]
+    fn resize_selection_expands_selected_node() {
+        let mut doc = sample_doc();
+        let resized = resize_selection(
+            &mut doc,
+            &["title".to_string()],
+            TransformHandleKind::Se,
+            10.0,
+            5.0,
+            false,
+        )
+        .expect("resize should succeed");
+
+        assert_eq!(resized, vec!["title".to_string()]);
+        let node = query_node(&doc, "title").expect("node exists");
+        assert_eq!(node.frame.w, 50.0);
+        assert_eq!(node.frame.h, 25.0);
     }
 }

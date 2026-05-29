@@ -73,6 +73,13 @@ export type EditorCommand =
   | { kind: "set_viewport"; viewport: EditorViewport }
   | { kind: "rename_node"; nodeId: string; name: string }
   | { kind: "move_node"; nodeId: string; frame: Partial<EditorRect> }
+  | {
+      kind: "resize_selection";
+      handle: TransformHandleKind;
+      deltaX: number;
+      deltaY: number;
+      lockAspect?: boolean;
+    }
   | { kind: "create_node"; pageId: string; node: SceneNode }
   | { kind: "delete_node"; nodeId: string }
   | { kind: "undo" }

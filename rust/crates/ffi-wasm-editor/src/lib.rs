@@ -1,9 +1,9 @@
 use core_error::CoreError;
-use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, ValidationReport};
+use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, TransformHandleKind, ValidationReport};
 use kernel_history::HistoryStore;
 use kernel_scene::{
     dispatch_commands, hit_test, query_node, selection_bounds, selection_handles, EditorState,
-    HitTestMode, TransformHandleKind,
+    HitTestMode,
 };
 use serde_json::json;
 use std::cell::RefCell;
@@ -346,5 +346,25 @@ mod tests {
             .transform_handles()
             .expect("transform handles should serialize");
         assert!(handles.contains("\"kind\":\"rotate\""));
+    }
+
+    #[test]
+    fn bridge_supports_resize_selection() {
+        let bridge = EditorBridgeHandle::new();
+        let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
+
+        let _ = bridge
+            .dispatch_editor_commands(r#"[{"kind":"select_nodes","nodeIds":["title"]}]"#)
+            .expect("select should succeed");
+        let resized = bridge
+            .dispatch_editor_commands(
+                r#"[{"kind":"resize_selection","handle":"se","deltaX":10,"deltaY":5}]"#,
+            )
+            .expect("resize should succeed");
+
+        assert!(resized.contains("\"resize_selection\""));
+        assert!(resized.contains("\"dirtyNodeIds\":[\"title\"]"));
+        assert!(resized.contains("\"w\":60.0"));
+        assert!(resized.contains("\"h\":25.0"));
     }
 }

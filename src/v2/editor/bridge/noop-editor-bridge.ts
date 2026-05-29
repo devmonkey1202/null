@@ -153,6 +153,151 @@ function selectInRect(
   }
 }
 
+function resizeSelection(
+  document: SceneDoc,
+  selection: string[],
+  handle: TransformHandle["kind"],
+  deltaX: number,
+  deltaY: number,
+  lockAspect: boolean,
+) {
+  const bounds = buildSelectionBounds(document, selection);
+  if (!bounds || handle === "rotate") {
+    return document;
+  }
+
+  const nextBounds = resizeBounds(bounds, handle, deltaX, deltaY, lockAspect);
+  const scaleX = nextBounds.w / Math.max(bounds.w, 1);
+  const scaleY = nextBounds.h / Math.max(bounds.h, 1);
+
+  return {
+    ...document,
+    pages: document.pages.map((page) => ({
+      ...page,
+      nodes: page.nodes.map((node) => {
+        if (!selection.includes(node.id)) {
+          return node;
+        }
+
+        const leftOffset = node.frame.x - bounds.x;
+        const topOffset = node.frame.y - bounds.y;
+        const rightOffset = node.frame.x + node.frame.w - bounds.x;
+        const bottomOffset = node.frame.y + node.frame.h - bounds.y;
+
+        const nextLeft = nextBounds.x + leftOffset * scaleX;
+        const nextTop = nextBounds.y + topOffset * scaleY;
+        const nextRight = nextBounds.x + rightOffset * scaleX;
+        const nextBottom = nextBounds.y + bottomOffset * scaleY;
+
+        return {
+          ...node,
+          frame: {
+            ...node.frame,
+            x: nextLeft,
+            y: nextTop,
+            w: Math.max(nextRight - nextLeft, 1),
+            h: Math.max(nextBottom - nextTop, 1),
+          },
+        };
+      }),
+    })),
+    meta: { ...document.meta, updatedAt: new Date().toISOString() },
+  };
+}
+
+function resizeBounds(
+  bounds: EditorRect,
+  handle: TransformHandle["kind"],
+  deltaX: number,
+  deltaY: number,
+  lockAspect: boolean,
+) {
+  const minSize = 1;
+  let left = bounds.x;
+  let top = bounds.y;
+  let right = bounds.x + bounds.w;
+  let bottom = bounds.y + bounds.h;
+
+  switch (handle) {
+    case "n":
+      top += deltaY;
+      break;
+    case "ne":
+      top += deltaY;
+      right += deltaX;
+      break;
+    case "e":
+      right += deltaX;
+      break;
+    case "se":
+      right += deltaX;
+      bottom += deltaY;
+      break;
+    case "s":
+      bottom += deltaY;
+      break;
+    case "sw":
+      left += deltaX;
+      bottom += deltaY;
+      break;
+    case "w":
+      left += deltaX;
+      break;
+    case "nw":
+      left += deltaX;
+      top += deltaY;
+      break;
+    case "rotate":
+      break;
+  }
+
+  if (lockAspect) {
+    const aspect = bounds.h !== 0 ? bounds.w / bounds.h : 1;
+    const currentW = Math.max(right - left, minSize);
+    const currentH = Math.max(bottom - top, minSize);
+
+    if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+      const adjustedH = currentW / Math.max(aspect, 0.0001);
+      if (handle === "nw" || handle === "ne") {
+        top = bottom - adjustedH;
+      } else if (handle === "sw" || handle === "se") {
+        bottom = top + adjustedH;
+      }
+    } else {
+      const adjustedW = currentH * aspect;
+      if (handle === "nw" || handle === "sw") {
+        left = right - adjustedW;
+      } else if (handle === "ne" || handle === "se") {
+        right = left + adjustedW;
+      }
+    }
+  }
+
+  if (right - left < minSize) {
+    if (handle === "w" || handle === "nw" || handle === "sw") {
+      left = right - minSize;
+    } else {
+      right = left + minSize;
+    }
+  }
+
+  if (bottom - top < minSize) {
+    if (handle === "n" || handle === "nw" || handle === "ne") {
+      top = bottom - minSize;
+    } else {
+      bottom = top + minSize;
+    }
+  }
+
+  return {
+    x: left,
+    y: top,
+    w: Math.max(right - left, minSize),
+    h: Math.max(bottom - top, minSize),
+    rotation: bounds.rotation,
+  };
+}
+
 function runHitTest(
   document: SceneDoc,
   pageId: string,
@@ -256,6 +401,19 @@ export class NoopEditorBridge implements EditorBridge {
           };
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "resize_selection":
+          this.document = resizeSelection(
+            this.document,
+            this.selection,
+            command.handle,
+            command.deltaX,
+            command.deltaY,
+            command.lockAspect ?? false,
+          );
+          this.version += 1;
+          dirtyNodeIds.push(...this.selection);
           this.recordHistory();
           break;
         case "create_node":

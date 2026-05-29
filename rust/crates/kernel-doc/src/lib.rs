@@ -121,6 +121,15 @@ pub enum EditorCommand {
         node_id: String,
         frame: FramePatch,
     },
+    ResizeSelection {
+        handle: TransformHandleKind,
+        #[serde(rename = "deltaX")]
+        delta_x: f32,
+        #[serde(rename = "deltaY")]
+        delta_y: f32,
+        #[serde(default, rename = "lockAspect")]
+        lock_aspect: bool,
+    },
     CreateNode {
         #[serde(rename = "pageId")]
         page_id: String,
@@ -132,6 +141,20 @@ pub enum EditorCommand {
     },
     Undo,
     Redo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransformHandleKind {
+    N,
+    Ne,
+    E,
+    Se,
+    S,
+    Sw,
+    W,
+    Nw,
+    Rotate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
