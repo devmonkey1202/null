@@ -7,8 +7,8 @@
 - 기준 베이스 브랜치: `main`
 - 기준 커밋: `6a7a35ff88932c69d563de4f3ffcc1c28c3fc8d1`
 - v1은 유지
-- v2는 아직 코드로 시작하지 않음
-- 이 폴더 문서가 v2 설계 기준
+- v2는 이미 코드 스캐폴드와 기초 커널 구현이 시작됨
+- 이 폴더 문서가 계속 기준이지만, 코드 상태와 함께 읽어야 함
 
 ## 2. 워킹트리 주의사항
 
@@ -65,7 +65,7 @@
 
 ### Task 1
 
-작업 브랜치 확인 및 **에디터 우선** v2 폴더 스캐폴드 생성
+작업 브랜치 확인 및 **현재 v2 코드 상태 점검**
 
 최소:
 
@@ -75,10 +75,12 @@
 - `src/app/api/v2/control`
 - `src/app/api/v2/ai`
 - `rust/`
+- `src/v2/editor/contracts.ts`
+- `src/v2/editor/bridge/noop-editor-bridge.ts`
 
 ### Task 2
 
-Rust workspace 생성
+Rust workspace 및 커널 진행 상태 확인
 
 최소 crate:
 
@@ -100,36 +102,37 @@ Rust workspace 생성
 
 ### Task 3
 
-v2 문서 포맷 초안 작성
+noop bridge -> 실제 WASM bridge 연결 착수
 
 정해야 할 것:
 
-- `schemaVersion`
-- page/frame/text/component 구조
-- tokens
-- variables
-- app model hooks
+- load / dispatch / query 경계
+- selection / viewport / transform 동기화
+- editor shell 상태와 kernel 상태 분리
 
 ### Task 4
 
-에디터 서비스 경계 초안 코드화
+AI self-hosted 문서와 코드 경계 확인
 
 정해야 할 것:
 
-- platform user/session
-- document persistence boundary
-- collaboration session boundary
-- publish snapshot boundary
+- `05`, `18`, `24`, `25`, `26`, `27` 문서 기준 확인
+- `AIPatch` provenance 필드 고정
+- self-hosted inference 전제 유지
 
 ### Task 5
 
-초기 구현 전에 아래 5개 계약을 코드 타입으로 먼저 잠그기
+다음 커널 우선순위 진행
 
 - SceneDoc
 - EditorCommand
 - EditorSnapshot
 - ValidationReport
 - WASM Bridge
+- rotate
+- snapping / guide
+- layout / constraints
+- 실제 WASM adapter
 
 ## 5. 절대 바로 하지 말아야 할 것
 
@@ -144,11 +147,11 @@ v2 문서 포맷 초안 작성
 
 가장 합리적인 순서:
 
-1. 문서 포맷
-2. editor kernel skeleton
+1. 실제 WASM bridge 연결
+2. rotate / snapping / layout
 3. text/vector/render skeleton
 4. minimal collaboration/publish service boundary
-5. AI patch format
+5. self-hosted AI patch execution boundary
 
 ## 7. 개발 체크리스트
 
@@ -170,23 +173,23 @@ v2 문서 포맷 초안 작성
 
 ### 예시 A
 
-“`docs/v2-rebuild` 기준으로 v2 폴더 스캐폴드부터 만들어”
+“v2 editor shell을 실제 wasm bridge에 붙여”
 
 ### 예시 B
 
-“v2 문서 포맷 JSON schema 초안부터 작성해”
+“rotate와 snapping 커널부터 이어서 구현해”
 
 ### 예시 C
 
-“Rust workspace와 wasm bridge 기본 골격 만들어”
+“self-hosted AI 문서 기준으로 AI gateway 스캐폴드 만들어”
 
 ### 예시 D
 
-“계정 분리 모델을 Prisma 초안으로 정리해”
+“AIPatch provenance와 eval 로그 구조를 코드 타입으로 고정해”
 
 ### 예시 E
 
-“AI가 다룰 IR 타입부터 TypeScript와 Rust 양쪽에서 맞춰”
+“text/vector stack 선택 기준과 skeleton crate를 더 구체화해”
 
 ## 9. 현재 빌드 관련 메모
 

@@ -1,6 +1,6 @@
 # 03. v2 System Architecture
 
-이 문서는 v2의 권장 기술 구조를 정의합니다.  
+이 문서는 v2의 권장 기술 구조를 정의합니다.
 현재 우선순위는 **플랫폼 전체 완성**이 아니라 **Editor Kernel 완성**입니다.
 
 ## 1. 핵심 결론
@@ -12,7 +12,7 @@
 - 런타임 엔진: `Rust + WASM`
 - 서비스 커널: `Rust`
 - 저장소/큐: `Postgres + Redis + Object Storage`
-- AI 계층: `서버 오케스트레이션 + 구조화된 IR 패치 시스템`
+- AI 계층: `self-hosted inference + orchestration + structured IR patch system`
 
 즉, **프론트 전체를 Rust로 가는 것이 아니라 Editor Kernel 중심으로 커널만 Rust로 뽑는 구조**입니다.
 
@@ -56,7 +56,7 @@ Next/React. 책임:
 - inspector/sidebar/panels
 - dashboard
 - settings/admin
-- AI chat surface
+- AI console surface
 
 ### Layer 3. Runtime Extension
 
@@ -81,6 +81,19 @@ Rust 서버. 책임:
 - minimal runtime/service binding
 - AI orchestration entrypoint
 
+### Layer 5. AI Serving / Evaluation
+
+자체 호스팅 AI 계층. 책임:
+
+- model registry
+- model router
+- self-hosted inference worker
+- retrieval / context index
+- AI job queue
+- evaluation pipeline
+- patch approval / audit integration
+- training artifact storage
+
 ## 3. 왜 이런 분리가 필요한가
 
 현재 v1의 문제는 다음이 한곳에 섞여 있다는 점입니다.
@@ -92,8 +105,16 @@ Rust 서버. 책임:
 - 실시간
 - 서비스 액션
 
-v2에서는 이걸 강제 분리해야 합니다.  
+v2에서는 이걸 강제 분리해야 합니다.
 특히 현재 phase에서는 **Editor Kernel이 중심**이고, runtime/service/AI는 editor output을 확장 가능한 구조로 받는 보조 계층입니다.
+
+AI도 "외부 LLM API를 부르는 기능"이 아니라 별도 운영 계층으로 봐야 합니다.
+이유:
+
+- 외부 inference API 비용/종속 제거
+- 모델 교체와 `AIPatch` 계약 분리
+- B -> C 전환 시 데이터 자산 유지
+- validator / approval / rollback을 모델과 독립적으로 유지
 
 분리 효과:
 
@@ -128,6 +149,8 @@ rust/
     service-media/
     service-publish/
     service-ai/
+    ai-serving/
+    ai-eval/
     ffi-wasm/
     ffi-http/
 
@@ -238,7 +261,7 @@ v2는 문서 포맷도 분리해야 합니다.
 
 중요:
 
-런타임은 더 이상 페이지 이름/텍스트 이름을 보고 문맥을 추론하면 안 됩니다.  
+런타임은 더 이상 페이지 이름/텍스트 이름을 보고 문맥을 추론하면 안 됩니다.
 모든 것은 명시적 IR을 따라야 합니다.
 
 ## 9. Service Extension 구성
@@ -261,9 +284,29 @@ v2는 문서 포맷도 분리해야 합니다.
 - 문서/댓글/presence/preview snapshot은 데이터 모델로 명시
 - long-lived collaboration connection은 Rust 서비스에서 처리
 
-## 10. 배포 구조
+## 10. AI Serving / Evaluation 구성
 
-현재 v1은 Vercel 중심입니다.  
+권장 모듈:
+
+- `model_registry`
+- `model_router`
+- `inference_gateway`
+- `retrieval_index`
+- `job_queue`
+- `eval_runner`
+- `artifact_store`
+- `approval_audit`
+
+원칙:
+
+- 외부 상용 inference API 사용 금지
+- 모든 추론은 self-hosted cluster에서 수행
+- 모든 request/response는 구조화 로그로 저장
+- model 교체와 `AIPatch` 계약은 분리
+
+## 11. 배포 구조
+
+현재 v1은 Vercel 중심입니다.
 v2 에디터는 다음 구조를 기본으로 둡니다.
 
 ### 권장
@@ -271,14 +314,15 @@ v2 에디터는 다음 구조를 기본으로 둡니다.
 - Next 셸: Vercel 또는 container
 - Rust service kernel: container/VM 기반
 - Realtime: Rust service 내부에서 WebSocket
+- AI inference/eval: GPU worker 또는 dedicated compute
 
 ### 이유
 
 - 협업/문서 presence는 장기 연결이 필요
 - Rust 서비스는 서버리스보다 지속 프로세스가 유리
-- AI 오케스트레이션과 worker도 분리 가능
+- AI 오케스트레이션과 inference worker는 분리 가능해야 함
 
-## 11. 통신 방식
+## 12. 통신 방식
 
 ### Shell <-> Service Kernel
 
@@ -300,8 +344,9 @@ v2 에디터는 다음 구조를 기본으로 둡니다.
 - editor selection/context -> AI service
 - AI service -> IR patch 반환
 - shell이 preview/approve/apply
+- AI service는 self-hosted inference cluster를 사용
 
-## 12. 테스트 구조
+## 13. 테스트 구조
 
 v2는 테스트를 아래로 분리합니다.
 
@@ -334,7 +379,15 @@ v2는 테스트를 아래로 분리합니다.
 - runtime snapshots
 - token/theme variants
 
-## 13. v2가 반드시 피해야 할 것
+### AI evaluation
+
+- patch validity rate
+- approval rate
+- rollback rate
+- task success set
+- regression suite
+
+## 14. v2가 반드시 피해야 할 것
 
 - giant React file 재등장
 - 패턴 이름 기반 런타임 특수처리
@@ -342,17 +395,19 @@ v2는 테스트를 아래로 분리합니다.
 - shell state와 kernel state 혼합
 - AI가 HTML을 통째로 찍어내는 방식
 - 프로덕션에서 필수 secret 누락 시점이 늦은 구조
+- 외부 모델 API에 비용/정책적으로 종속되는 구조
 
-## 14. 최종 구조 요약
+## 15. 최종 구조 요약
 
 ```text
 React/Next Shell
   -> Rust/WASM Editor Kernel
   -> Rust/WASM Runtime Extension
   -> Rust Service Extension
+  -> Self-hosted AI Serving / Evaluation
   -> Postgres / Redis / Object Storage
-  -> AI Orchestrator over IR
+  -> IR Patch / Validation / Approval
 ```
 
-이 구조가 v2의 기준점입니다.  
+이 구조가 v2의 기준점입니다.
 핵심은 **Editor Kernel을 1순위로 완성하고**, runtime/service/AI는 그 산출물을 확장하는 연결 구조로 유지하는 것입니다.

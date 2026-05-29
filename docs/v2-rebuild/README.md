@@ -31,6 +31,7 @@ NULL v2의 최종 목적은 장기적으로 아래까지 확장 가능한 구조
 - Editor Quality Gate
 
 Runtime / Service / AI는 이번 단계에서 **에디터 산출물이 이후 preview / publish / AI patch / service binding으로 확장될 수 있게 하는 최소 연결 계약**으로만 유지합니다.
+AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference 기반**으로 정의합니다.
 
 ## 3. 이번 문서 묶음의 목적
 
@@ -61,7 +62,11 @@ Runtime / Service / AI는 이번 단계에서 **에디터 산출물이 이후 pr
 15. [19-v2-rust-crate-api-map.md](./19-v2-rust-crate-api-map.md)
 16. [22-v2-ops-topology-and-runbooks.md](./22-v2-ops-topology-and-runbooks.md)
 17. [23-v2-cross-validation-report.md](./23-v2-cross-validation-report.md)
-18. [08-next-chat-start-here.md](./08-next-chat-start-here.md)
+18. [24-v2-ai-serving-architecture.md](./24-v2-ai-serving-architecture.md)
+19. [25-v2-ai-data-and-eval-spec.md](./25-v2-ai-data-and-eval-spec.md)
+20. [26-v2-ai-model-lifecycle.md](./26-v2-ai-model-lifecycle.md)
+21. [27-v2-ai-safety-and-approval-spec.md](./27-v2-ai-safety-and-approval-spec.md)
+22. [08-next-chat-start-here.md](./08-next-chat-start-here.md)
 
 ## 5. 보조 / 확장 참조 문서
 
@@ -77,6 +82,10 @@ Runtime / Service / AI는 이번 단계에서 **에디터 산출물이 이후 pr
 - [18-v2-ai-patch-schema.md](./18-v2-ai-patch-schema.md)
 - [19-v2-rust-crate-api-map.md](./19-v2-rust-crate-api-map.md)
 - [22-v2-ops-topology-and-runbooks.md](./22-v2-ops-topology-and-runbooks.md)
+- [24-v2-ai-serving-architecture.md](./24-v2-ai-serving-architecture.md)
+- [25-v2-ai-data-and-eval-spec.md](./25-v2-ai-data-and-eval-spec.md)
+- [26-v2-ai-model-lifecycle.md](./26-v2-ai-model-lifecycle.md)
+- [27-v2-ai-safety-and-approval-spec.md](./27-v2-ai-safety-and-approval-spec.md)
 
 이 문서들은 삭제 대상이 아닙니다.  
 다만 **현재 구현 깊이의 중심은 에디터**이고, 이 문서들은 그 에디터 결과물이 확장 가능한 구조를 갖기 위한 보조 계층입니다.
@@ -85,6 +94,7 @@ Runtime / Service / AI는 이번 단계에서 **에디터 산출물이 이후 pr
 
 - v1 보수만으로는 목표 품질에 도달하기 어렵습니다.
 - v2는 `React/Next shell + Rust/WASM Editor Kernel + 최소 Runtime/Service/AI 연결 계약` 구조로 다시 세웁니다.
+- AI는 외부 상용 inference API가 아니라 `self-hosted inference + structured IR patch` 구조로 설계합니다.
 - 장기적으로는 앱 플랫폼 전체로 확장될 수 있어야 하지만, 현재 구현은 **Editor-first, not Editor-only** 원칙으로 갑니다.
 
 ## 7. 운영 보호 원칙

@@ -8,6 +8,7 @@
 - default switch / switchback 명확
 - editor SLO 측정 가능
 - 편집기 / 협업 / publish / AI 계층이 운영 가능한 구조
+- 외부 AI API 없이 자체 inference/평가 운영 가능
 
 ## 2. 환경 구분
 
@@ -44,11 +45,20 @@
 - media worker
 - AI orchestration worker
 
-### 3.4 storage
+### 3.4 AI inference workers
+
+분리 권장:
+
+- synchronous inference worker
+- asynchronous generation worker
+- eval runner
+- model artifact sync worker
+
+### 3.5 storage
 
 - Postgres: source of truth
 - Redis: cache / queue / presence / fanout
-- Object storage: media/assets/files
+- Object storage: media/assets/files/model artifacts/eval artifacts
 
 ## 4. 최소 production shape
 
@@ -56,6 +66,8 @@
 - Rust api instances
 - Rust ws/realtime instances
 - background worker instances
+- AI gateway instances
+- inference worker instances
 - managed Postgres
 - managed Redis
 - object storage
@@ -65,6 +77,7 @@
 
 - public ingress -> Next shell / API gateway
 - internal service network -> Rust kernel / workers / Redis / Postgres
+- isolated AI network -> AI gateway / inference workers / artifact store
 - DB direct access는 service 계층으로만 제한
 
 ## 6. observability stack
@@ -88,6 +101,10 @@
 - worker failure rate
 - DB saturation
 - Redis saturation
+- AI inference latency
+- AI patch approval rate
+- AI rollback rate
+- GPU utilization
 
 ## 7. release flow
 
@@ -107,10 +124,12 @@
 - service binary rollback
 - feature flag rollback
 - schema-compatible runtime rollback
+- model version rollback
 
 금지:
 
 - irreversible migration 직후 no-rollback deploy
+- eval 미통과 model promote
 
 ## 9. migration runbook
 
@@ -130,17 +149,20 @@
 - document save/publish full outage
 - collaboration total outage
 - document corruption
+- AI patch apply corruption
 
 ### Sev 2
 
 - degraded latency
 - partial publish failure
 - preview/publish mismatch
+- AI inference backlog saturation
 
 ### Sev 3
 
 - localized UI regression
 - non-critical worker delay
+- eval runner delay
 
 ## 11. oncall runbook 최소 항목
 
@@ -159,6 +181,8 @@
 - point-in-time recovery capability
 - object storage versioning
 - release snapshot retention
+- model artifact retention
+- eval artifact retention
 
 ## 13. security 운영 항목
 
@@ -168,23 +192,36 @@
 - ws token expiry
 - session revocation path
 - workspace isolation checks
+- model artifact access control
+- prompt/log redaction policy
 
 ## 14. 비용 통제
 
 필수 예산 축:
 
-- AI token cost
+- GPU/compute cost
 - collaboration connection cost
 - storage/egress cost
 - DB/Redis compute cost
+- training/eval job cost
 
 운영 rule:
 
 - AI high-cost flow rate limit
 - inactive document presence compaction
 - large media derivative cap
+- inference batch size cap
+- async generation queue budget
 
-## 15. launch checklist
+## 15. AI 운영 추가 규칙
+
+- 외부 상용 inference API 금지
+- self-hosted model registry 필수
+- model promote 전 eval gate 필수
+- model rollback path 필수
+- inference timeout / retry / dead-letter queue 필수
+
+## 16. launch checklist
 
 - SLO dashboard ready
 - alerts tuned
@@ -194,8 +231,10 @@
 - staging validation green
 - security review complete
 - editor perf budget green
+- AI eval gate green
+- model rollback smoke green
 
-## 16. 최종 결론
+## 17. 최종 결론
 
-v2는 기능만 되는 에디터가 아니라  
-**default switch / switchback / incident / cost / observability까지 운영 가능한 상용 에디터**여야 합니다.
+v2는 기능만 되는 에디터가 아니라
+**default switch / switchback / incident / cost / observability / self-hosted AI 운영까지 가능한 상용 에디터**여야 합니다.

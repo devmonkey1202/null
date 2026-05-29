@@ -1,6 +1,6 @@
 # 12. v2 Service Kernel Specification
 
-이 문서는 **에디터 완성에 필요한 최소 서비스 커널**을 정의합니다.  
+이 문서는 **에디터 완성에 필요한 최소 서비스 커널**을 정의합니다.
 현재 phase의 목표는 범용 앱 플랫폼이 아니라, **상용 수준 에디터를 안정적으로 저장·협업·발행·검증할 수 있는 서비스 계층**입니다.
 
 ## 1. 현재 phase의 역할
@@ -13,6 +13,7 @@
 - publish snapshot 생성
 - 에셋 업로드 / 참조 / 정리
 - AI patch 검증 및 적용 진입점
+- self-hosted AI inference orchestration
 
 다루지 않는 것:
 
@@ -27,6 +28,7 @@
 2. 서비스 커널은 문서 원본을 직접 해석해서 임의 수정하지 않는다.
 3. 모든 저장/협업/발행은 `SceneDoc`, `EditorSnapshot`, `ValidationReport` 계약을 따른다.
 4. runtime/service 연결은 **에디터 산출물 확장을 위한 최소 계약**으로만 유지한다.
+5. AI는 외부 상용 API를 호출하지 않고, service 계층에서 self-hosted inference를 관리한다.
 
 ## 3. 책임 경계
 
@@ -59,6 +61,7 @@
 - publish snapshot service
 - asset orchestration
 - AI patch validation / apply entrypoint
+- self-hosted model orchestration
 
 ## 4. 서비스 모듈
 
@@ -94,6 +97,7 @@
 - version restore
 - comment write/resolve
 - publish snapshot create
+- AI patch preview/apply 권한
 
 ## 6. Document Persistence
 
@@ -178,14 +182,36 @@ publish 출력:
 - dry-run
 - preview token 발급
 - apply / rollback 기록
+- model routing
+- eval sample emission
+- structured request/response logging
 
 원칙:
 
 - AI는 raw HTML을 저장하지 않음
 - 항상 구조화된 patch만 반환
 - destructive patch는 승인 필요
+- inference는 self-hosted cluster에서만 수행
 
-## 11. 최소 Runtime / Service 연결
+## 11. AI orchestration 세부
+
+`service-ai`는 최소한 아래를 가져야 합니다.
+
+- `planPatch(context) -> patch draft`
+- `validatePatch(patch) -> validation`
+- `previewPatch(patch) -> preview artifact`
+- `applyPatch(patch) -> apply result`
+- `rollbackPatch(patchId) -> rollback result`
+- `recordFeedback(patchId, outcome)`
+
+추가 책임:
+
+- model registry 조회
+- planner / generator / critic 라우팅
+- sync vs async inference 분기
+- queue / timeout / retry 정책
+
+## 12. 최소 Runtime / Service 연결
 
 현재 phase에서 runtime/service는 아래 정도만 연결합니다.
 
@@ -196,7 +222,7 @@ publish 출력:
 
 즉, **에디터 산출물을 실행 가능한 구조로 넘기는 연결층**이지, 범용 앱 플랫폼 전체 구현이 아닙니다.
 
-## 12. API 표면
+## 13. API 표면
 
 ### Control Plane
 
@@ -217,8 +243,10 @@ publish 출력:
 - `POST /api/v2/ai/patch`
 - `POST /api/v2/ai/validate`
 - `POST /api/v2/ai/apply`
+- `POST /api/v2/ai/rollback`
+- `POST /api/v2/ai/feedback`
 
-## 13. 완료 기준
+## 14. 완료 기준
 
 서비스 커널은 아래를 만족해야 현재 phase를 통과합니다.
 
@@ -228,8 +256,10 @@ publish 출력:
 - comment / review hook가 문서 앵커와 일치
 - publish snapshot이 preview/publish parity를 보장
 - AI patch validate / apply / rollback 흐름이 동작
+- inference request / response / feedback 로그가 구조적으로 저장
 
-## 14. 최종 결론
+## 15. 최종 결론
 
-현재 phase의 서비스 커널은  
+현재 phase의 서비스 커널은
 **에디터를 저장하고 협업하고 발행하고 AI로 수정할 수 있게 만드는 최소 백엔드 계층**입니다.
+AI는 여기서부터 이미 외부 API가 아니라 **우리 인프라에서 관리하는 편집기용 서비스**여야 합니다.

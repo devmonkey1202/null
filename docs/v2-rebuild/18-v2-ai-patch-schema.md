@@ -9,6 +9,7 @@
 - schema validation 실패 patch는 적용 금지
 - high-risk patch는 자동 적용 금지
 - patch scope는 명시적이어야 함
+- patch에는 모델 provenance가 포함돼야 함
 
 ## 2. top-level schema
 
@@ -25,11 +26,22 @@
     "pageIds": ["page_home"],
     "nodeIds": ["node_card_1", "node_card_2"]
   },
+  "provenance": {
+    "patchSource": "ai",
+    "modelId": "null-ai-b01",
+    "modelFamily": "null-self-hosted",
+    "modelVersion": "2026.05.29",
+    "plannerVersion": "planner.v1",
+    "generatorVersion": "generator.v1",
+    "criticVersion": "critic.v1",
+    "trainingLineage": "dataset-2026q2-b1"
+  },
   "sceneOps": [],
   "runtimeOps": [],
   "serviceOps": [],
   "testOps": [],
   "notes": [],
+  "evalScore": 0.94,
   "requiresApproval": true
 }
 ```
@@ -42,14 +54,37 @@
 - `summary`
 - `risk`: `low | medium | high`
 - `scope`
+- `provenance`
 - `sceneOps`
 - `runtimeOps`
 - `serviceOps`
 - `testOps`
 - `notes`
+- `evalScore`
 - `requiresApproval`
 
-## 4. risk 규칙
+## 4. provenance 규칙
+
+`provenance`는 필수입니다.
+
+필드:
+
+- `patchSource`: `ai | human | hybrid`
+- `modelId`
+- `modelFamily`
+- `modelVersion`
+- `plannerVersion`
+- `generatorVersion`
+- `criticVersion`
+- `trainingLineage`
+
+이유:
+
+- B -> C 전환 시 patch 이력 재사용
+- 모델 교체 후 회귀 추적
+- 승인/거절 데이터의 학습 가능성 확보
+
+## 5. risk 규칙
 
 - `low`: cosmetic/layout/token/text
 - `medium`: layout/structure/runtime parity hook 변경
@@ -57,7 +92,7 @@
 
 `high`는 무조건 수동 승인.
 
-## 5. scope schema
+## 6. scope schema
 
 ```json
 {
@@ -84,7 +119,7 @@
 }
 ```
 
-## 6. sceneOps
+## 7. sceneOps
 
 허용 종류:
 
@@ -115,7 +150,7 @@
 }
 ```
 
-## 7. runtimeOps
+## 8. runtimeOps
 
 허용 종류:
 
@@ -149,7 +184,7 @@
 
 - op type `kind`와 action 종류 `actionKind`는 분리
 
-## 8. serviceOps
+## 9. serviceOps
 
 허용 종류:
 
@@ -159,7 +194,7 @@
 - `bind_auth_provider`
 - `create_editor_server_action`
 
-## 9. testOps
+## 10. testOps
 
 허용 종류:
 
@@ -185,7 +220,7 @@
 }
 ```
 
-## 10. JSON Schema 초안
+## 11. JSON Schema 초안
 
 ```json
 {
@@ -198,6 +233,7 @@
     "summary",
     "risk",
     "scope",
+    "provenance",
     "sceneOps",
     "runtimeOps",
     "serviceOps",
@@ -213,6 +249,7 @@
     "summary": { "type": "string", "minLength": 1 },
     "risk": { "enum": ["low", "medium", "high"] },
     "scope": { "$ref": "#/$defs/scope" },
+    "provenance": { "$ref": "#/$defs/provenance" },
     "sceneOps": { "type": "array", "items": { "$ref": "#/$defs/op" } },
     "runtimeOps": { "type": "array", "items": { "$ref": "#/$defs/op" } },
     "serviceOps": { "type": "array", "items": { "$ref": "#/$defs/op" } },
@@ -221,6 +258,7 @@
       "type": "array",
       "items": { "type": "string" }
     },
+    "evalScore": { "type": "number", "minimum": 0, "maximum": 1 },
     "requiresApproval": { "type": "boolean" }
   },
   "$defs": {
@@ -232,6 +270,30 @@
         "pageIds": { "type": "array", "items": { "type": "string" } },
         "nodeIds": { "type": "array", "items": { "type": "string" } },
         "routeKeys": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "patchSource",
+        "modelId",
+        "modelFamily",
+        "modelVersion",
+        "plannerVersion",
+        "generatorVersion",
+        "criticVersion",
+        "trainingLineage"
+      ],
+      "properties": {
+        "patchSource": { "enum": ["ai", "human", "hybrid"] },
+        "modelId": { "type": "string" },
+        "modelFamily": { "type": "string" },
+        "modelVersion": { "type": "string" },
+        "plannerVersion": { "type": "string" },
+        "generatorVersion": { "type": "string" },
+        "criticVersion": { "type": "string" },
+        "trainingLineage": { "type": "string" }
       },
       "additionalProperties": false
     },
@@ -248,7 +310,7 @@
 }
 ```
 
-## 11. validation pipeline
+## 12. validation pipeline
 
 1. JSON schema valid
 2. referenced node/page/route exists
@@ -257,18 +319,20 @@
 5. permission boundary safe
 6. destructive ops approval check
 7. dry-run success
+8. provenance complete
 
-## 12. forbidden patch
+## 13. forbidden patch
 
 - raw HTML blob 삽입
-- scope 밖 node 삭제
-- production credential 값 직접 쓰기
+- scope 밖 node 강제 수정
+- production credential 직접 쓰기
 - 문서 경계 밖 publish/auth binding 변경
 - destructive migration auto-apply
+- provenance 없는 patch
 
-## 13. rollback contract
+## 14. rollback contract
 
-모든 patch는 inverse patch 또는 snapshot rollback 경로 필요.
+모든 patch는 inverse patch 또는 snapshot rollback 경로가 필요합니다.
 
 기록:
 
@@ -278,14 +342,17 @@
 - validation result
 - actor
 - timestamp
+- provenance
 
-## 14. 구현 우선순위
+## 15. 구현 우선순위
 
 1. low-risk `sceneOps`
 2. low/medium `runtimeOps`
 3. limited `serviceOps`
 4. high-risk patch approval flow
 
-## 15. 최종 결론
+## 16. 최종 결론
 
-v2 AI patch는 **에디터 문서를 대상으로 schema, scope, risk, validation, rollback이 잠긴 실행 단위**여야 합니다.
+v2 AI patch는 **에디터 문서를 수정하는 모든 변경**에 대해
+schema, scope, risk, validation, rollback뿐 아니라
+**model provenance와 training lineage까지 추적 가능한 실행 단위**여야 합니다.
