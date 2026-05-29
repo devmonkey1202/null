@@ -1,17 +1,28 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createNoopEditorBridge } from "@/v2/editor/bridge/noop-editor-bridge";
 import type {
+  EditorRect,
   EditorSnapshot,
   RuntimeGraph,
   SceneNode,
+  TransformHandle,
   ValidationReport,
   WasmBridgeInfo,
 } from "@/v2/editor/contracts";
 import { sampleSceneDoc } from "@/v2/editor/sample-doc";
 
 const bridge = createNoopEditorBridge(sampleSceneDoc);
+const CANVAS_PAGE_ID = sampleSceneDoc.pages[0]?.id ?? "page-home";
+
+type DragMarquee = {
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+  additive: boolean;
+};
 
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
@@ -25,45 +36,260 @@ function selectedNode(nodes: SceneNode[], selection: string[]) {
   return nodes.find((node) => node.id === selection[0]) ?? null;
 }
 
+function normalizeRect({ originX, originY, currentX, currentY }: DragMarquee): EditorRect {
+  const x = Math.min(originX, currentX);
+  const y = Math.min(originY, currentY);
+  const w = Math.abs(currentX - originX);
+  const h = Math.abs(currentY - originY);
+
+  return { x, y, w, h, rotation: 0 };
+}
+
+function selectionSummary(selection: string[]) {
+  if (selection.length === 0) {
+    return "No selection";
+  }
+
+  if (selection.length === 1) {
+    return "1 layer selected";
+  }
+
+  return `${selection.length} layers selected`;
+}
+
 export function V2EditorShell() {
   const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
   const [validation, setValidation] = useState<ValidationReport | null>(null);
   const [runtimeGraph, setRuntimeGraph] = useState<RuntimeGraph | null>(null);
+  const [selectionBounds, setSelectionBounds] = useState<EditorRect | null>(null);
+  const [transformHandles, setTransformHandles] = useState<TransformHandle[]>([]);
+  const [dragMarquee, setDragMarquee] = useState<DragMarquee | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+
+  const syncBridgeState = useCallback(async () => {
+    const [nextValidation, nextRuntime, nextSelectionBounds, nextTransformHandles] =
+      await Promise.all([
+        bridge.runValidation(),
+        bridge.exportRuntimeGraph(),
+        bridge.query({ kind: "selection_bounds" }) as Promise<EditorRect | null>,
+        bridge.query({ kind: "transform_handles" }) as Promise<TransformHandle[]>,
+      ]);
+
+    setValidation(nextValidation);
+    setRuntimeGraph(nextRuntime);
+    setSelectionBounds(nextSelectionBounds);
+    setTransformHandles(nextTransformHandles);
+  }, []);
 
   useEffect(() => {
     async function load() {
-      const [info, initialSnapshot, initialValidation, initialRuntime] = await Promise.all([
+      const [info, initialSnapshot] = await Promise.all([
         bridge.info(),
         bridge.loadDocument(sampleSceneDoc),
-        bridge.runValidation(),
-        bridge.exportRuntimeGraph(),
       ]);
 
       setBridgeInfo(info);
       setSnapshot(initialSnapshot);
-      setValidation(initialValidation);
-      setRuntimeGraph(initialRuntime);
+      await syncBridgeState();
     }
 
     void load();
-  }, []);
+  }, [syncBridgeState]);
 
   const nodes = useMemo(() => flattenNodes(snapshot), [snapshot]);
   const activeNode = useMemo(
     () => selectedNode(nodes, snapshot?.selection ?? []),
     [nodes, snapshot?.selection],
   );
+  const rootFrame = useMemo(
+    () => nodes.find((node) => node.parentId === null) ?? null,
+    [nodes],
+  );
+  const canvasNodes = useMemo(
+    () => nodes.filter((node) => node.parentId !== null),
+    [nodes],
+  );
+  const liveMarqueeRect = useMemo(
+    () => (dragMarquee ? normalizeRect(dragMarquee) : null),
+    [dragMarquee],
+  );
+
+  async function applyAndSync(commands: Parameters<typeof bridge.dispatch>[0]) {
+    const result = await bridge.dispatch(commands);
+    setSnapshot(result.snapshot);
+    await syncBridgeState();
+  }
 
   async function selectNode(nodeId: string) {
-    const result = await bridge.dispatch([{ kind: "select_nodes", nodeIds: [nodeId] }]);
-    setSnapshot(result.snapshot);
-    setValidation(result.validation);
+    await applyAndSync([{ kind: "select_nodes", nodeIds: [nodeId] }]);
   }
 
   async function rerunValidation() {
-    setValidation(await bridge.runValidation());
-    setRuntimeGraph(await bridge.exportRuntimeGraph());
+    await syncBridgeState();
+  }
+
+  const runDeleteSelection = useCallback(async () => {
+    if (!snapshot?.selection.length) {
+      return;
+    }
+
+    const commands = snapshot.selection.map((nodeId) => ({
+      kind: "delete_node" as const,
+      nodeId,
+    }));
+
+    await applyAndSync(commands);
+  }, [snapshot?.selection, syncBridgeState]);
+
+  const runUndo = useCallback(async () => {
+    await applyAndSync([{ kind: "undo" }]);
+  }, [syncBridgeState]);
+
+  const runRedo = useCallback(async () => {
+    await applyAndSync([{ kind: "redo" }]);
+  }, [syncBridgeState]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const isMeta = event.metaKey || event.ctrlKey;
+
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (snapshot?.selection.length) {
+          event.preventDefault();
+          void runDeleteSelection();
+        }
+        return;
+      }
+
+      if (!isMeta) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        void runUndo();
+        return;
+      }
+
+      if ((key === "z" && event.shiftKey) || key === "y") {
+        event.preventDefault();
+        void runRedo();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [runDeleteSelection, runRedo, runUndo, snapshot?.selection.length]);
+
+  function toCanvasPoint(event: React.PointerEvent<HTMLDivElement>) {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds) {
+      return null;
+    }
+
+    return {
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    };
+  }
+
+  function handleCanvasPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const point = toCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    setDragMarquee({
+      originX: point.x,
+      originY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      additive: event.shiftKey,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handleCanvasPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (!dragMarquee) {
+      return;
+    }
+
+    const point = toCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    setDragMarquee((current) =>
+      current
+        ? {
+            ...current,
+            currentX: point.x,
+            currentY: point.y,
+          }
+        : current,
+    );
+  }
+
+  async function finishMarqueeSelection() {
+    if (!dragMarquee) {
+      return;
+    }
+
+    const rect = normalizeRect(dragMarquee);
+    setDragMarquee(null);
+
+    const isClick =
+      rect.w < 4 &&
+      rect.h < 4;
+
+    if (isClick) {
+      await applyAndSync([{ kind: "select_nodes", nodeIds: [] }]);
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "select_in_rect",
+        pageId: CANVAS_PAGE_ID,
+        rect,
+        mode: dragMarquee.additive ? "add" : "replace",
+      },
+    ]);
+  }
+
+  function handleCanvasPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    if (!dragMarquee) {
+      return;
+    }
+
+    if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+      canvasRef.current.releasePointerCapture(event.pointerId);
+    }
+
+    void finishMarqueeSelection();
+  }
+
+  function handleCanvasPointerCancel(event: React.PointerEvent<HTMLDivElement>) {
+    if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+      canvasRef.current.releasePointerCapture(event.pointerId);
+    }
+    setDragMarquee(null);
   }
 
   return (
@@ -132,44 +358,93 @@ export function V2EditorShell() {
 
         <main className="flex min-h-0 flex-col">
           <div className="border-b border-slate-200 bg-[#f8fafc] px-5 py-3 text-sm text-slate-600">
-            Editor-first scaffold. React/Next shell + v2 bridge boundary + sample SceneDoc.
+            Editor-first shell. Selection, marquee, handles, history, and diagnostics are driven
+            through the v2 bridge contract.
           </div>
           <div className="min-h-0 flex-1 overflow-auto bg-[#edf1f7] p-8">
-            <div className="relative mx-auto h-[960px] w-full max-w-[1280px] rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-              {nodes
-                .filter((node) => node.parentId !== null)
-                .map((node) => {
-                  const selected = snapshot?.selection.includes(node.id) ?? false;
-                  return (
-                    <button
-                      key={node.id}
-                      type="button"
-                      onClick={() => void selectNode(node.id)}
-                      style={{
-                        left: node.frame.x,
-                        top: node.frame.y,
-                        width: node.frame.w,
-                        height: node.frame.h,
-                      }}
-                      className={`absolute rounded-2xl border text-left transition ${
-                        node.kind === "text"
-                          ? "bg-transparent"
-                          : "bg-slate-50"
-                      } ${
-                        selected
-                          ? "border-slate-950 ring-2 ring-slate-950/15"
-                          : "border-slate-200 hover:border-slate-300"
-                      }`}
-                    >
-                      <div className="p-4">
-                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
-                          {node.kind}
-                        </div>
-                        <div className="mt-2 text-sm font-semibold text-slate-900">{node.name}</div>
+            <div
+              ref={canvasRef}
+              className="relative mx-auto h-[960px] w-full max-w-[1280px] rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerUp={handleCanvasPointerUp}
+              onPointerCancel={handleCanvasPointerCancel}
+            >
+              {rootFrame ? (
+                <div className="pointer-events-none absolute left-0 top-0 rounded-[28px] border border-dashed border-slate-200/80 p-5 text-xs uppercase tracking-[0.18em] text-slate-300">
+                  {rootFrame.name}
+                </div>
+              ) : null}
+
+              {canvasNodes.map((node) => {
+                const selected = snapshot?.selection.includes(node.id) ?? false;
+                return (
+                  <button
+                    key={node.id}
+                    type="button"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => void selectNode(node.id)}
+                    style={{
+                      left: node.frame.x,
+                      top: node.frame.y,
+                      width: node.frame.w,
+                      height: node.frame.h,
+                    }}
+                    className={`absolute rounded-2xl border text-left transition ${
+                      node.kind === "text" ? "bg-transparent" : "bg-slate-50"
+                    } ${
+                      selected
+                        ? "border-slate-950 ring-2 ring-slate-950/15"
+                        : "border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    <div className="p-4">
+                      <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                        {node.kind}
                       </div>
-                    </button>
-                  );
-                })}
+                      <div className="mt-2 text-sm font-semibold text-slate-900">{node.name}</div>
+                    </div>
+                  </button>
+                );
+              })}
+
+              {selectionBounds ? (
+                <div
+                  className="pointer-events-none absolute border border-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.12)]"
+                  style={{
+                    left: selectionBounds.x,
+                    top: selectionBounds.y,
+                    width: selectionBounds.w,
+                    height: selectionBounds.h,
+                  }}
+                />
+              ) : null}
+
+              {transformHandles.map((handle) => (
+                <div
+                  key={`${handle.kind}-${handle.x}-${handle.y}`}
+                  className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#2859ff] bg-white ${
+                    handle.kind === "rotate" ? "h-3.5 w-3.5" : "h-3 w-3"
+                  }`}
+                  style={{
+                    left: handle.x,
+                    top: handle.y,
+                  }}
+                  title={handle.kind}
+                />
+              ))}
+
+              {liveMarqueeRect ? (
+                <div
+                  className="pointer-events-none absolute border border-dashed border-[#2859ff] bg-[#2859ff]/10"
+                  style={{
+                    left: liveMarqueeRect.x,
+                    top: liveMarqueeRect.y,
+                    width: liveMarqueeRect.w,
+                    height: liveMarqueeRect.h,
+                  }}
+                />
+              ) : null}
             </div>
           </div>
           <div className="grid grid-cols-[1.4fr_1fr] border-t border-slate-200 bg-white">
@@ -206,6 +481,15 @@ export function V2EditorShell() {
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
                   Minimal preview/publish contract only.
+                </div>
+              </div>
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-900">
+                  {selectionSummary(snapshot?.selection ?? [])}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  Click to select, drag on canvas to marquee, Cmd/Ctrl+Z to undo, Delete to
+                  remove.
                 </div>
               </div>
             </div>
@@ -270,4 +554,3 @@ export function V2EditorShell() {
     </div>
   );
 }
-
