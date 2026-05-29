@@ -24,6 +24,13 @@ type DragMarquee = {
   additive: boolean;
 };
 
+type DragPan = {
+  originClientX: number;
+  originClientY: number;
+  startViewportX: number;
+  startViewportY: number;
+};
+
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
 }
@@ -65,6 +72,9 @@ export function V2EditorShell() {
   const [selectionBounds, setSelectionBounds] = useState<EditorRect | null>(null);
   const [transformHandles, setTransformHandles] = useState<TransformHandle[]>([]);
   const [dragMarquee, setDragMarquee] = useState<DragMarquee | null>(null);
+  const [dragPan, setDragPan] = useState<DragPan | null>(null);
+  const [spacePressed, setSpacePressed] = useState(false);
+  const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
   const syncBridgeState = useCallback(async () => {
@@ -114,10 +124,12 @@ export function V2EditorShell() {
     () => (dragMarquee ? normalizeRect(dragMarquee) : null),
     [dragMarquee],
   );
+  const viewViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
 
   async function applyAndSync(commands: Parameters<typeof bridge.dispatch>[0]) {
     const result = await bridge.dispatch(commands);
     setSnapshot(result.snapshot);
+    setDraftViewport(null);
     await syncBridgeState();
   }
 
@@ -186,11 +198,27 @@ export function V2EditorShell() {
       if ((key === "z" && event.shiftKey) || key === "y") {
         event.preventDefault();
         void runRedo();
+        return;
+      }
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        setSpacePressed(true);
+      }
+    }
+
+    function onKeyUp(event: KeyboardEvent) {
+      if (event.code === "Space") {
+        setSpacePressed(false);
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, [runDeleteSelection, runRedo, runUndo, snapshot?.selection.length]);
 
   function toCanvasPoint(event: React.PointerEvent<HTMLDivElement>) {
@@ -199,14 +227,29 @@ export function V2EditorShell() {
       return null;
     }
 
+    const activeViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+
     return {
-      x: event.clientX - bounds.left,
-      y: event.clientY - bounds.top,
+      x: (event.clientX - bounds.left - activeViewport.x) / activeViewport.zoom,
+      y: (event.clientY - bounds.top - activeViewport.y) / activeViewport.zoom,
     };
   }
 
   function handleCanvasPointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) {
+    if (event.button !== 0 && event.button !== 1) {
+      return;
+    }
+
+    const activeViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+
+    if (event.button === 1 || spacePressed) {
+      setDragPan({
+        originClientX: event.clientX,
+        originClientY: event.clientY,
+        startViewportX: activeViewport.x,
+        startViewportY: activeViewport.y,
+      });
+      canvasRef.current?.setPointerCapture(event.pointerId);
       return;
     }
 
@@ -226,6 +269,16 @@ export function V2EditorShell() {
   }
 
   function handleCanvasPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (dragPan) {
+      const nextViewport = {
+        zoom: viewViewport.zoom,
+        x: dragPan.startViewportX + (event.clientX - dragPan.originClientX),
+        y: dragPan.startViewportY + (event.clientY - dragPan.originClientY),
+      };
+      setDraftViewport(nextViewport);
+      return;
+    }
+
     if (!dragMarquee) {
       return;
     }
@@ -244,6 +297,16 @@ export function V2EditorShell() {
           }
         : current,
     );
+  }
+
+  async function commitViewport(viewport: EditorSnapshot["viewport"]) {
+    await applyAndSync([{ kind: "set_viewport", viewport }]);
+  }
+
+  async function zoomCanvas(multiplier: number) {
+    const current = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+    const nextZoom = Math.min(4, Math.max(0.2, Number((current.zoom * multiplier).toFixed(3))));
+    await commitViewport({ ...current, zoom: nextZoom });
   }
 
   async function finishMarqueeSelection() {
@@ -274,6 +337,17 @@ export function V2EditorShell() {
   }
 
   function handleCanvasPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    if (dragPan) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const viewportToCommit = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+      setDragPan(null);
+      void commitViewport(viewportToCommit);
+      return;
+    }
+
     if (!dragMarquee) {
       return;
     }
@@ -289,7 +363,20 @@ export function V2EditorShell() {
     if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
       canvasRef.current.releasePointerCapture(event.pointerId);
     }
+    setDragPan(null);
     setDragMarquee(null);
+  }
+
+  async function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!(event.metaKey || event.ctrlKey)) {
+      return;
+    }
+
+    event.preventDefault();
+    const current = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+    const multiplier = event.deltaY < 0 ? 1.08 : 0.92;
+    const nextZoom = Math.min(4, Math.max(0.2, Number((current.zoom * multiplier).toFixed(3))));
+    await commitViewport({ ...current, zoom: nextZoom });
   }
 
   return (
@@ -309,6 +396,23 @@ export function V2EditorShell() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void zoomCanvas(0.9)}
+            className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+          >
+            -
+          </button>
+          <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600">
+            {Math.round(viewViewport.zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => void zoomCanvas(1.1)}
+            className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+          >
+            +
+          </button>
           <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600">
             schema v{bridgeInfo?.schemaVersion ?? 0}
           </span>
@@ -369,82 +473,101 @@ export function V2EditorShell() {
               onPointerMove={handleCanvasPointerMove}
               onPointerUp={handleCanvasPointerUp}
               onPointerCancel={handleCanvasPointerCancel}
+              onWheel={handleCanvasWheel}
             >
-              {rootFrame ? (
-                <div className="pointer-events-none absolute left-0 top-0 rounded-[28px] border border-dashed border-slate-200/80 p-5 text-xs uppercase tracking-[0.18em] text-slate-300">
-                  {rootFrame.name}
-                </div>
-              ) : null}
+              <div
+                className="absolute inset-0 origin-top-left"
+                style={{
+                  transform: `translate(${viewViewport.x}px, ${viewViewport.y}px) scale(${viewViewport.zoom})`,
+                }}
+              >
+                {rootFrame ? (
+                  <div className="pointer-events-none absolute left-0 top-0 rounded-[28px] border border-dashed border-slate-200/80 p-5 text-xs uppercase tracking-[0.18em] text-slate-300">
+                    {rootFrame.name}
+                  </div>
+                ) : null}
 
-              {canvasNodes.map((node) => {
-                const selected = snapshot?.selection.includes(node.id) ?? false;
-                return (
-                  <button
-                    key={node.id}
-                    type="button"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => void selectNode(node.id)}
-                    style={{
-                      left: node.frame.x,
-                      top: node.frame.y,
-                      width: node.frame.w,
-                      height: node.frame.h,
-                    }}
-                    className={`absolute rounded-2xl border text-left transition ${
-                      node.kind === "text" ? "bg-transparent" : "bg-slate-50"
-                    } ${
-                      selected
-                        ? "border-slate-950 ring-2 ring-slate-950/15"
-                        : "border-slate-200 hover:border-slate-300"
-                    }`}
-                  >
-                    <div className="p-4">
-                      <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
-                        {node.kind}
+                {canvasNodes.map((node) => {
+                  const selected = snapshot?.selection.includes(node.id) ?? false;
+                  return (
+                    <button
+                      key={node.id}
+                      type="button"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={() => void selectNode(node.id)}
+                      style={{
+                        left: node.frame.x,
+                        top: node.frame.y,
+                        width: node.frame.w,
+                        height: node.frame.h,
+                      }}
+                      className={`absolute rounded-2xl border text-left transition ${
+                        node.kind === "text" ? "bg-transparent" : "bg-slate-50"
+                      } ${
+                        selected
+                          ? "border-slate-950 ring-2 ring-slate-950/15"
+                          : "border-slate-200 hover:border-slate-300"
+                      }`}
+                    >
+                      <div className="p-4">
+                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                          {node.kind}
+                        </div>
+                        <div className="mt-2 text-sm font-semibold text-slate-900">
+                          {node.name}
+                        </div>
                       </div>
-                      <div className="mt-2 text-sm font-semibold text-slate-900">{node.name}</div>
-                    </div>
-                  </button>
-                );
-              })}
+                    </button>
+                  );
+                })}
 
-              {selectionBounds ? (
-                <div
-                  className="pointer-events-none absolute border border-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.12)]"
-                  style={{
-                    left: selectionBounds.x,
-                    top: selectionBounds.y,
-                    width: selectionBounds.w,
-                    height: selectionBounds.h,
-                  }}
-                />
-              ) : null}
+                {selectionBounds ? (
+                  <div
+                    className="pointer-events-none absolute border border-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.12)]"
+                    style={{
+                      left: selectionBounds.x,
+                      top: selectionBounds.y,
+                      width: selectionBounds.w,
+                      height: selectionBounds.h,
+                    }}
+                  />
+                ) : null}
 
-              {transformHandles.map((handle) => (
-                <div
-                  key={`${handle.kind}-${handle.x}-${handle.y}`}
-                  className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#2859ff] bg-white ${
-                    handle.kind === "rotate" ? "h-3.5 w-3.5" : "h-3 w-3"
-                  }`}
-                  style={{
-                    left: handle.x,
-                    top: handle.y,
-                  }}
-                  title={handle.kind}
-                />
-              ))}
+                {transformHandles.map((handle) => (
+                  <div
+                    key={`${handle.kind}-${handle.x}-${handle.y}`}
+                    className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#2859ff] bg-white ${
+                      handle.kind === "rotate" ? "h-3.5 w-3.5" : "h-3 w-3"
+                    }`}
+                    style={{
+                      left: handle.x,
+                      top: handle.y,
+                    }}
+                    title={handle.kind}
+                  />
+                ))}
 
-              {liveMarqueeRect ? (
-                <div
-                  className="pointer-events-none absolute border border-dashed border-[#2859ff] bg-[#2859ff]/10"
-                  style={{
-                    left: liveMarqueeRect.x,
-                    top: liveMarqueeRect.y,
-                    width: liveMarqueeRect.w,
-                    height: liveMarqueeRect.h,
-                  }}
-                />
-              ) : null}
+                {liveMarqueeRect ? (
+                  <div
+                    className="pointer-events-none absolute border border-dashed border-[#2859ff] bg-[#2859ff]/10"
+                    style={{
+                      left: liveMarqueeRect.x,
+                      top: liveMarqueeRect.y,
+                      width: liveMarqueeRect.w,
+                      height: liveMarqueeRect.h,
+                    }}
+                  />
+                ) : null}
+              </div>
+              <div
+                className={`pointer-events-none absolute bottom-4 left-4 rounded-full border px-3 py-1 text-xs font-medium ${
+                  dragPan || spacePressed
+                    ? "border-[#2859ff]/20 bg-[#2859ff]/10 text-[#2859ff]"
+                    : "border-slate-200 bg-white/90 text-slate-500"
+                }`}
+              >
+                {dragPan || spacePressed ? "Pan mode" : "Hold Space or use middle mouse to pan"}
+              </div>
             </div>
           </div>
           <div className="grid grid-cols-[1.4fr_1fr] border-t border-slate-200 bg-white">
@@ -546,6 +669,10 @@ export function V2EditorShell() {
               <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                 <div>mode: {bridgeInfo?.mode ?? "loading"}</div>
                 <div className="mt-1">kernel: {bridgeInfo?.kernel ?? "loading"}</div>
+                <div className="mt-1">
+                  viewport: {Math.round(viewViewport.zoom * 100)}% / {Math.round(viewViewport.x)}/
+                  {Math.round(viewViewport.y)}
+                </div>
               </div>
             </section>
           </div>
