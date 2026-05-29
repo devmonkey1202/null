@@ -103,6 +103,13 @@ pub fn dispatch_commands(
                 applied_commands.push("rename_node".to_string());
                 dirty_node_ids.push(node_id);
             }
+            EditorCommand::MoveSelection { delta_x, delta_y } => {
+                let moved = move_selection(&mut state.doc, &state.selection, delta_x, delta_y)?;
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("move_selection".to_string());
+                dirty_node_ids.extend(moved);
+            }
             EditorCommand::MoveNode { node_id, frame } => {
                 let node = find_node_mut(&mut state.doc, &node_id)?;
                 apply_frame_patch(&mut node.frame, frame);
@@ -110,6 +117,13 @@ pub fn dispatch_commands(
                 touch_doc(&mut state.doc);
                 applied_commands.push("move_node".to_string());
                 dirty_node_ids.push(node_id);
+            }
+            EditorCommand::RotateSelection { delta_deg } => {
+                let rotated = rotate_selection(&mut state.doc, &state.selection, delta_deg)?;
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("rotate_selection".to_string());
+                dirty_node_ids.extend(rotated);
             }
             EditorCommand::ResizeSelection {
                 handle,
@@ -366,6 +380,68 @@ pub fn resize_selection(
     }
 
     Ok(resized_ids)
+}
+
+pub fn move_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+    delta_x: f32,
+    delta_y: f32,
+) -> Result<Vec<String>, CoreError> {
+    if selection.is_empty() {
+        return Err(CoreError::new(
+            "scene.selection.empty",
+            "Cannot move because the current selection is empty.",
+        ));
+    }
+
+    let mut moved_ids = Vec::new();
+    for node_id in selection {
+        let node = find_node_mut(doc, node_id)?;
+        node.frame.x += delta_x;
+        node.frame.y += delta_y;
+        moved_ids.push(node_id.clone());
+    }
+
+    Ok(moved_ids)
+}
+
+pub fn rotate_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+    delta_deg: f32,
+) -> Result<Vec<String>, CoreError> {
+    let bounds = selection_bounds(doc, selection).ok_or_else(|| {
+        CoreError::new(
+            "scene.selection.empty",
+            "Cannot rotate because the current selection is empty.",
+        )
+    })?;
+
+    let center_x = bounds.x + bounds.w / 2.0;
+    let center_y = bounds.y + bounds.h / 2.0;
+    let angle = delta_deg.to_radians();
+    let cos_theta = angle.cos();
+    let sin_theta = angle.sin();
+
+    let mut rotated_ids = Vec::new();
+    for node_id in selection {
+        let node = find_node_mut(doc, node_id)?;
+        let node_center_x = node.frame.x + node.frame.w / 2.0;
+        let node_center_y = node.frame.y + node.frame.h / 2.0;
+        let local_x = node_center_x - center_x;
+        let local_y = node_center_y - center_y;
+
+        let rotated_x = (local_x * cos_theta) - (local_y * sin_theta);
+        let rotated_y = (local_x * sin_theta) + (local_y * cos_theta);
+
+        node.frame.x = center_x + rotated_x - node.frame.w / 2.0;
+        node.frame.y = center_y + rotated_y - node.frame.h / 2.0;
+        node.frame.rotation = normalize_degrees(node.frame.rotation + delta_deg);
+        rotated_ids.push(node_id.clone());
+    }
+
+    Ok(rotated_ids)
 }
 
 fn touch_doc(doc: &mut SceneDoc) {
@@ -733,6 +809,15 @@ fn dedupe_ids(ids: Vec<String>) -> Vec<String> {
     ordered
 }
 
+fn normalize_degrees(value: f32) -> f32 {
+    let normalized = value.rem_euclid(360.0);
+    if normalized > 180.0 {
+        normalized - 360.0
+    } else {
+        normalized
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,5 +1021,30 @@ mod tests {
         let node = query_node(&doc, "title").expect("node exists");
         assert_eq!(node.frame.w, 50.0);
         assert_eq!(node.frame.h, 25.0);
+    }
+
+    #[test]
+    fn move_selection_offsets_selected_nodes() {
+        let mut doc = sample_doc();
+        let moved = move_selection(&mut doc, &["title".to_string()], 8.0, -4.0)
+            .expect("move selection should succeed");
+
+        assert_eq!(moved, vec!["title".to_string()]);
+        let node = query_node(&doc, "title").expect("node exists");
+        assert_eq!(node.frame.x, 18.0);
+        assert_eq!(node.frame.y, 6.0);
+    }
+
+    #[test]
+    fn rotate_selection_updates_node_position_and_rotation() {
+        let mut doc = sample_doc();
+        let rotated = rotate_selection(&mut doc, &["title".to_string()], 90.0)
+            .expect("rotate selection should succeed");
+
+        assert_eq!(rotated, vec!["title".to_string()]);
+        let node = query_node(&doc, "title").expect("node exists");
+        assert_eq!(node.frame.rotation, 90.0);
+        assert_eq!(node.frame.x, 10.0);
+        assert_eq!(node.frame.y, 10.0);
     }
 }

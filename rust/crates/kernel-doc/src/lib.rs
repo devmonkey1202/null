@@ -116,10 +116,20 @@ pub enum EditorCommand {
         node_id: String,
         name: String,
     },
+    MoveSelection {
+        #[serde(rename = "deltaX")]
+        delta_x: f32,
+        #[serde(rename = "deltaY")]
+        delta_y: f32,
+    },
     MoveNode {
         #[serde(rename = "nodeId")]
         node_id: String,
         frame: FramePatch,
+    },
+    RotateSelection {
+        #[serde(rename = "deltaDeg")]
+        delta_deg: f32,
     },
     ResizeSelection {
         handle: TransformHandleKind,

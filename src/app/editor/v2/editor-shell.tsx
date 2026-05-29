@@ -31,6 +31,22 @@ type DragPan = {
   startViewportY: number;
 };
 
+type DragMove = {
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+};
+
+type DragTransform = {
+  handle: TransformHandle["kind"];
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+  lockAspect: boolean;
+};
+
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
 }
@@ -64,6 +80,147 @@ function selectionSummary(selection: string[]) {
   return `${selection.length} layers selected`;
 }
 
+function offsetRect(rect: EditorRect, deltaX: number, deltaY: number): EditorRect {
+  return {
+    ...rect,
+    x: rect.x + deltaX,
+    y: rect.y + deltaY,
+  };
+}
+
+function resizePreviewBounds(
+  bounds: EditorRect,
+  handle: TransformHandle["kind"],
+  deltaX: number,
+  deltaY: number,
+  lockAspect: boolean,
+): EditorRect {
+  const minSize = 1;
+  let left = bounds.x;
+  let top = bounds.y;
+  let right = bounds.x + bounds.w;
+  let bottom = bounds.y + bounds.h;
+
+  switch (handle) {
+    case "n":
+      top += deltaY;
+      break;
+    case "ne":
+      top += deltaY;
+      right += deltaX;
+      break;
+    case "e":
+      right += deltaX;
+      break;
+    case "se":
+      right += deltaX;
+      bottom += deltaY;
+      break;
+    case "s":
+      bottom += deltaY;
+      break;
+    case "sw":
+      left += deltaX;
+      bottom += deltaY;
+      break;
+    case "w":
+      left += deltaX;
+      break;
+    case "nw":
+      left += deltaX;
+      top += deltaY;
+      break;
+    case "rotate":
+      break;
+  }
+
+  if (lockAspect) {
+    const aspect = bounds.h !== 0 ? bounds.w / bounds.h : 1;
+    const currentW = Math.max(right - left, minSize);
+    const currentH = Math.max(bottom - top, minSize);
+
+    if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+      const adjustedH = currentW / Math.max(aspect, 0.0001);
+      if (handle === "nw" || handle === "ne") {
+        top = bottom - adjustedH;
+      } else if (handle === "sw" || handle === "se") {
+        bottom = top + adjustedH;
+      }
+    } else {
+      const adjustedW = currentH * aspect;
+      if (handle === "nw" || handle === "sw") {
+        left = right - adjustedW;
+      } else if (handle === "ne" || handle === "se") {
+        right = left + adjustedW;
+      }
+    }
+  }
+
+  if (right - left < minSize) {
+    if (handle === "w" || handle === "nw" || handle === "sw") {
+      left = right - minSize;
+    } else {
+      right = left + minSize;
+    }
+  }
+
+  if (bottom - top < minSize) {
+    if (handle === "n" || handle === "nw" || handle === "ne") {
+      top = bottom - minSize;
+    } else {
+      bottom = top + minSize;
+    }
+  }
+
+  return {
+    ...bounds,
+    x: left,
+    y: top,
+    w: Math.max(right - left, minSize),
+    h: Math.max(bottom - top, minSize),
+  };
+}
+
+function buildTransformHandles(bounds: EditorRect | null): TransformHandle[] {
+  if (!bounds) {
+    return [];
+  }
+
+  const left = bounds.x;
+  const centerX = bounds.x + bounds.w / 2;
+  const right = bounds.x + bounds.w;
+  const top = bounds.y;
+  const centerY = bounds.y + bounds.h / 2;
+  const bottom = bounds.y + bounds.h;
+  const rotateOffset = 28;
+
+  return [
+    { kind: "nw", x: left, y: top, cursor: "nwse-resize" },
+    { kind: "n", x: centerX, y: top, cursor: "ns-resize" },
+    { kind: "ne", x: right, y: top, cursor: "nesw-resize" },
+    { kind: "e", x: right, y: centerY, cursor: "ew-resize" },
+    { kind: "se", x: right, y: bottom, cursor: "nwse-resize" },
+    { kind: "s", x: centerX, y: bottom, cursor: "ns-resize" },
+    { kind: "sw", x: left, y: bottom, cursor: "nesw-resize" },
+    { kind: "w", x: left, y: centerY, cursor: "ew-resize" },
+    { kind: "rotate", x: centerX, y: top - rotateOffset, cursor: "grab" },
+  ];
+}
+
+function angleDeltaFromBounds(
+  bounds: EditorRect,
+  originX: number,
+  originY: number,
+  currentX: number,
+  currentY: number,
+) {
+  const centerX = bounds.x + bounds.w / 2;
+  const centerY = bounds.y + bounds.h / 2;
+  const originAngle = Math.atan2(originY - centerY, originX - centerX);
+  const currentAngle = Math.atan2(currentY - centerY, currentX - centerX);
+  return ((currentAngle - originAngle) * 180) / Math.PI;
+}
+
 export function V2EditorShell() {
   const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
@@ -73,6 +230,8 @@ export function V2EditorShell() {
   const [transformHandles, setTransformHandles] = useState<TransformHandle[]>([]);
   const [dragMarquee, setDragMarquee] = useState<DragMarquee | null>(null);
   const [dragPan, setDragPan] = useState<DragPan | null>(null);
+  const [dragMove, setDragMove] = useState<DragMove | null>(null);
+  const [dragTransform, setDragTransform] = useState<DragTransform | null>(null);
   const [spacePressed, setSpacePressed] = useState(false);
   const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -125,6 +284,45 @@ export function V2EditorShell() {
     [dragMarquee],
   );
   const viewViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+  const dragMoveDelta = useMemo(
+    () =>
+      dragMove
+        ? {
+            x: dragMove.currentX - dragMove.originX,
+            y: dragMove.currentY - dragMove.originY,
+          }
+        : null,
+    [dragMove],
+  );
+  const previewSelectionBounds = useMemo(() => {
+    if (!selectionBounds) {
+      return null;
+    }
+
+    if (dragMoveDelta) {
+      return offsetRect(selectionBounds, dragMoveDelta.x, dragMoveDelta.y);
+    }
+
+    if (dragTransform) {
+      if (dragTransform.handle === "rotate") {
+        return selectionBounds;
+      }
+
+      return resizePreviewBounds(
+        selectionBounds,
+        dragTransform.handle,
+        dragTransform.currentX - dragTransform.originX,
+        dragTransform.currentY - dragTransform.originY,
+        dragTransform.lockAspect,
+      );
+    }
+
+    return selectionBounds;
+  }, [dragMoveDelta, dragTransform, selectionBounds]);
+  const previewTransformHandles = useMemo(
+    () => (dragMove || dragTransform ? buildTransformHandles(previewSelectionBounds) : transformHandles),
+    [dragMove, dragTransform, previewSelectionBounds, transformHandles],
+  );
 
   async function applyAndSync(commands: Parameters<typeof bridge.dispatch>[0]) {
     const result = await bridge.dispatch(commands);
@@ -235,6 +433,61 @@ export function V2EditorShell() {
     };
   }
 
+  async function handleNodePointerDown(
+    event: React.PointerEvent<HTMLButtonElement>,
+    nodeId: string,
+  ) {
+    event.stopPropagation();
+
+    if (event.button !== 0 || spacePressed) {
+      return;
+    }
+
+    const point = toCanvasPoint(event as unknown as React.PointerEvent<HTMLDivElement>);
+    if (!point) {
+      return;
+    }
+
+    const alreadySelected = snapshot?.selection.includes(nodeId) ?? false;
+    if (!alreadySelected) {
+      await applyAndSync([{ kind: "select_nodes", nodeIds: [nodeId] }]);
+    }
+
+    setDragMove({
+      originX: point.x,
+      originY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handleTransformHandlePointerDown(
+    event: React.PointerEvent<HTMLButtonElement>,
+    handle: TransformHandle,
+  ) {
+    event.stopPropagation();
+
+    if (event.button !== 0 || !selectionBounds || spacePressed) {
+      return;
+    }
+
+    const point = toCanvasPoint(event as unknown as React.PointerEvent<HTMLDivElement>);
+    if (!point) {
+      return;
+    }
+
+    setDragTransform({
+      handle: handle.kind,
+      originX: point.x,
+      originY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      lockAspect: event.shiftKey,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
   function handleCanvasPointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 && event.button !== 1) {
       return;
@@ -276,6 +529,42 @@ export function V2EditorShell() {
         y: dragPan.startViewportY + (event.clientY - dragPan.originClientY),
       };
       setDraftViewport(nextViewport);
+      return;
+    }
+
+    if (dragMove) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      setDragMove((current) =>
+        current
+          ? {
+              ...current,
+              currentX: point.x,
+              currentY: point.y,
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (dragTransform) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      setDragTransform((current) =>
+        current
+          ? {
+              ...current,
+              currentX: point.x,
+              currentY: point.y,
+            }
+          : current,
+      );
       return;
     }
 
@@ -348,6 +637,64 @@ export function V2EditorShell() {
       return;
     }
 
+    if (dragMove) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const deltaX = dragMove.currentX - dragMove.originX;
+      const deltaY = dragMove.currentY - dragMove.originY;
+      setDragMove(null);
+
+      if (Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5) {
+        void applyAndSync([{ kind: "move_selection", deltaX, deltaY }]);
+      }
+      return;
+    }
+
+    if (dragTransform) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragTransform;
+      setDragTransform(null);
+
+      if (currentDrag.handle === "rotate") {
+        if (!selectionBounds) {
+          return;
+        }
+
+        const deltaDeg = angleDeltaFromBounds(
+          selectionBounds,
+          currentDrag.originX,
+          currentDrag.originY,
+          currentDrag.currentX,
+          currentDrag.currentY,
+        );
+
+        if (Math.abs(deltaDeg) >= 0.5) {
+          void applyAndSync([{ kind: "rotate_selection", deltaDeg }]);
+        }
+        return;
+      }
+
+      const deltaX = currentDrag.currentX - currentDrag.originX;
+      const deltaY = currentDrag.currentY - currentDrag.originY;
+      if (Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5) {
+        void applyAndSync([
+          {
+            kind: "resize_selection",
+            handle: currentDrag.handle,
+            deltaX,
+            deltaY,
+            lockAspect: currentDrag.lockAspect,
+          },
+        ]);
+      }
+      return;
+    }
+
     if (!dragMarquee) {
       return;
     }
@@ -364,6 +711,8 @@ export function V2EditorShell() {
       canvasRef.current.releasePointerCapture(event.pointerId);
     }
     setDragPan(null);
+    setDragMove(null);
+    setDragTransform(null);
     setDragMarquee(null);
   }
 
@@ -489,17 +838,21 @@ export function V2EditorShell() {
 
                 {canvasNodes.map((node) => {
                   const selected = snapshot?.selection.includes(node.id) ?? false;
+                  const previewX = selected && dragMoveDelta ? node.frame.x + dragMoveDelta.x : node.frame.x;
+                  const previewY = selected && dragMoveDelta ? node.frame.y + dragMoveDelta.y : node.frame.y;
                   return (
                     <button
                       key={node.id}
                       type="button"
-                      onPointerDown={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => void handleNodePointerDown(event, node.id)}
                       onClick={() => void selectNode(node.id)}
                       style={{
-                        left: node.frame.x,
-                        top: node.frame.y,
+                        left: previewX,
+                        top: previewY,
                         width: node.frame.w,
                         height: node.frame.h,
+                        transform: `rotate(${node.frame.rotation}deg)`,
+                        transformOrigin: "center",
                       }}
                       className={`absolute rounded-2xl border text-left transition ${
                         node.kind === "text" ? "bg-transparent" : "bg-slate-50"
@@ -521,27 +874,30 @@ export function V2EditorShell() {
                   );
                 })}
 
-                {selectionBounds ? (
+                {previewSelectionBounds ? (
                   <div
                     className="pointer-events-none absolute border border-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.12)]"
                     style={{
-                      left: selectionBounds.x,
-                      top: selectionBounds.y,
-                      width: selectionBounds.w,
-                      height: selectionBounds.h,
+                      left: previewSelectionBounds.x,
+                      top: previewSelectionBounds.y,
+                      width: previewSelectionBounds.w,
+                      height: previewSelectionBounds.h,
                     }}
                   />
                 ) : null}
 
-                {transformHandles.map((handle) => (
-                  <div
+                {previewTransformHandles.map((handle) => (
+                  <button
                     key={`${handle.kind}-${handle.x}-${handle.y}`}
-                    className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#2859ff] bg-white ${
+                    type="button"
+                    onPointerDown={(event) => handleTransformHandlePointerDown(event, handle)}
+                    className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#2859ff] bg-white ${
                       handle.kind === "rotate" ? "h-3.5 w-3.5" : "h-3 w-3"
                     }`}
                     style={{
                       left: handle.x,
                       top: handle.y,
+                      cursor: handle.cursor,
                     }}
                     title={handle.kind}
                   />

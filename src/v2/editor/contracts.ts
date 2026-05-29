@@ -72,7 +72,9 @@ export type EditorCommand =
   | { kind: "select_in_rect"; pageId: string; rect: EditorRect; mode?: SelectionSetMode }
   | { kind: "set_viewport"; viewport: EditorViewport }
   | { kind: "rename_node"; nodeId: string; name: string }
+  | { kind: "move_selection"; deltaX: number; deltaY: number }
   | { kind: "move_node"; nodeId: string; frame: Partial<EditorRect> }
+  | { kind: "rotate_selection"; deltaDeg: number }
   | {
       kind: "resize_selection";
       handle: TransformHandleKind;

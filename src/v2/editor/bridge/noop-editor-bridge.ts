@@ -205,6 +205,71 @@ function resizeSelection(
   };
 }
 
+function moveSelection(document: SceneDoc, selection: string[], deltaX: number, deltaY: number) {
+  return {
+    ...document,
+    pages: document.pages.map((page) => ({
+      ...page,
+      nodes: page.nodes.map((node) =>
+        selection.includes(node.id)
+          ? {
+              ...node,
+              frame: {
+                ...node.frame,
+                x: node.frame.x + deltaX,
+                y: node.frame.y + deltaY,
+              },
+            }
+          : node,
+      ),
+    })),
+    meta: { ...document.meta, updatedAt: new Date().toISOString() },
+  };
+}
+
+function rotateSelection(document: SceneDoc, selection: string[], deltaDeg: number) {
+  const bounds = buildSelectionBounds(document, selection);
+  if (!bounds) {
+    return document;
+  }
+
+  const centerX = bounds.x + bounds.w / 2;
+  const centerY = bounds.y + bounds.h / 2;
+  const angle = (deltaDeg * Math.PI) / 180;
+  const cosTheta = Math.cos(angle);
+  const sinTheta = Math.sin(angle);
+
+  return {
+    ...document,
+    pages: document.pages.map((page) => ({
+      ...page,
+      nodes: page.nodes.map((node) => {
+        if (!selection.includes(node.id)) {
+          return node;
+        }
+
+        const nodeCenterX = node.frame.x + node.frame.w / 2;
+        const nodeCenterY = node.frame.y + node.frame.h / 2;
+        const localX = nodeCenterX - centerX;
+        const localY = nodeCenterY - centerY;
+        const rotatedX = localX * cosTheta - localY * sinTheta;
+        const rotatedY = localX * sinTheta + localY * cosTheta;
+
+        return {
+          ...node,
+          frame: {
+            ...node.frame,
+            x: centerX + rotatedX - node.frame.w / 2,
+            y: centerY + rotatedY - node.frame.h / 2,
+            rotation: normalizeDegrees(node.frame.rotation + deltaDeg),
+          },
+        };
+      }),
+    })),
+    meta: { ...document.meta, updatedAt: new Date().toISOString() },
+  };
+}
+
 function resizeBounds(
   bounds: EditorRect,
   handle: TransformHandle["kind"],
@@ -324,6 +389,11 @@ function runHitTest(
   };
 }
 
+function normalizeDegrees(value: number) {
+  const normalized = ((value % 360) + 360) % 360;
+  return normalized > 180 ? normalized - 360 : normalized;
+}
+
 export class NoopEditorBridge implements EditorBridge {
   private document: SceneDoc;
   private selection: string[] = [];
@@ -387,6 +457,12 @@ export class NoopEditorBridge implements EditorBridge {
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
+        case "move_selection":
+          this.document = moveSelection(this.document, this.selection, command.deltaX, command.deltaY);
+          this.version += 1;
+          dirtyNodeIds.push(...this.selection);
+          this.recordHistory();
+          break;
         case "move_node":
           this.document = {
             ...this.document,
@@ -401,6 +477,12 @@ export class NoopEditorBridge implements EditorBridge {
           };
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "rotate_selection":
+          this.document = rotateSelection(this.document, this.selection, command.deltaDeg);
+          this.version += 1;
+          dirtyNodeIds.push(...this.selection);
           this.recordHistory();
           break;
         case "resize_selection":
