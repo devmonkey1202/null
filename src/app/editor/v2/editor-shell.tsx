@@ -54,6 +54,17 @@ type SnapGuide = {
   spanEnd: number;
 };
 
+type CanvasSize = {
+  width: number;
+  height: number;
+};
+
+type RulerTick = {
+  value: number;
+  position: number;
+  major: boolean;
+};
+
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
 }
@@ -467,6 +478,59 @@ function computeResizeSnap(
   };
 }
 
+function chooseRulerStep(zoom: number) {
+  const targetPx = 96;
+  const logicalTarget = targetPx / Math.max(zoom, 0.001);
+  const exponent = Math.floor(Math.log10(Math.max(logicalTarget, 1)));
+  const base = 10 ** exponent;
+  const multipliers = [1, 2, 5, 10];
+
+  for (const multiplier of multipliers) {
+    const step = base * multiplier;
+    if (step >= logicalTarget) {
+      return step;
+    }
+  }
+
+  return base * 10;
+}
+
+function buildRulerTicks(
+  axisLength: number,
+  viewportOffset: number,
+  zoom: number,
+  majorStep: number,
+  minorDivisions = 4,
+) {
+  if (axisLength <= 0 || zoom <= 0) {
+    return [] as RulerTick[];
+  }
+
+  const ticks: RulerTick[] = [];
+  const minorStep = majorStep / minorDivisions;
+  const docStart = (-viewportOffset) / zoom;
+  const docEnd = (axisLength - viewportOffset) / zoom;
+  const startValue = Math.floor(docStart / minorStep) * minorStep;
+  const endValue = Math.ceil(docEnd / minorStep) * minorStep;
+  const tolerance = minorStep * 0.05;
+
+  for (let value = startValue; value <= endValue; value += minorStep) {
+    const position = value * zoom + viewportOffset;
+    if (position < -1 || position > axisLength + 1) {
+      continue;
+    }
+
+    const major = Math.abs(value / majorStep - Math.round(value / majorStep)) < tolerance;
+    ticks.push({
+      value: Number(value.toFixed(3)),
+      position,
+      major,
+    });
+  }
+
+  return ticks;
+}
+
 export function V2EditorShell() {
   const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
@@ -480,6 +544,7 @@ export function V2EditorShell() {
   const [dragTransform, setDragTransform] = useState<DragTransform | null>(null);
   const [spacePressed, setSpacePressed] = useState(false);
   const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
+  const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const bridgeRef = useRef<EditorBridge | null>(null);
 
@@ -519,6 +584,29 @@ export function V2EditorShell() {
 
     void load();
   }, [syncBridgeState]);
+
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element) {
+      return;
+    }
+
+    const measure = () => {
+      setCanvasSize({
+        width: element.clientWidth,
+        height: element.clientHeight,
+      });
+    };
+
+    measure();
+
+    const observer = new ResizeObserver(() => {
+      measure();
+    });
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const nodes = useMemo(() => flattenNodes(snapshot), [snapshot]);
   const activeNode = useMemo(
@@ -623,6 +711,19 @@ export function V2EditorShell() {
   const previewTransformHandles = useMemo(
     () => (dragMove || dragTransform ? buildTransformHandles(previewSelectionBounds) : transformHandles),
     [dragMove, dragTransform, previewSelectionBounds, transformHandles],
+  );
+  const activeGuides = useMemo(
+    () => (dragMove ? moveSnapPreview.guides : dragTransform ? resizeSnapPreview.guides : []),
+    [dragMove, dragTransform, moveSnapPreview.guides, resizeSnapPreview.guides],
+  );
+  const rulerStep = useMemo(() => chooseRulerStep(viewViewport.zoom), [viewViewport.zoom]);
+  const horizontalRulerTicks = useMemo(
+    () => buildRulerTicks(canvasSize.width, viewViewport.x, viewViewport.zoom, rulerStep),
+    [canvasSize.width, rulerStep, viewViewport.x, viewViewport.zoom],
+  );
+  const verticalRulerTicks = useMemo(
+    () => buildRulerTicks(canvasSize.height, viewViewport.y, viewViewport.zoom, rulerStep),
+    [canvasSize.height, rulerStep, viewViewport.y, viewViewport.zoom],
   );
 
   async function applyAndSync(commands: EditorCommand[]) {
@@ -1227,30 +1328,88 @@ export function V2EditorShell() {
                   />
                 ) : null}
 
-                {(dragMove ? moveSnapPreview.guides : dragTransform ? resizeSnapPreview.guides : [])
-                  .map((guide) =>
-                      guide.axis === "x" ? (
-                        <div
-                          key={`guide-x-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
-                          className="pointer-events-none absolute w-px bg-[#2859ff]/80"
-                          style={{
-                            left: guide.position,
-                            top: guide.spanStart,
-                            height: Math.max(1, guide.spanEnd - guide.spanStart),
-                          }}
-                        />
-                      ) : (
-                        <div
-                          key={`guide-y-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
-                          className="pointer-events-none absolute h-px bg-[#2859ff]/80"
-                          style={{
-                            left: guide.spanStart,
-                            top: guide.position,
-                            width: Math.max(1, guide.spanEnd - guide.spanStart),
-                          }}
-                        />
-                      ),
-                    )}
+                {activeGuides.map((guide) =>
+                  guide.axis === "x" ? (
+                    <div
+                      key={`guide-x-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
+                      className="pointer-events-none absolute w-px bg-[#2859ff]/80"
+                      style={{
+                        left: guide.position,
+                        top: guide.spanStart,
+                        height: Math.max(1, guide.spanEnd - guide.spanStart),
+                      }}
+                    />
+                  ) : (
+                    <div
+                      key={`guide-y-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
+                      className="pointer-events-none absolute h-px bg-[#2859ff]/80"
+                      style={{
+                        left: guide.spanStart,
+                        top: guide.position,
+                        width: Math.max(1, guide.spanEnd - guide.spanStart),
+                      }}
+                    />
+                  ),
+                )}
+              </div>
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-7 border-b border-slate-200/90 bg-white/90 backdrop-blur-sm">
+                <div className="absolute left-0 top-0 h-7 w-7 border-r border-slate-200/90 bg-slate-50/90" />
+                {horizontalRulerTicks.map((tick) => (
+                  <div
+                    key={`ruler-x-${tick.value}-${tick.position}`}
+                    className="absolute top-0"
+                    style={{ left: tick.position }}
+                  >
+                    <div
+                      className={`w-px bg-slate-300/90 ${tick.major ? "h-4" : "h-2.5"} ml-0`}
+                    />
+                    {tick.major ? (
+                      <div className="mt-0.5 -translate-x-1/2 text-[10px] font-medium text-slate-400">
+                        {Math.round(tick.value)}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {activeGuides
+                  .filter((guide) => guide.axis === "x")
+                  .map((guide) => (
+                    <div
+                      key={`ruler-guide-x-${guide.position}`}
+                      className="absolute top-0 h-7 w-px bg-[#2859ff]"
+                      style={{ left: guide.position }}
+                    />
+                  ))}
+              </div>
+              <div className="pointer-events-none absolute inset-y-0 left-0 w-7 border-r border-slate-200/90 bg-white/90 backdrop-blur-sm">
+                <div className="absolute left-0 top-0 h-7 w-7 border-b border-slate-200/90 bg-slate-50/90" />
+                {verticalRulerTicks.map((tick) => (
+                  <div
+                    key={`ruler-y-${tick.value}-${tick.position}`}
+                    className="absolute left-0"
+                    style={{ top: tick.position }}
+                  >
+                    <div
+                      className={`h-px bg-slate-300/90 ${tick.major ? "w-4" : "w-2.5"} mt-0`}
+                    />
+                    {tick.major ? (
+                      <div
+                        className="absolute left-1 top-1/2 -translate-y-1/2 text-[10px] font-medium text-slate-400"
+                        style={{ writingMode: "vertical-rl" }}
+                      >
+                        {Math.round(tick.value)}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {activeGuides
+                  .filter((guide) => guide.axis === "y")
+                  .map((guide) => (
+                    <div
+                      key={`ruler-guide-y-${guide.position}`}
+                      className="absolute left-0 h-px w-7 bg-[#2859ff]"
+                      style={{ top: guide.position }}
+                    />
+                  ))}
               </div>
               <div
                 className={`pointer-events-none absolute bottom-4 left-4 rounded-full border px-3 py-1 text-xs font-medium ${
