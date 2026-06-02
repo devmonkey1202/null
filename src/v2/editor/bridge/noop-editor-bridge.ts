@@ -7,12 +7,15 @@ import {
   type EditorSnapshot,
   type EditorViewport,
   type HitTestResult,
+  type HorizontalConstraint,
+  type NodeConstraints,
   type RuntimeGraph,
   type SceneDoc,
   type SceneNode,
   type SelectionSetMode,
   type TransformHandle,
   type ValidationReport,
+  type VerticalConstraint,
   V2_EDITOR_SCHEMA_VERSION,
 } from "@/v2/editor/contracts";
 
@@ -170,7 +173,7 @@ function resizeSelection(
   const scaleX = nextBounds.w / Math.max(bounds.w, 1);
   const scaleY = nextBounds.h / Math.max(bounds.h, 1);
 
-  return {
+  const resized = {
     ...document,
     pages: document.pages.map((page) => ({
       ...page,
@@ -203,6 +206,17 @@ function resizeSelection(
     })),
     meta: { ...document.meta, updatedAt: new Date().toISOString() },
   };
+
+  let nextDocument = resized;
+  for (const selectedId of selection) {
+    const previous = document.pages.flatMap((page) => page.nodes).find((node) => node.id === selectedId)?.frame;
+    const next = nextDocument.pages.flatMap((page) => page.nodes).find((node) => node.id === selectedId)?.frame;
+    if (previous && next) {
+      nextDocument = applyChildConstraints(nextDocument, selectedId, previous, next, new Set(selection));
+    }
+  }
+
+  return nextDocument;
 }
 
 function moveSelection(document: SceneDoc, selection: string[], deltaX: number, deltaY: number) {
@@ -394,6 +408,108 @@ function normalizeDegrees(value: number) {
   return normalized > 180 ? normalized - 360 : normalized;
 }
 
+function frameSizeChanged(previous: EditorRect, next: EditorRect) {
+  return previous.w !== next.w || previous.h !== next.h;
+}
+
+function directChildIds(document: SceneDoc, parentId: string) {
+  return document.pages
+    .flatMap((page) => page.nodes)
+    .filter((node) => node.parentId === parentId)
+    .map((node) => node.id);
+}
+
+function constrainedFrame(
+  oldParent: EditorRect,
+  newParent: EditorRect,
+  child: EditorRect,
+  constraints?: NodeConstraints,
+): EditorRect {
+  const horizontal: HorizontalConstraint = constraints?.horizontal ?? "min";
+  const vertical: VerticalConstraint = constraints?.vertical ?? "min";
+  const oldParentRight = oldParent.x + oldParent.w;
+  const newParentRight = newParent.x + newParent.w;
+  const oldParentBottom = oldParent.y + oldParent.h;
+  const newParentBottom = newParent.y + newParent.h;
+  const leftMargin = child.x - oldParent.x;
+  const rightMargin = oldParentRight - (child.x + child.w);
+  const topMargin = child.y - oldParent.y;
+  const bottomMargin = oldParentBottom - (child.y + child.h);
+  const scaleX = newParent.w / Math.max(oldParent.w, 1);
+  const scaleY = newParent.h / Math.max(oldParent.h, 1);
+
+  const horizontalNext =
+    horizontal === "max"
+      ? { x: newParentRight - rightMargin - child.w, w: child.w }
+      : horizontal === "stretch"
+        ? { x: newParent.x + leftMargin, w: Math.max(newParent.w - leftMargin - rightMargin, 1) }
+        : horizontal === "scale"
+          ? { x: newParent.x + leftMargin * scaleX, w: Math.max(child.w * scaleX, 1) }
+          : { x: newParent.x + leftMargin, w: child.w };
+
+  const verticalNext =
+    vertical === "max"
+      ? { y: newParentBottom - bottomMargin - child.h, h: child.h }
+      : vertical === "stretch"
+        ? { y: newParent.y + topMargin, h: Math.max(newParent.h - topMargin - bottomMargin, 1) }
+        : vertical === "scale"
+          ? { y: newParent.y + topMargin * scaleY, h: Math.max(child.h * scaleY, 1) }
+          : { y: newParent.y + topMargin, h: child.h };
+
+  return {
+    ...child,
+    x: horizontalNext.x,
+    y: verticalNext.y,
+    w: horizontalNext.w,
+    h: verticalNext.h,
+  };
+}
+
+function applyChildConstraints(
+  document: SceneDoc,
+  parentId: string,
+  oldParent: EditorRect,
+  newParent: EditorRect,
+  selectedIds: Set<string>,
+) {
+  if (!frameSizeChanged(oldParent, newParent)) {
+    return document;
+  }
+
+  const nextDocument = structuredClone(document);
+  const queue: Array<{ parentId: string; oldParent: EditorRect; newParent: EditorRect }> = [
+    { parentId, oldParent, newParent },
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const childId of directChildIds(nextDocument, current.parentId)) {
+      if (selectedIds.has(childId)) {
+        continue;
+      }
+
+      const child = nextDocument.pages
+        .flatMap((page) => page.nodes)
+        .find((node) => node.id === childId);
+      if (!child) {
+        continue;
+      }
+
+      const previous = structuredClone(child.frame);
+      child.frame = constrainedFrame(current.oldParent, current.newParent, child.frame, child.constraints);
+      if (frameSizeChanged(previous, child.frame)) {
+        queue.push({
+          parentId: child.id,
+          oldParent: previous,
+          newParent: structuredClone(child.frame),
+        });
+      }
+    }
+  }
+
+  return nextDocument;
+}
+
 export class NoopEditorBridge implements EditorBridge {
   private document: SceneDoc;
   private selection: string[] = [];
@@ -464,6 +580,9 @@ export class NoopEditorBridge implements EditorBridge {
           this.recordHistory();
           break;
         case "move_node":
+          const previous = this.document.pages
+            .flatMap((page) => page.nodes)
+            .find((node) => node.id === command.nodeId)?.frame;
           this.document = {
             ...this.document,
             pages: updateNode(this.document.pages, command.nodeId, (node) => ({
@@ -475,6 +594,20 @@ export class NoopEditorBridge implements EditorBridge {
             })),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };
+          if (previous) {
+            const next = this.document.pages
+              .flatMap((page) => page.nodes)
+              .find((node) => node.id === command.nodeId)?.frame;
+            if (next) {
+              this.document = applyChildConstraints(
+                this.document,
+                command.nodeId,
+                previous,
+                next,
+                new Set(),
+              );
+            }
+          }
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();

@@ -1,7 +1,8 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch,
-    SceneDoc, SceneNode, SelectionSetMode, TransformHandleKind, ValidationReport,
+    HorizontalConstraint, SceneDoc, SceneNode, SelectionSetMode, TransformHandleKind,
+    ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
 
@@ -111,12 +112,33 @@ pub fn dispatch_commands(
                 dirty_node_ids.extend(moved);
             }
             EditorCommand::MoveNode { node_id, frame } => {
-                let node = find_node_mut(&mut state.doc, &node_id)?;
-                apply_frame_patch(&mut node.frame, frame);
+                let previous = query_node(&state.doc, &node_id)
+                    .map(|node| node.frame.clone())
+                    .ok_or_else(|| {
+                        CoreError::new(
+                            "scene.node.not_found",
+                            format!("Node '{}' was not found.", node_id),
+                        )
+                    })?;
+                let next = {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    apply_frame_patch(&mut node.frame, frame);
+                    node.frame.clone()
+                };
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("move_node".to_string());
-                dirty_node_ids.push(node_id);
+                dirty_node_ids.push(node_id.clone());
+                if frame_size_changed(&previous, &next) {
+                    apply_child_constraints(
+                        &mut state.doc,
+                        &node_id,
+                        &previous,
+                        &next,
+                        &HashSet::new(),
+                        &mut dirty_node_ids,
+                    )?;
+                }
             }
             EditorCommand::RotateSelection { delta_deg } => {
                 let rotated = rotate_selection(&mut state.doc, &state.selection, delta_deg)?;
@@ -358,28 +380,34 @@ pub fn resize_selection(
     let scale_x = next_bounds.w / bounds.w.max(1.0);
     let scale_y = next_bounds.h / bounds.h.max(1.0);
 
+    let selected_set: HashSet<String> = selection.iter().cloned().collect();
     let mut resized_ids = Vec::new();
     for node_id in selection {
-        let node = find_node_mut(doc, node_id)?;
-        let left_offset = node.frame.x - bounds.x;
-        let top_offset = node.frame.y - bounds.y;
-        let right_offset = (node.frame.x + node.frame.w) - bounds.x;
-        let bottom_offset = (node.frame.y + node.frame.h) - bounds.y;
+        let (previous, next) = {
+            let node = find_node_mut(doc, node_id)?;
+            let previous = node.frame.clone();
+            let left_offset = node.frame.x - bounds.x;
+            let top_offset = node.frame.y - bounds.y;
+            let right_offset = (node.frame.x + node.frame.w) - bounds.x;
+            let bottom_offset = (node.frame.y + node.frame.h) - bounds.y;
 
-        let next_left = next_bounds.x + left_offset * scale_x;
-        let next_top = next_bounds.y + top_offset * scale_y;
-        let next_right = next_bounds.x + right_offset * scale_x;
-        let next_bottom = next_bounds.y + bottom_offset * scale_y;
+            let next_left = next_bounds.x + left_offset * scale_x;
+            let next_top = next_bounds.y + top_offset * scale_y;
+            let next_right = next_bounds.x + right_offset * scale_x;
+            let next_bottom = next_bounds.y + bottom_offset * scale_y;
 
-        node.frame.x = next_left;
-        node.frame.y = next_top;
-        node.frame.w = (next_right - next_left).max(1.0);
-        node.frame.h = (next_bottom - next_top).max(1.0);
+            node.frame.x = next_left;
+            node.frame.y = next_top;
+            node.frame.w = (next_right - next_left).max(1.0);
+            node.frame.h = (next_bottom - next_top).max(1.0);
+            (previous, node.frame.clone())
+        };
 
         resized_ids.push(node_id.clone());
+        apply_child_constraints(doc, node_id, &previous, &next, &selected_set, &mut resized_ids)?;
     }
 
-    Ok(resized_ids)
+    Ok(dedupe_ids(resized_ids))
 }
 
 pub fn move_selection(
@@ -536,6 +564,119 @@ fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreErr
         "scene.node.not_found",
         format!("Node '{}' was not found.", node_id),
     ))
+}
+
+fn apply_child_constraints(
+    doc: &mut SceneDoc,
+    parent_id: &str,
+    old_parent: &EditorRect,
+    new_parent: &EditorRect,
+    selected_nodes: &HashSet<String>,
+    dirty_ids: &mut Vec<String>,
+) -> Result<(), CoreError> {
+    if !frame_size_changed(old_parent, new_parent) {
+        return Ok(());
+    }
+
+    let child_ids = collect_direct_child_ids(doc, parent_id);
+
+    for child_id in child_ids {
+        if selected_nodes.contains(&child_id) {
+            continue;
+        }
+
+        let previous = query_node(doc, &child_id)
+            .map(|node| node.frame.clone())
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", child_id),
+                )
+            })?;
+
+        let node = find_node_mut(doc, &child_id)?;
+        let next = constrained_frame(
+            old_parent,
+            new_parent,
+            &previous,
+            node.constraints
+                .as_ref()
+                .map(|constraints| (&constraints.horizontal, &constraints.vertical)),
+        );
+        node.frame = next.clone();
+        dirty_ids.push(child_id.clone());
+        apply_child_constraints(doc, &child_id, &previous, &next, selected_nodes, dirty_ids)?;
+    }
+
+    Ok(())
+}
+
+fn collect_direct_child_ids(doc: &SceneDoc, parent_id: &str) -> Vec<String> {
+    doc.pages
+        .iter()
+        .flat_map(|page| page.nodes.iter())
+        .filter(|node| node.parent_id.as_deref() == Some(parent_id))
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+fn constrained_frame(
+    old_parent: &EditorRect,
+    new_parent: &EditorRect,
+    child: &EditorRect,
+    constraints: Option<(&HorizontalConstraint, &VerticalConstraint)>,
+) -> EditorRect {
+    let (horizontal, vertical) = constraints.unwrap_or((&HorizontalConstraint::Min, &VerticalConstraint::Min));
+    let old_parent_right = old_parent.x + old_parent.w;
+    let new_parent_right = new_parent.x + new_parent.w;
+    let old_parent_bottom = old_parent.y + old_parent.h;
+    let new_parent_bottom = new_parent.y + new_parent.h;
+
+    let left_margin = child.x - old_parent.x;
+    let right_margin = old_parent_right - (child.x + child.w);
+    let top_margin = child.y - old_parent.y;
+    let bottom_margin = old_parent_bottom - (child.y + child.h);
+
+    let scale_x = new_parent.w / old_parent.w.max(1.0);
+    let scale_y = new_parent.h / old_parent.h.max(1.0);
+
+    let (x, w) = match horizontal {
+        HorizontalConstraint::Min => (new_parent.x + left_margin, child.w),
+        HorizontalConstraint::Max => (new_parent_right - right_margin - child.w, child.w),
+        HorizontalConstraint::Stretch => (
+            new_parent.x + left_margin,
+            (new_parent.w - left_margin - right_margin).max(1.0),
+        ),
+        HorizontalConstraint::Scale => (
+            new_parent.x + left_margin * scale_x,
+            (child.w * scale_x).max(1.0),
+        ),
+    };
+
+    let (y, h) = match vertical {
+        VerticalConstraint::Min => (new_parent.y + top_margin, child.h),
+        VerticalConstraint::Max => (new_parent_bottom - bottom_margin - child.h, child.h),
+        VerticalConstraint::Stretch => (
+            new_parent.y + top_margin,
+            (new_parent.h - top_margin - bottom_margin).max(1.0),
+        ),
+        VerticalConstraint::Scale => (
+            new_parent.y + top_margin * scale_y,
+            (child.h * scale_y).max(1.0),
+        ),
+    };
+
+    EditorRect {
+        x,
+        y,
+        w,
+        h,
+        rotation: child.rotation,
+    }
+}
+
+fn frame_size_changed(previous: &EditorRect, next: &EditorRect) -> bool {
+    (previous.w - next.w).abs() > f32::EPSILON || (previous.h - next.h).abs() > f32::EPSILON
 }
 
 fn collect_subtree_ids(nodes: &[SceneNode], root_id: &str) -> Result<Vec<String>, CoreError> {
@@ -821,7 +962,10 @@ fn normalize_degrees(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel_doc::{SceneDocMeta, SceneNodeKind, ScenePage};
+    use kernel_doc::{
+        HorizontalConstraint, NodeConstraints, SceneDocMeta, SceneNodeKind, ScenePage,
+        VerticalConstraint,
+    };
 
     fn sample_doc() -> SceneDoc {
         SceneDoc {
@@ -846,6 +990,7 @@ mod tests {
                             h: 100.0,
                             rotation: 0.0,
                         },
+                        constraints: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -860,6 +1005,7 @@ mod tests {
                             h: 20.0,
                             rotation: 0.0,
                         },
+                        constraints: None,
                     },
                 ],
             }],
@@ -914,6 +1060,7 @@ mod tests {
                 h: 10.0,
                 rotation: 0.0,
             },
+            constraints: None,
         });
         doc.pages[0].nodes[1].children = Some(vec!["leaf".to_string()]);
 
@@ -946,6 +1093,7 @@ mod tests {
                 h: 40.0,
                 rotation: 0.0,
             },
+            constraints: None,
         });
 
         let result = hit_test(&doc, "page-1", 15.0, 15.0, HitTestMode::Topmost)
@@ -1021,6 +1169,33 @@ mod tests {
         let node = query_node(&doc, "title").expect("node exists");
         assert_eq!(node.frame.w, 50.0);
         assert_eq!(node.frame.h, 25.0);
+    }
+
+    #[test]
+    fn resizing_parent_applies_child_constraints() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes[1].constraints = Some(NodeConstraints {
+            horizontal: HorizontalConstraint::Stretch,
+            vertical: VerticalConstraint::Max,
+        });
+
+        let resized = resize_selection(
+            &mut doc,
+            &["root".to_string()],
+            TransformHandleKind::Se,
+            20.0,
+            30.0,
+            false,
+        )
+        .expect("resize should succeed");
+
+        assert!(resized.iter().any(|id| id == "root"));
+        assert!(resized.iter().any(|id| id == "title"));
+        let node = query_node(&doc, "title").expect("node exists");
+        assert!((node.frame.x - 10.0).abs() < 0.001);
+        assert!((node.frame.y - 40.0).abs() < 0.001);
+        assert!((node.frame.w - 60.0).abs() < 0.001);
+        assert!((node.frame.h - 20.0).abs() < 0.001);
     }
 
     #[test]

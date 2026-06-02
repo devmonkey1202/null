@@ -1507,6 +1507,20 @@ export function V2EditorShell() {
                         <dd className="font-medium text-slate-900">{activeNode.frame.h}</dd>
                       </div>
                     </dl>
+                    <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <div className="text-slate-400">Horizontal</div>
+                        <div className="font-medium text-slate-900">
+                          {activeNode.constraints?.horizontal ?? "min"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">Vertical</div>
+                        <div className="font-medium text-slate-900">
+                          {activeNode.constraints?.vertical ?? "min"}
+                        </div>
+                      </div>
+                    </div>
                   </>
                 ) : (
                   <div className="text-sm text-slate-500">Select a layer or canvas object.</div>

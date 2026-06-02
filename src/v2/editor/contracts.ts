@@ -24,6 +24,15 @@ export type EditorViewport = {
   y: number;
 };
 
+export type HorizontalConstraint = "min" | "max" | "stretch" | "scale";
+
+export type VerticalConstraint = "min" | "max" | "stretch" | "scale";
+
+export type NodeConstraints = {
+  horizontal: HorizontalConstraint;
+  vertical: VerticalConstraint;
+};
+
 export type SelectionSetMode = "replace" | "add" | "toggle";
 
 export type SceneNode = {
@@ -33,6 +42,7 @@ export type SceneNode = {
   parentId: string | null;
   children?: string[];
   frame: EditorRect;
+  constraints?: NodeConstraints;
 };
 
 export type ScenePage = {

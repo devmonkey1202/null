@@ -27,6 +27,7 @@ export const sampleSceneDoc: SceneDoc = {
           parentId: "root-frame",
           children: ["hero-title", "hero-body"],
           frame: { x: 280, y: 120, w: 760, h: 320, rotation: 0 },
+          constraints: { horizontal: "scale", vertical: "min" },
         },
         {
           id: "hero-title",
@@ -34,6 +35,7 @@ export const sampleSceneDoc: SceneDoc = {
           name: "Title",
           parentId: "hero-frame",
           frame: { x: 320, y: 160, w: 540, h: 72, rotation: 0 },
+          constraints: { horizontal: "stretch", vertical: "min" },
         },
         {
           id: "hero-body",
@@ -41,6 +43,7 @@ export const sampleSceneDoc: SceneDoc = {
           name: "Description",
           parentId: "hero-frame",
           frame: { x: 320, y: 248, w: 520, h: 88, rotation: 0 },
+          constraints: { horizontal: "stretch", vertical: "min" },
         },
         {
           id: "sidebar-frame",
@@ -49,6 +52,7 @@ export const sampleSceneDoc: SceneDoc = {
           parentId: "root-frame",
           children: [],
           frame: { x: 1080, y: 120, w: 220, h: 520, rotation: 0 },
+          constraints: { horizontal: "max", vertical: "stretch" },
         },
       ],
     },
@@ -58,4 +62,3 @@ export const sampleSceneDoc: SceneDoc = {
     updatedAt: now,
   },
 };
-

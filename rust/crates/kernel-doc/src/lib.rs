@@ -54,6 +54,8 @@ pub struct SceneNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<String>>,
     pub frame: EditorRect,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<NodeConstraints>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,6 +72,31 @@ pub struct EditorViewport {
     pub zoom: f32,
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HorizontalConstraint {
+    Min,
+    Max,
+    Stretch,
+    Scale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerticalConstraint {
+    Min,
+    Max,
+    Stretch,
+    Scale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeConstraints {
+    pub horizontal: HorizontalConstraint,
+    pub vertical: VerticalConstraint,
 }
 
 impl Default for EditorViewport {
@@ -430,6 +457,7 @@ mod tests {
                             h: 100.0,
                             rotation: 0.0,
                         },
+                        constraints: None,
                     },
                     SceneNode {
                         id: "child".to_string(),
@@ -444,6 +472,10 @@ mod tests {
                             h: 20.0,
                             rotation: 0.0,
                         },
+                        constraints: Some(NodeConstraints {
+                            horizontal: HorizontalConstraint::Stretch,
+                            vertical: VerticalConstraint::Min,
+                        }),
                     },
                 ],
             }],

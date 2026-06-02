@@ -59,7 +59,7 @@ export class BrowserWasmEditorBridge implements EditorBridge {
   private snapshot: EditorSnapshot | null = null;
 
   static async create() {
-    const module = (await import("@/v2/editor/wasm/pkg/ffi_wasm_editor")) as unknown as WasmEditorBridgeModule;
+    const module = (await import("../wasm/pkg/ffi_wasm_editor.js")) as unknown as WasmEditorBridgeModule;
     await module.default();
     return new BrowserWasmEditorBridge(new module.WasmEditorBridgeHandle());
   }

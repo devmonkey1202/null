@@ -106,6 +106,7 @@ mod tests {
                             h: 100.0,
                             rotation: 0.0,
                         },
+                        constraints: None,
                     },
                     SceneNode {
                         id: "group".to_string(),
@@ -120,6 +121,7 @@ mod tests {
                             h: 80.0,
                             rotation: 0.0,
                         },
+                        constraints: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -134,6 +136,7 @@ mod tests {
                             h: 20.0,
                             rotation: 0.0,
                         },
+                        constraints: None,
                     },
                 ],
             }],

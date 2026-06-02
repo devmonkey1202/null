@@ -134,6 +134,7 @@ mod tests {
                             h: 100.0,
                             rotation: 0.0,
                         },
+                        constraints: None,
                     }],
                 }],
                 meta: SceneDocMeta {
