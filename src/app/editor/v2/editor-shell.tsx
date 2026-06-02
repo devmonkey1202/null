@@ -47,6 +47,13 @@ type DragTransform = {
   lockAspect: boolean;
 };
 
+type SnapGuide = {
+  axis: "x" | "y";
+  position: number;
+  spanStart: number;
+  spanEnd: number;
+};
+
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
 }
@@ -221,6 +228,98 @@ function angleDeltaFromBounds(
   return ((currentAngle - originAngle) * 180) / Math.PI;
 }
 
+function rectAnchors(rect: EditorRect) {
+  return {
+    left: rect.x,
+    centerX: rect.x + rect.w / 2,
+    right: rect.x + rect.w,
+    top: rect.y,
+    centerY: rect.y + rect.h / 2,
+    bottom: rect.y + rect.h,
+  };
+}
+
+function computeMoveSnap(
+  selectionBounds: EditorRect | null,
+  delta: { x: number; y: number } | null,
+  targetRects: EditorRect[],
+  threshold = 8,
+) {
+  if (!selectionBounds || !delta) {
+    return {
+      deltaX: delta?.x ?? 0,
+      deltaY: delta?.y ?? 0,
+      guides: [] as SnapGuide[],
+    };
+  }
+
+  const movedBounds = offsetRect(selectionBounds, delta.x, delta.y);
+  const moved = rectAnchors(movedBounds);
+
+  let bestX: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+  let bestY: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+
+  for (const target of targetRects) {
+    const anchors = rectAnchors(target);
+    const xValues = [anchors.left, anchors.centerX, anchors.right];
+    const yValues = [anchors.top, anchors.centerY, anchors.bottom];
+    const movedXValues = [moved.left, moved.centerX, moved.right];
+    const movedYValues = [moved.top, moved.centerY, moved.bottom];
+
+    for (const currentX of movedXValues) {
+      for (const targetX of xValues) {
+        const adjust = targetX - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: targetX,
+            spanStart: Math.min(moved.top, anchors.top),
+            spanEnd: Math.max(moved.bottom, anchors.bottom),
+          };
+        }
+      }
+    }
+
+    for (const currentY of movedYValues) {
+      for (const targetY of yValues) {
+        const adjust = targetY - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: targetY,
+            spanStart: Math.min(moved.left, anchors.left),
+            spanEnd: Math.max(moved.right, anchors.right),
+          };
+        }
+      }
+    }
+  }
+
+  const guides: SnapGuide[] = [];
+  if (bestX) {
+    guides.push({
+      axis: "x",
+      position: bestX.position,
+      spanStart: bestX.spanStart,
+      spanEnd: bestX.spanEnd,
+    });
+  }
+  if (bestY) {
+    guides.push({
+      axis: "y",
+      position: bestY.position,
+      spanStart: bestY.spanStart,
+      spanEnd: bestY.spanEnd,
+    });
+  }
+
+  return {
+    deltaX: delta.x + (bestX?.adjust ?? 0),
+    deltaY: delta.y + (bestY?.adjust ?? 0),
+    guides,
+  };
+}
+
 export function V2EditorShell() {
   const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
@@ -302,13 +401,32 @@ export function V2EditorShell() {
         : null,
     [dragMove],
   );
+  const moveSnapPreview = useMemo(() => {
+    if (!dragMoveDelta || !selectionBounds) {
+      return {
+        deltaX: dragMoveDelta?.x ?? 0,
+        deltaY: dragMoveDelta?.y ?? 0,
+        guides: [] as SnapGuide[],
+      };
+    }
+
+    const selectedIds = new Set(snapshot?.selection ?? []);
+    const targetRects = [
+      ...(rootFrame ? [rootFrame.frame] : []),
+      ...canvasNodes
+        .filter((node) => !selectedIds.has(node.id))
+        .map((node) => node.frame),
+    ];
+
+    return computeMoveSnap(selectionBounds, dragMoveDelta, targetRects);
+  }, [canvasNodes, dragMoveDelta, rootFrame, selectionBounds, snapshot?.selection]);
   const previewSelectionBounds = useMemo(() => {
     if (!selectionBounds) {
       return null;
     }
 
     if (dragMoveDelta) {
-      return offsetRect(selectionBounds, dragMoveDelta.x, dragMoveDelta.y);
+      return offsetRect(selectionBounds, moveSnapPreview.deltaX, moveSnapPreview.deltaY);
     }
 
     if (dragTransform) {
@@ -326,7 +444,7 @@ export function V2EditorShell() {
     }
 
     return selectionBounds;
-  }, [dragMoveDelta, dragTransform, selectionBounds]);
+  }, [dragMoveDelta, dragTransform, moveSnapPreview.deltaX, moveSnapPreview.deltaY, selectionBounds]);
   const previewTransformHandles = useMemo(
     () => (dragMove || dragTransform ? buildTransformHandles(previewSelectionBounds) : transformHandles),
     [dragMove, dragTransform, previewSelectionBounds, transformHandles],
@@ -660,7 +778,13 @@ export function V2EditorShell() {
       setDragMove(null);
 
       if (Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5) {
-        void applyAndSync([{ kind: "move_selection", deltaX, deltaY }]);
+        void applyAndSync([
+          {
+            kind: "move_selection",
+            deltaX: moveSnapPreview.deltaX,
+            deltaY: moveSnapPreview.deltaY,
+          },
+        ]);
       }
       return;
     }
@@ -927,6 +1051,32 @@ export function V2EditorShell() {
                     }}
                   />
                 ) : null}
+
+                {dragMove
+                  ? moveSnapPreview.guides.map((guide) =>
+                      guide.axis === "x" ? (
+                        <div
+                          key={`guide-x-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
+                          className="pointer-events-none absolute w-px bg-[#2859ff]/80"
+                          style={{
+                            left: guide.position,
+                            top: guide.spanStart,
+                            height: Math.max(1, guide.spanEnd - guide.spanStart),
+                          }}
+                        />
+                      ) : (
+                        <div
+                          key={`guide-y-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
+                          className="pointer-events-none absolute h-px bg-[#2859ff]/80"
+                          style={{
+                            left: guide.spanStart,
+                            top: guide.position,
+                            width: Math.max(1, guide.spanEnd - guide.spanStart),
+                          }}
+                        />
+                      ),
+                    )
+                  : null}
               </div>
               <div
                 className={`pointer-events-none absolute bottom-4 left-4 rounded-full border px-3 py-1 text-xs font-medium ${
