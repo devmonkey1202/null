@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createNoopEditorBridge } from "@/v2/editor/bridge/noop-editor-bridge";
 import type {
+  EditorCommand,
+  EditorBridge,
   EditorRect,
   EditorSnapshot,
   RuntimeGraph,
@@ -11,9 +12,8 @@ import type {
   ValidationReport,
   WasmBridgeInfo,
 } from "@/v2/editor/contracts";
+import { loadEditorBridge } from "@/v2/editor/bridge/load-editor-bridge";
 import { sampleSceneDoc } from "@/v2/editor/sample-doc";
-
-const bridge = createNoopEditorBridge(sampleSceneDoc);
 const CANVAS_PAGE_ID = sampleSceneDoc.pages[0]?.id ?? "page-home";
 
 type DragMarquee = {
@@ -235,8 +235,14 @@ export function V2EditorShell() {
   const [spacePressed, setSpacePressed] = useState(false);
   const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const bridgeRef = useRef<EditorBridge | null>(null);
 
   const syncBridgeState = useCallback(async () => {
+    const bridge = bridgeRef.current;
+    if (!bridge) {
+      return;
+    }
+
     const [nextValidation, nextRuntime, nextSelectionBounds, nextTransformHandles] =
       await Promise.all([
         bridge.runValidation(),
@@ -253,6 +259,8 @@ export function V2EditorShell() {
 
   useEffect(() => {
     async function load() {
+      const bridge = await loadEditorBridge();
+      bridgeRef.current = bridge;
       const [info, initialSnapshot] = await Promise.all([
         bridge.info(),
         bridge.loadDocument(sampleSceneDoc),
@@ -324,7 +332,12 @@ export function V2EditorShell() {
     [dragMove, dragTransform, previewSelectionBounds, transformHandles],
   );
 
-  async function applyAndSync(commands: Parameters<typeof bridge.dispatch>[0]) {
+  async function applyAndSync(commands: EditorCommand[]) {
+    const bridge = bridgeRef.current;
+    if (!bridge) {
+      return;
+    }
+
     const result = await bridge.dispatch(commands);
     setSnapshot(result.snapshot);
     setDraftViewport(null);

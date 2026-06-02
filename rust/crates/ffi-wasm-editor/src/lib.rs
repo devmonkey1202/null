@@ -7,6 +7,8 @@ use kernel_scene::{
 };
 use serde_json::json;
 use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 
 #[derive(Default)]
 pub struct EditorBridgeHandle {
@@ -215,6 +217,62 @@ fn transform_handle_kind_name(kind: TransformHandleKind) -> &'static str {
         TransformHandleKind::W => "w",
         TransformHandleKind::Nw => "nw",
         TransformHandleKind::Rotate => "rotate",
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn map_js_error(error: CoreError) -> JsValue {
+    JsValue::from_str(&error.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct WasmEditorBridgeHandle {
+    inner: EditorBridgeHandle,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl WasmEditorBridgeHandle {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> WasmEditorBridgeHandle {
+        WasmEditorBridgeHandle {
+            inner: EditorBridgeHandle::new(),
+        }
+    }
+
+    pub fn load_document(&self, serialized_doc: &str) -> Result<String, JsValue> {
+        self.inner.load_document(serialized_doc).map_err(map_js_error)
+    }
+
+    pub fn dispatch_editor_commands(&self, commands_json: &str) -> Result<String, JsValue> {
+        self.inner
+            .dispatch_editor_commands(commands_json)
+            .map_err(map_js_error)
+    }
+
+    pub fn query_node(&self, node_id: &str) -> Result<String, JsValue> {
+        self.inner.query_node(node_id).map_err(map_js_error)
+    }
+
+    pub fn hit_test(&self, page_id: &str, x: f32, y: f32, mode: &str) -> Result<String, JsValue> {
+        self.inner.hit_test(page_id, x, y, mode).map_err(map_js_error)
+    }
+
+    pub fn selection_bounds(&self) -> Result<String, JsValue> {
+        self.inner.selection_bounds().map_err(map_js_error)
+    }
+
+    pub fn transform_handles(&self) -> Result<String, JsValue> {
+        self.inner.transform_handles().map_err(map_js_error)
+    }
+
+    pub fn run_validation(&self) -> Result<String, JsValue> {
+        self.inner.run_validation().map_err(map_js_error)
+    }
+
+    pub fn export_document(&self) -> Result<String, JsValue> {
+        self.inner.export_document().map_err(map_js_error)
     }
 }
 

@@ -155,8 +155,8 @@ export type RuntimeGraph = {
 };
 
 export type WasmBridgeInfo = {
-  mode: "scaffold";
-  kernel: "browser-noop";
+  mode: "scaffold" | "wasm";
+  kernel: "browser-noop" | "rust-wasm";
   schemaVersion: number;
 };
 
