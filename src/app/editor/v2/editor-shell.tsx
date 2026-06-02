@@ -320,6 +320,153 @@ function computeMoveSnap(
   };
 }
 
+function computeResizeSnap(
+  originalBounds: EditorRect | null,
+  previewBounds: EditorRect | null,
+  handle: TransformHandle["kind"] | null,
+  targetRects: EditorRect[],
+  threshold = 8,
+) {
+  if (!originalBounds || !previewBounds || !handle || handle === "rotate") {
+    return {
+      bounds: previewBounds,
+      deltaX: 0,
+      deltaY: 0,
+      guides: [] as SnapGuide[],
+    };
+  }
+
+  const preview = rectAnchors(previewBounds);
+  let bestX: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+  let bestY: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+
+  const activeXKeys =
+    handle === "e" || handle === "ne" || handle === "se"
+      ? (["right"] as const)
+      : handle === "w" || handle === "nw" || handle === "sw"
+        ? (["left"] as const)
+        : ([] as const);
+  const activeYKeys =
+    handle === "s" || handle === "se" || handle === "sw"
+      ? (["bottom"] as const)
+      : handle === "n" || handle === "ne" || handle === "nw"
+        ? (["top"] as const)
+        : ([] as const);
+
+  for (const target of targetRects) {
+    const anchors = rectAnchors(target);
+    const targetXValues = [anchors.left, anchors.centerX, anchors.right];
+    const targetYValues = [anchors.top, anchors.centerY, anchors.bottom];
+
+    for (const key of activeXKeys) {
+      const currentX = preview[key];
+      for (const targetX of targetXValues) {
+        const adjust = targetX - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: targetX,
+            spanStart: Math.min(previewBounds.y, anchors.top),
+            spanEnd: Math.max(previewBounds.y + previewBounds.h, anchors.bottom),
+          };
+        }
+      }
+    }
+
+    for (const key of activeYKeys) {
+      const currentY = preview[key];
+      for (const targetY of targetYValues) {
+        const adjust = targetY - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: targetY,
+            spanStart: Math.min(previewBounds.x, anchors.left),
+            spanEnd: Math.max(previewBounds.x + previewBounds.w, anchors.right),
+          };
+        }
+      }
+    }
+  }
+
+  const bounds = { ...previewBounds };
+  if (bestX) {
+    if (handle === "e" || handle === "ne" || handle === "se") {
+      bounds.w += bestX.adjust;
+    } else if (handle === "w" || handle === "nw" || handle === "sw") {
+      bounds.x += bestX.adjust;
+      bounds.w -= bestX.adjust;
+    }
+  }
+
+  if (bestY) {
+    if (handle === "s" || handle === "se" || handle === "sw") {
+      bounds.h += bestY.adjust;
+    } else if (handle === "n" || handle === "ne" || handle === "nw") {
+      bounds.y += bestY.adjust;
+      bounds.h -= bestY.adjust;
+    }
+  }
+
+  const guides: SnapGuide[] = [];
+  if (bestX) {
+    guides.push({
+      axis: "x",
+      position: bestX.position,
+      spanStart: bestX.spanStart,
+      spanEnd: bestX.spanEnd,
+    });
+  }
+  if (bestY) {
+    guides.push({
+      axis: "y",
+      position: bestY.position,
+      spanStart: bestY.spanStart,
+      spanEnd: bestY.spanEnd,
+    });
+  }
+
+  let deltaX = 0;
+  let deltaY = 0;
+  switch (handle) {
+    case "n":
+      deltaY = bounds.y - originalBounds.y;
+      break;
+    case "ne":
+      deltaX = bounds.x + bounds.w - (originalBounds.x + originalBounds.w);
+      deltaY = bounds.y - originalBounds.y;
+      break;
+    case "e":
+      deltaX = bounds.x + bounds.w - (originalBounds.x + originalBounds.w);
+      break;
+    case "se":
+      deltaX = bounds.x + bounds.w - (originalBounds.x + originalBounds.w);
+      deltaY = bounds.y + bounds.h - (originalBounds.y + originalBounds.h);
+      break;
+    case "s":
+      deltaY = bounds.y + bounds.h - (originalBounds.y + originalBounds.h);
+      break;
+    case "sw":
+      deltaX = bounds.x - originalBounds.x;
+      deltaY = bounds.y + bounds.h - (originalBounds.y + originalBounds.h);
+      break;
+    case "w":
+      deltaX = bounds.x - originalBounds.x;
+      break;
+    case "nw":
+      deltaX = bounds.x - originalBounds.x;
+      deltaY = bounds.y - originalBounds.y;
+      break;
+  }
+
+  return {
+    bounds,
+    deltaX,
+    deltaY,
+    guides,
+  };
+}
+
 export function V2EditorShell() {
   const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
@@ -420,6 +567,33 @@ export function V2EditorShell() {
 
     return computeMoveSnap(selectionBounds, dragMoveDelta, targetRects);
   }, [canvasNodes, dragMoveDelta, rootFrame, selectionBounds, snapshot?.selection]);
+  const resizeSnapPreview = useMemo(() => {
+    if (!selectionBounds || !dragTransform || dragTransform.handle === "rotate") {
+      return {
+        bounds: null as EditorRect | null,
+        deltaX: 0,
+        deltaY: 0,
+        guides: [] as SnapGuide[],
+      };
+    }
+
+    const rawBounds = resizePreviewBounds(
+      selectionBounds,
+      dragTransform.handle,
+      dragTransform.currentX - dragTransform.originX,
+      dragTransform.currentY - dragTransform.originY,
+      dragTransform.lockAspect,
+    );
+    const selectedIds = new Set(snapshot?.selection ?? []);
+    const targetRects = [
+      ...(rootFrame ? [rootFrame.frame] : []),
+      ...canvasNodes
+        .filter((node) => !selectedIds.has(node.id))
+        .map((node) => node.frame),
+    ];
+
+    return computeResizeSnap(selectionBounds, rawBounds, dragTransform.handle, targetRects);
+  }, [canvasNodes, dragTransform, rootFrame, selectionBounds, snapshot?.selection]);
   const previewSelectionBounds = useMemo(() => {
     if (!selectionBounds) {
       return null;
@@ -434,17 +608,18 @@ export function V2EditorShell() {
         return selectionBounds;
       }
 
-      return resizePreviewBounds(
-        selectionBounds,
-        dragTransform.handle,
-        dragTransform.currentX - dragTransform.originX,
-        dragTransform.currentY - dragTransform.originY,
-        dragTransform.lockAspect,
-      );
+      return resizeSnapPreview.bounds;
     }
 
     return selectionBounds;
-  }, [dragMoveDelta, dragTransform, moveSnapPreview.deltaX, moveSnapPreview.deltaY, selectionBounds]);
+  }, [
+    dragMoveDelta,
+    dragTransform,
+    moveSnapPreview.deltaX,
+    moveSnapPreview.deltaY,
+    resizeSnapPreview.bounds,
+    selectionBounds,
+  ]);
   const previewTransformHandles = useMemo(
     () => (dragMove || dragTransform ? buildTransformHandles(previewSelectionBounds) : transformHandles),
     [dragMove, dragTransform, previewSelectionBounds, transformHandles],
@@ -823,8 +998,8 @@ export function V2EditorShell() {
           {
             kind: "resize_selection",
             handle: currentDrag.handle,
-            deltaX,
-            deltaY,
+            deltaX: resizeSnapPreview.deltaX,
+            deltaY: resizeSnapPreview.deltaY,
             lockAspect: currentDrag.lockAspect,
           },
         ]);
@@ -1052,8 +1227,8 @@ export function V2EditorShell() {
                   />
                 ) : null}
 
-                {dragMove
-                  ? moveSnapPreview.guides.map((guide) =>
+                {(dragMove ? moveSnapPreview.guides : dragTransform ? resizeSnapPreview.guides : [])
+                  .map((guide) =>
                       guide.axis === "x" ? (
                         <div
                           key={`guide-x-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
@@ -1075,8 +1250,7 @@ export function V2EditorShell() {
                           }}
                         />
                       ),
-                    )
-                  : null}
+                    )}
               </div>
               <div
                 className={`pointer-events-none absolute bottom-4 left-4 rounded-full border px-3 py-1 text-xs font-medium ${
