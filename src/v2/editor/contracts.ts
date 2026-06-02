@@ -33,6 +33,12 @@ export type NodeConstraints = {
   vertical: VerticalConstraint;
 };
 
+export type SceneGuide = {
+  id: string;
+  axis: "x" | "y";
+  position: number;
+};
+
 export type SelectionSetMode = "replace" | "add" | "toggle";
 
 export type SceneNode = {
@@ -50,6 +56,7 @@ export type ScenePage = {
   name: string;
   rootId: string;
   nodes: SceneNode[];
+  guides?: SceneGuide[];
 };
 
 export type SceneDoc = {
@@ -82,6 +89,11 @@ export type EditorCommand =
   | { kind: "select_in_rect"; pageId: string; rect: EditorRect; mode?: SelectionSetMode }
   | { kind: "set_viewport"; viewport: EditorViewport }
   | { kind: "rename_node"; nodeId: string; name: string }
+  | {
+      kind: "set_node_constraints";
+      nodeId: string;
+      constraints: NodeConstraints;
+    }
   | { kind: "move_selection"; deltaX: number; deltaY: number }
   | { kind: "move_node"; nodeId: string; frame: Partial<EditorRect> }
   | { kind: "rotate_selection"; deltaDeg: number }
@@ -92,6 +104,9 @@ export type EditorCommand =
       deltaY: number;
       lockAspect?: boolean;
     }
+  | { kind: "add_guide"; pageId: string; guide: SceneGuide }
+  | { kind: "move_guide"; pageId: string; guideId: string; position: number }
+  | { kind: "delete_guide"; pageId: string; guideId: string }
   | { kind: "create_node"; pageId: string; node: SceneNode }
   | { kind: "delete_node"; nodeId: string }
   | { kind: "undo" }

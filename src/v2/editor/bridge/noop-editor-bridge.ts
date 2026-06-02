@@ -573,6 +573,19 @@ export class NoopEditorBridge implements EditorBridge {
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
+        case "set_node_constraints":
+          this.document = {
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              constraints: { ...command.constraints },
+            })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          };
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
         case "move_selection":
           this.document = moveSelection(this.document, this.selection, command.deltaX, command.deltaY);
           this.version += 1;
@@ -629,6 +642,56 @@ export class NoopEditorBridge implements EditorBridge {
           );
           this.version += 1;
           dirtyNodeIds.push(...this.selection);
+          this.recordHistory();
+          break;
+        case "add_guide":
+          this.document = {
+            ...this.document,
+            pages: this.document.pages.map((page) =>
+              page.id === command.pageId
+                ? { ...page, guides: [...(page.guides ?? []), command.guide] }
+                : page,
+            ),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          };
+          this.version += 1;
+          dirtyNodeIds.push(command.guide.id);
+          this.recordHistory();
+          break;
+        case "move_guide":
+          this.document = {
+            ...this.document,
+            pages: this.document.pages.map((page) =>
+              page.id === command.pageId
+                ? {
+                    ...page,
+                    guides: (page.guides ?? []).map((guide) =>
+                      guide.id === command.guideId ? { ...guide, position: command.position } : guide,
+                    ),
+                  }
+                : page,
+            ),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          };
+          this.version += 1;
+          dirtyNodeIds.push(command.guideId);
+          this.recordHistory();
+          break;
+        case "delete_guide":
+          this.document = {
+            ...this.document,
+            pages: this.document.pages.map((page) =>
+              page.id === command.pageId
+                ? {
+                    ...page,
+                    guides: (page.guides ?? []).filter((guide) => guide.id !== command.guideId),
+                  }
+                : page,
+            ),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          };
+          this.version += 1;
+          dirtyNodeIds.push(command.guideId);
           this.recordHistory();
           break;
         case "create_node":

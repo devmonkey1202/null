@@ -28,6 +28,8 @@ pub struct ScenePage {
     pub id: String,
     pub name: String,
     pub root_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<SceneGuide>,
     pub nodes: Vec<SceneNode>,
 }
 
@@ -99,6 +101,20 @@ pub struct NodeConstraints {
     pub vertical: VerticalConstraint,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuideAxis {
+    X,
+    Y,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SceneGuide {
+    pub id: String,
+    pub axis: GuideAxis,
+    pub position: i32,
+}
+
 impl Default for EditorViewport {
     fn default() -> Self {
         Self {
@@ -143,6 +159,11 @@ pub enum EditorCommand {
         node_id: String,
         name: String,
     },
+    SetNodeConstraints {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        constraints: NodeConstraints,
+    },
     MoveSelection {
         #[serde(rename = "deltaX")]
         delta_x: f32,
@@ -166,6 +187,24 @@ pub enum EditorCommand {
         delta_y: f32,
         #[serde(default, rename = "lockAspect")]
         lock_aspect: bool,
+    },
+    AddGuide {
+        #[serde(rename = "pageId")]
+        page_id: String,
+        guide: SceneGuide,
+    },
+    MoveGuide {
+        #[serde(rename = "pageId")]
+        page_id: String,
+        #[serde(rename = "guideId")]
+        guide_id: String,
+        position: i32,
+    },
+    DeleteGuide {
+        #[serde(rename = "pageId")]
+        page_id: String,
+        #[serde(rename = "guideId")]
+        guide_id: String,
     },
     CreateNode {
         #[serde(rename = "pageId")]
@@ -443,6 +482,7 @@ mod tests {
                 id: "page-1".to_string(),
                 name: "Canvas".to_string(),
                 root_id: "root".to_string(),
+                guides: vec![],
                 nodes: vec![
                     SceneNode {
                         id: "root".to_string(),

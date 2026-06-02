@@ -6,10 +6,13 @@ import type {
   EditorBridge,
   EditorRect,
   EditorSnapshot,
+  HorizontalConstraint,
   RuntimeGraph,
+  SceneGuide,
   SceneNode,
   TransformHandle,
   ValidationReport,
+  VerticalConstraint,
   WasmBridgeInfo,
 } from "@/v2/editor/contracts";
 import { loadEditorBridge } from "@/v2/editor/bridge/load-editor-bridge";
@@ -47,6 +50,12 @@ type DragTransform = {
   lockAspect: boolean;
 };
 
+type DragGuide = {
+  guideId: string;
+  axis: "x" | "y";
+  currentPosition: number;
+};
+
 type SnapGuide = {
   axis: "x" | "y";
   position: number;
@@ -64,6 +73,9 @@ type RulerTick = {
   position: number;
   major: boolean;
 };
+
+const HORIZONTAL_CONSTRAINT_OPTIONS: HorizontalConstraint[] = ["min", "max", "stretch", "scale"];
+const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretch", "scale"];
 
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
@@ -254,6 +266,7 @@ function computeMoveSnap(
   selectionBounds: EditorRect | null,
   delta: { x: number; y: number } | null,
   targetRects: EditorRect[],
+  targetGuides: SceneGuide[] = [],
   threshold = 8,
 ) {
   if (!selectionBounds || !delta) {
@@ -306,6 +319,34 @@ function computeMoveSnap(
     }
   }
 
+  for (const guide of targetGuides) {
+    if (guide.axis === "x") {
+      for (const currentX of [moved.left, moved.centerX, moved.right]) {
+        const adjust = guide.position - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: guide.position,
+            spanStart: moved.top,
+            spanEnd: moved.bottom,
+          };
+        }
+      }
+    } else {
+      for (const currentY of [moved.top, moved.centerY, moved.bottom]) {
+        const adjust = guide.position - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: guide.position,
+            spanStart: moved.left,
+            spanEnd: moved.right,
+          };
+        }
+      }
+    }
+  }
+
   const guides: SnapGuide[] = [];
   if (bestX) {
     guides.push({
@@ -336,6 +377,7 @@ function computeResizeSnap(
   previewBounds: EditorRect | null,
   handle: TransformHandle["kind"] | null,
   targetRects: EditorRect[],
+  targetGuides: SceneGuide[] = [],
   threshold = 8,
 ) {
   if (!originalBounds || !previewBounds || !handle || handle === "rotate") {
@@ -394,6 +436,36 @@ function computeResizeSnap(
             position: targetY,
             spanStart: Math.min(previewBounds.x, anchors.left),
             spanEnd: Math.max(previewBounds.x + previewBounds.w, anchors.right),
+          };
+        }
+      }
+    }
+  }
+
+  for (const guide of targetGuides) {
+    if (guide.axis === "x") {
+      for (const key of activeXKeys) {
+        const currentX = preview[key];
+        const adjust = guide.position - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: guide.position,
+            spanStart: previewBounds.y,
+            spanEnd: previewBounds.y + previewBounds.h,
+          };
+        }
+      }
+    } else {
+      for (const key of activeYKeys) {
+        const currentY = preview[key];
+        const adjust = guide.position - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: guide.position,
+            spanStart: previewBounds.x,
+            spanEnd: previewBounds.x + previewBounds.w,
           };
         }
       }
@@ -531,6 +603,10 @@ function buildRulerTicks(
   return ticks;
 }
 
+function createGuideId() {
+  return `guide-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function V2EditorShell() {
   const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
@@ -542,9 +618,11 @@ export function V2EditorShell() {
   const [dragPan, setDragPan] = useState<DragPan | null>(null);
   const [dragMove, setDragMove] = useState<DragMove | null>(null);
   const [dragTransform, setDragTransform] = useState<DragTransform | null>(null);
+  const [dragGuide, setDragGuide] = useState<DragGuide | null>(null);
   const [spacePressed, setSpacePressed] = useState(false);
   const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
+  const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const bridgeRef = useRef<EditorBridge | null>(null);
 
@@ -609,6 +687,11 @@ export function V2EditorShell() {
   }, []);
 
   const nodes = useMemo(() => flattenNodes(snapshot), [snapshot]);
+  const currentPage = useMemo(
+    () => snapshot?.doc.pages.find((page) => page.id === CANVAS_PAGE_ID) ?? null,
+    [snapshot?.doc.pages],
+  );
+  const pageGuides = currentPage?.guides ?? [];
   const activeNode = useMemo(
     () => selectedNode(nodes, snapshot?.selection ?? []),
     [nodes, snapshot?.selection],
@@ -653,8 +736,8 @@ export function V2EditorShell() {
         .map((node) => node.frame),
     ];
 
-    return computeMoveSnap(selectionBounds, dragMoveDelta, targetRects);
-  }, [canvasNodes, dragMoveDelta, rootFrame, selectionBounds, snapshot?.selection]);
+    return computeMoveSnap(selectionBounds, dragMoveDelta, targetRects, pageGuides);
+  }, [canvasNodes, dragMoveDelta, pageGuides, rootFrame, selectionBounds, snapshot?.selection]);
   const resizeSnapPreview = useMemo(() => {
     if (!selectionBounds || !dragTransform || dragTransform.handle === "rotate") {
       return {
@@ -680,8 +763,8 @@ export function V2EditorShell() {
         .map((node) => node.frame),
     ];
 
-    return computeResizeSnap(selectionBounds, rawBounds, dragTransform.handle, targetRects);
-  }, [canvasNodes, dragTransform, rootFrame, selectionBounds, snapshot?.selection]);
+    return computeResizeSnap(selectionBounds, rawBounds, dragTransform.handle, targetRects, pageGuides);
+  }, [canvasNodes, dragTransform, pageGuides, rootFrame, selectionBounds, snapshot?.selection]);
   const previewSelectionBounds = useMemo(() => {
     if (!selectionBounds) {
       return null;
@@ -712,6 +795,15 @@ export function V2EditorShell() {
     () => (dragMove || dragTransform ? buildTransformHandles(previewSelectionBounds) : transformHandles),
     [dragMove, dragTransform, previewSelectionBounds, transformHandles],
   );
+  const previewGuides = useMemo(
+    () =>
+      dragGuide
+        ? pageGuides.map((guide) =>
+            guide.id === dragGuide.guideId ? { ...guide, position: dragGuide.currentPosition } : guide,
+          )
+        : pageGuides,
+    [dragGuide, pageGuides],
+  );
   const activeGuides = useMemo(
     () => (dragMove ? moveSnapPreview.guides : dragTransform ? resizeSnapPreview.guides : []),
     [dragMove, dragTransform, moveSnapPreview.guides, resizeSnapPreview.guides],
@@ -736,6 +828,27 @@ export function V2EditorShell() {
     setSnapshot(result.snapshot);
     setDraftViewport(null);
     await syncBridgeState();
+  }
+
+  async function updateConstraints(
+    axis: "horizontal" | "vertical",
+    value: HorizontalConstraint | VerticalConstraint,
+  ) {
+    if (!activeNode) {
+      return;
+    }
+
+    const current = activeNode.constraints ?? { horizontal: "min", vertical: "min" };
+    await applyAndSync([
+      {
+        kind: "set_node_constraints",
+        nodeId: activeNode.id,
+        constraints: {
+          ...current,
+          [axis]: value,
+        },
+      },
+    ]);
   }
 
   async function selectNode(nodeId: string) {
@@ -782,6 +895,14 @@ export function V2EditorShell() {
       const isMeta = event.metaKey || event.ctrlKey;
 
       if (event.key === "Delete" || event.key === "Backspace") {
+        if (selectedGuideId) {
+          event.preventDefault();
+          const guideId = selectedGuideId;
+          setSelectedGuideId(null);
+          void applyAndSync([{ kind: "delete_guide", pageId: CANVAS_PAGE_ID, guideId }]);
+          return;
+        }
+
         if (snapshot?.selection.length) {
           event.preventDefault();
           void runDeleteSelection();
@@ -824,9 +945,9 @@ export function V2EditorShell() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [runDeleteSelection, runRedo, runUndo, snapshot?.selection.length]);
+  }, [applyAndSync, runDeleteSelection, runRedo, runUndo, selectedGuideId, snapshot?.selection.length]);
 
-  function toCanvasPoint(event: React.PointerEvent<HTMLDivElement>) {
+  function toCanvasPointFromClient(clientX: number, clientY: number) {
     const bounds = canvasRef.current?.getBoundingClientRect();
     if (!bounds) {
       return null;
@@ -835,9 +956,13 @@ export function V2EditorShell() {
     const activeViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
 
     return {
-      x: (event.clientX - bounds.left - activeViewport.x) / activeViewport.zoom,
-      y: (event.clientY - bounds.top - activeViewport.y) / activeViewport.zoom,
+      x: (clientX - bounds.left - activeViewport.x) / activeViewport.zoom,
+      y: (clientY - bounds.top - activeViewport.y) / activeViewport.zoom,
     };
+  }
+
+  function toCanvasPoint(event: React.PointerEvent<HTMLDivElement>) {
+    return toCanvasPointFromClient(event.clientX, event.clientY);
   }
 
   async function handleNodePointerDown(
@@ -845,6 +970,7 @@ export function V2EditorShell() {
     nodeId: string,
   ) {
     event.stopPropagation();
+    setSelectedGuideId(null);
 
     if (event.button !== 0 || spacePressed) {
       return;
@@ -874,6 +1000,7 @@ export function V2EditorShell() {
     handle: TransformHandle,
   ) {
     event.stopPropagation();
+    setSelectedGuideId(null);
 
     if (event.button !== 0 || !selectionBounds || spacePressed) {
       return;
@@ -895,10 +1022,62 @@ export function V2EditorShell() {
     canvasRef.current?.setPointerCapture(event.pointerId);
   }
 
+  async function addGuide(axis: "x" | "y", clientX: number, clientY: number) {
+    const point = toCanvasPointFromClient(clientX, clientY);
+    if (!point) {
+      return;
+    }
+
+    const guide: SceneGuide = {
+      id: createGuideId(),
+      axis,
+      position: Math.round(axis === "x" ? point.x : point.y),
+    };
+
+    setSelectedGuideId(guide.id);
+    await applyAndSync([{ kind: "add_guide", pageId: CANVAS_PAGE_ID, guide }]);
+  }
+
+  function handleGuidePointerDown(
+    event: React.PointerEvent<HTMLButtonElement>,
+    guide: SceneGuide,
+  ) {
+    event.stopPropagation();
+
+    if (event.button !== 0) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    setSelectedGuideId(guide.id);
+    setDragGuide({
+      guideId: guide.id,
+      axis: guide.axis,
+      currentPosition: Math.round(guide.axis === "x" ? point.x : point.y),
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handleTopRulerDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    void addGuide("x", event.clientX, event.clientY);
+  }
+
+  function handleLeftRulerDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    void addGuide("y", event.clientX, event.clientY);
+  }
+
   function handleCanvasPointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 && event.button !== 1) {
       return;
     }
+
+    setSelectedGuideId(null);
 
     const activeViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
 
@@ -936,6 +1115,23 @@ export function V2EditorShell() {
         y: dragPan.startViewportY + (event.clientY - dragPan.originClientY),
       };
       setDraftViewport(nextViewport);
+      return;
+    }
+
+    if (dragGuide) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      setDragGuide((current) =>
+        current
+          ? {
+              ...current,
+              currentPosition: Math.round(current.axis === "x" ? point.x : point.y),
+            }
+          : current,
+      );
       return;
     }
 
@@ -1065,6 +1261,24 @@ export function V2EditorShell() {
       return;
     }
 
+    if (dragGuide) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragGuide;
+      setDragGuide(null);
+      void applyAndSync([
+        {
+          kind: "move_guide",
+          pageId: CANVAS_PAGE_ID,
+          guideId: currentDrag.guideId,
+          position: currentDrag.currentPosition,
+        },
+      ]);
+      return;
+    }
+
     if (dragTransform) {
       if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
         canvasRef.current.releasePointerCapture(event.pointerId);
@@ -1124,6 +1338,7 @@ export function V2EditorShell() {
       canvasRef.current.releasePointerCapture(event.pointerId);
     }
     setDragPan(null);
+    setDragGuide(null);
     setDragMove(null);
     setDragTransform(null);
     setDragMarquee(null);
@@ -1287,6 +1502,32 @@ export function V2EditorShell() {
                   );
                 })}
 
+                {previewGuides.map((guide) =>
+                  guide.axis === "x" ? (
+                    <button
+                      key={guide.id}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute top-0 h-full w-px ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/65"
+                      }`}
+                      style={{ left: guide.position, cursor: "col-resize" }}
+                      title="Vertical guide"
+                    />
+                  ) : (
+                    <button
+                      key={guide.id}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute left-0 h-px w-full ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/65"
+                      }`}
+                      style={{ top: guide.position, cursor: "row-resize" }}
+                      title="Horizontal guide"
+                    />
+                  ),
+                )}
+
                 {previewSelectionBounds ? (
                   <div
                     className="pointer-events-none absolute border border-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.12)]"
@@ -1352,12 +1593,15 @@ export function V2EditorShell() {
                   ),
                 )}
               </div>
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-7 border-b border-slate-200/90 bg-white/90 backdrop-blur-sm">
-                <div className="absolute left-0 top-0 h-7 w-7 border-r border-slate-200/90 bg-slate-50/90" />
+              <div
+                className="absolute inset-x-0 top-0 h-7 border-b border-slate-200/90 bg-white/90 backdrop-blur-sm"
+                onDoubleClick={handleTopRulerDoubleClick}
+              >
+                <div className="pointer-events-none absolute left-0 top-0 h-7 w-7 border-r border-slate-200/90 bg-slate-50/90" />
                 {horizontalRulerTicks.map((tick) => (
                   <div
                     key={`ruler-x-${tick.value}-${tick.position}`}
-                    className="absolute top-0"
+                    className="pointer-events-none absolute top-0"
                     style={{ left: tick.position }}
                   >
                     <div
@@ -1379,13 +1623,30 @@ export function V2EditorShell() {
                       style={{ left: guide.position }}
                     />
                   ))}
+                {previewGuides
+                  .filter((guide) => guide.axis === "x")
+                  .map((guide) => (
+                    <button
+                      key={`persistent-ruler-guide-x-${guide.id}`}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute top-0 h-7 w-px ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/80"
+                      }`}
+                      style={{ left: guide.position * viewViewport.zoom + viewViewport.x }}
+                      title="Vertical guide"
+                    />
+                  ))}
               </div>
-              <div className="pointer-events-none absolute inset-y-0 left-0 w-7 border-r border-slate-200/90 bg-white/90 backdrop-blur-sm">
-                <div className="absolute left-0 top-0 h-7 w-7 border-b border-slate-200/90 bg-slate-50/90" />
+              <div
+                className="absolute inset-y-0 left-0 w-7 border-r border-slate-200/90 bg-white/90 backdrop-blur-sm"
+                onDoubleClick={handleLeftRulerDoubleClick}
+              >
+                <div className="pointer-events-none absolute left-0 top-0 h-7 w-7 border-b border-slate-200/90 bg-slate-50/90" />
                 {verticalRulerTicks.map((tick) => (
                   <div
                     key={`ruler-y-${tick.value}-${tick.position}`}
-                    className="absolute left-0"
+                    className="pointer-events-none absolute left-0"
                     style={{ top: tick.position }}
                   >
                     <div
@@ -1408,6 +1669,20 @@ export function V2EditorShell() {
                       key={`ruler-guide-y-${guide.position}`}
                       className="absolute left-0 h-px w-7 bg-[#2859ff]"
                       style={{ top: guide.position }}
+                    />
+                  ))}
+                {previewGuides
+                  .filter((guide) => guide.axis === "y")
+                  .map((guide) => (
+                    <button
+                      key={`persistent-ruler-guide-y-${guide.id}`}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute left-0 h-px w-7 ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/80"
+                      }`}
+                      style={{ top: guide.position * viewViewport.zoom + viewViewport.y }}
+                      title="Horizontal guide"
                     />
                   ))}
               </div>
@@ -1510,15 +1785,35 @@ export function V2EditorShell() {
                     <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                       <div>
                         <div className="text-slate-400">Horizontal</div>
-                        <div className="font-medium text-slate-900">
-                          {activeNode.constraints?.horizontal ?? "min"}
-                        </div>
+                        <select
+                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                          value={activeNode.constraints?.horizontal ?? "min"}
+                          onChange={(event) =>
+                            void updateConstraints("horizontal", event.target.value as HorizontalConstraint)
+                          }
+                        >
+                          {HORIZONTAL_CONSTRAINT_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                       <div>
                         <div className="text-slate-400">Vertical</div>
-                        <div className="font-medium text-slate-900">
-                          {activeNode.constraints?.vertical ?? "min"}
-                        </div>
+                        <select
+                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                          value={activeNode.constraints?.vertical ?? "min"}
+                          onChange={(event) =>
+                            void updateConstraints("vertical", event.target.value as VerticalConstraint)
+                          }
+                        >
+                          {VERTICAL_CONSTRAINT_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
                   </>

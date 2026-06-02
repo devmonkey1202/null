@@ -1,10 +1,13 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch,
-    HorizontalConstraint, SceneDoc, SceneNode, SelectionSetMode, TransformHandleKind,
+    HorizontalConstraint, SceneDoc, SceneGuide, SceneNode, SelectionSetMode, TransformHandleKind,
     ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
+
+#[cfg(test)]
+use kernel_doc::GuideAxis;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitTestMode {
@@ -104,6 +107,17 @@ pub fn dispatch_commands(
                 applied_commands.push("rename_node".to_string());
                 dirty_node_ids.push(node_id);
             }
+            EditorCommand::SetNodeConstraints {
+                node_id,
+                constraints,
+            } => {
+                let node = find_node_mut(&mut state.doc, &node_id)?;
+                node.constraints = Some(constraints);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_node_constraints".to_string());
+                dirty_node_ids.push(node_id);
+            }
             EditorCommand::MoveSelection { delta_x, delta_y } => {
                 let moved = move_selection(&mut state.doc, &state.selection, delta_x, delta_y)?;
                 state.version += 1;
@@ -165,6 +179,31 @@ pub fn dispatch_commands(
                 touch_doc(&mut state.doc);
                 applied_commands.push("resize_selection".to_string());
                 dirty_node_ids.extend(resized);
+            }
+            EditorCommand::AddGuide { page_id, guide } => {
+                add_guide(&mut state.doc, &page_id, guide.clone())?;
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("add_guide".to_string());
+                dirty_node_ids.push(guide.id);
+            }
+            EditorCommand::MoveGuide {
+                page_id,
+                guide_id,
+                position,
+            } => {
+                move_guide(&mut state.doc, &page_id, &guide_id, position)?;
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("move_guide".to_string());
+                dirty_node_ids.push(guide_id);
+            }
+            EditorCommand::DeleteGuide { page_id, guide_id } => {
+                delete_guide(&mut state.doc, &page_id, &guide_id)?;
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("delete_guide".to_string());
+                dirty_node_ids.push(guide_id);
             }
             EditorCommand::CreateNode { page_id, node } => {
                 let dirty_node_id = node.id.clone();
@@ -566,6 +605,65 @@ fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreErr
     ))
 }
 
+fn add_guide(doc: &mut SceneDoc, page_id: &str, guide: SceneGuide) -> Result<(), CoreError> {
+    let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
+        CoreError::new(
+            "scene.page.not_found",
+            format!("Page '{}' was not found.", page_id),
+        )
+    })?;
+
+    if page.guides.iter().any(|existing| existing.id == guide.id) {
+        return Err(CoreError::new(
+            "scene.guide.duplicate_id",
+            format!("Guide '{}' already exists.", guide.id),
+        ));
+    }
+
+    page.guides.push(guide);
+    Ok(())
+}
+
+fn move_guide(doc: &mut SceneDoc, page_id: &str, guide_id: &str, position: i32) -> Result<(), CoreError> {
+    let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
+        CoreError::new(
+            "scene.page.not_found",
+            format!("Page '{}' was not found.", page_id),
+        )
+    })?;
+
+    let guide = page.guides.iter_mut().find(|guide| guide.id == guide_id).ok_or_else(|| {
+        CoreError::new(
+            "scene.guide.not_found",
+            format!("Guide '{}' was not found.", guide_id),
+        )
+    })?;
+
+    guide.position = position;
+    Ok(())
+}
+
+fn delete_guide(doc: &mut SceneDoc, page_id: &str, guide_id: &str) -> Result<(), CoreError> {
+    let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
+        CoreError::new(
+            "scene.page.not_found",
+            format!("Page '{}' was not found.", page_id),
+        )
+    })?;
+
+    let previous_len = page.guides.len();
+    page.guides.retain(|guide| guide.id != guide_id);
+
+    if page.guides.len() == previous_len {
+        return Err(CoreError::new(
+            "scene.guide.not_found",
+            format!("Guide '{}' was not found.", guide_id),
+        ));
+    }
+
+    Ok(())
+}
+
 fn apply_child_constraints(
     doc: &mut SceneDoc,
     parent_id: &str,
@@ -963,8 +1061,7 @@ fn normalize_degrees(value: f32) -> f32 {
 mod tests {
     use super::*;
     use kernel_doc::{
-        HorizontalConstraint, NodeConstraints, SceneDocMeta, SceneNodeKind, ScenePage,
-        VerticalConstraint,
+        HorizontalConstraint, SceneDocMeta, SceneNodeKind, ScenePage, VerticalConstraint,
     };
 
     fn sample_doc() -> SceneDoc {
@@ -976,6 +1073,7 @@ mod tests {
                 id: "page-1".to_string(),
                 name: "Canvas".to_string(),
                 root_id: "root".to_string(),
+                guides: vec![],
                 nodes: vec![
                     SceneNode {
                         id: "root".to_string(),
@@ -1174,7 +1272,7 @@ mod tests {
     #[test]
     fn resizing_parent_applies_child_constraints() {
         let mut doc = sample_doc();
-        doc.pages[0].nodes[1].constraints = Some(NodeConstraints {
+        doc.pages[0].nodes[1].constraints = Some(kernel_doc::NodeConstraints {
             horizontal: HorizontalConstraint::Stretch,
             vertical: VerticalConstraint::Max,
         });
@@ -1221,5 +1319,70 @@ mod tests {
         assert_eq!(node.frame.rotation, 90.0);
         assert_eq!(node.frame.x, 10.0);
         assert_eq!(node.frame.y, 10.0);
+    }
+
+    #[test]
+    fn guide_commands_update_page_guides() {
+        let mut state = EditorState::new(sample_doc());
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::AddGuide {
+                page_id: "page-1".to_string(),
+                guide: SceneGuide {
+                    id: "guide-1".to_string(),
+                    axis: GuideAxis::X,
+                    position: 120,
+                },
+            }],
+        )
+        .expect("add guide should succeed");
+
+        assert_eq!(state.doc.pages[0].guides.len(), 1);
+        assert_eq!(state.doc.pages[0].guides[0].position, 120);
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::MoveGuide {
+                page_id: "page-1".to_string(),
+                guide_id: "guide-1".to_string(),
+                position: 200,
+            }],
+        )
+        .expect("move guide should succeed");
+
+        assert_eq!(state.doc.pages[0].guides[0].position, 200);
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::DeleteGuide {
+                page_id: "page-1".to_string(),
+                guide_id: "guide-1".to_string(),
+            }],
+        )
+        .expect("delete guide should succeed");
+
+        assert!(state.doc.pages[0].guides.is_empty());
+    }
+
+    #[test]
+    fn set_node_constraints_updates_node() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeConstraints {
+                node_id: "title".to_string(),
+                constraints: kernel_doc::NodeConstraints {
+                    horizontal: HorizontalConstraint::Stretch,
+                    vertical: VerticalConstraint::Scale,
+                },
+            }],
+        )
+        .expect("set constraints should succeed");
+
+        let node = query_node(&state.doc, "title").expect("node exists");
+        let constraints = node.constraints.as_ref().expect("constraints should exist");
+        assert_eq!(constraints.horizontal, HorizontalConstraint::Stretch);
+        assert_eq!(constraints.vertical, VerticalConstraint::Scale);
     }
 }

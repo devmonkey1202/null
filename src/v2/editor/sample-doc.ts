@@ -11,6 +11,7 @@ export const sampleSceneDoc: SceneDoc = {
       id: "page-home",
       name: "Canvas",
       rootId: "root-frame",
+      guides: [],
       nodes: [
         {
           id: "root-frame",

@@ -121,6 +121,7 @@ mod tests {
                     id: "page-1".to_string(),
                     name: "Canvas".to_string(),
                     root_id: "root".to_string(),
+                    guides: vec![],
                     nodes: vec![SceneNode {
                         id: "root".to_string(),
                         kind: SceneNodeKind::Frame,
