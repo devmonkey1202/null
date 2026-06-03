@@ -112,6 +112,14 @@ pub enum TextAlign {
     Justify,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextSizingMode {
+    #[default]
+    Fixed,
+    AutoHeight,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TextNodeData {
@@ -123,6 +131,8 @@ pub struct TextNodeData {
     pub letter_spacing: f32,
     pub align: TextAlign,
     pub color: String,
+    #[serde(default)]
+    pub sizing: TextSizingMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -211,6 +221,11 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         style: TextStylePatch,
+    },
+    SetTextSizing {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        sizing: TextSizingMode,
     },
     SetNodeConstraints {
         #[serde(rename = "nodeId")]
@@ -614,6 +629,7 @@ mod tests {
                             letter_spacing: 0.0,
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
+                            sizing: TextSizingMode::AutoHeight,
                         }),
                     },
                 ],

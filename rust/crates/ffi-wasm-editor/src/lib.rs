@@ -331,6 +331,7 @@ mod tests {
                             letter_spacing: 0.0,
                             align: kernel_doc::TextAlign::Left,
                             color: "#0f172a".to_string(),
+                            sizing: kernel_doc::TextSizingMode::AutoHeight,
                         }),
                     },
                 ],
@@ -412,7 +413,7 @@ mod tests {
             .expect("select should succeed");
         let bounds = bridge.selection_bounds().expect("selection bounds should serialize");
         assert!(bounds.contains("\"w\":50.0"));
-        assert!(bounds.contains("\"h\":20.0"));
+        assert!(bounds.contains("\"h\":48.0"));
 
         let handles = bridge
             .transform_handles()
@@ -437,6 +438,6 @@ mod tests {
         assert!(resized.contains("\"resize_selection\""));
         assert!(resized.contains("\"dirtyNodeIds\":[\"title\"]"));
         assert!(resized.contains("\"w\":60.0"));
-        assert!(resized.contains("\"h\":25.0"));
+        assert!(resized.contains("\"h\":24.0"));
     }
 }

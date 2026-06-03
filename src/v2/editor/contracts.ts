@@ -35,6 +35,8 @@ export type NodeConstraints = {
 
 export type TextAlign = "left" | "center" | "right" | "justify";
 
+export type TextSizingMode = "fixed" | "auto_height";
+
 export type TextNodeData = {
   content: string;
   fontFamily: string;
@@ -44,9 +46,10 @@ export type TextNodeData = {
   letterSpacing: number;
   align: TextAlign;
   color: string;
+  sizing: TextSizingMode;
 };
 
-export type TextStylePatch = Partial<Omit<TextNodeData, "content">>;
+export type TextStylePatch = Partial<Omit<TextNodeData, "content" | "sizing">>;
 
 export type SceneGuide = {
   id: string;
@@ -107,6 +110,7 @@ export type EditorCommand =
   | { kind: "rename_node"; nodeId: string; name: string }
   | { kind: "set_text_content"; nodeId: string; content: string }
   | { kind: "set_text_style"; nodeId: string; style: TextStylePatch }
+  | { kind: "set_text_sizing"; nodeId: string; sizing: TextSizingMode }
   | {
       kind: "set_node_constraints";
       nodeId: string;

@@ -11,6 +11,7 @@ import type {
   SceneGuide,
   SceneNode,
   TextAlign,
+  TextSizingMode,
   TextStylePatch,
   TransformHandle,
   ValidationReport,
@@ -79,6 +80,7 @@ type RulerTick = {
 const HORIZONTAL_CONSTRAINT_OPTIONS: HorizontalConstraint[] = ["min", "max", "stretch", "scale"];
 const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretch", "scale"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
+const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
 
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
@@ -878,6 +880,20 @@ export function V2EditorShell() {
         kind: "set_text_style",
         nodeId: activeNode.id,
         style,
+      },
+    ]);
+  }
+
+  async function updateTextSizing(sizing: TextSizingMode) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_sizing",
+        nodeId: activeNode.id,
+        sizing,
       },
     ]);
   }
@@ -1937,6 +1953,22 @@ export function V2EditorShell() {
                               }
                             >
                               {TEXT_ALIGN_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Sizing</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.sizing ?? "fixed"}
+                              onChange={(event) =>
+                                void updateTextSizing(event.target.value as TextSizingMode)
+                              }
+                            >
+                              {TEXT_SIZING_OPTIONS.map((option) => (
                                 <option key={option} value={option}>
                                   {option}
                                 </option>

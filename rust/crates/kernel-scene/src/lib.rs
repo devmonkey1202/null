@@ -1,8 +1,8 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch,
-    HorizontalConstraint, SceneDoc, SceneGuide, SceneNode, SelectionSetMode, TextStylePatch,
-    TransformHandleKind, ValidationReport, VerticalConstraint,
+    HorizontalConstraint, SceneDoc, SceneGuide, SceneNode, SelectionSetMode, TextSizingMode,
+    TextStylePatch, TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
 
@@ -47,7 +47,8 @@ pub struct EditorApplyResult {
 }
 
 impl EditorState {
-    pub fn new(doc: SceneDoc) -> Self {
+    pub fn new(mut doc: SceneDoc) -> Self {
+        normalize_auto_height_nodes(&mut doc);
         Self {
             version: 1,
             doc,
@@ -113,6 +114,7 @@ pub fn dispatch_commands(
                 if let Some(text) = &mut node.text {
                     text.content = content;
                 }
+                normalize_text_frame(node);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_text_content".to_string());
@@ -124,9 +126,22 @@ pub fn dispatch_commands(
                 if let Some(text) = &mut node.text {
                     apply_text_style_patch(text, style);
                 }
+                normalize_text_frame(node);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_text_style".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetTextSizing { node_id, sizing } => {
+                let node = find_node_mut(&mut state.doc, &node_id)?;
+                ensure_text_node(node)?;
+                if let Some(text) = &mut node.text {
+                    text.sizing = sizing;
+                }
+                normalize_text_frame(node);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_text_sizing".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetNodeConstraints {
@@ -159,6 +174,7 @@ pub fn dispatch_commands(
                 let next = {
                     let node = find_node_mut(&mut state.doc, &node_id)?;
                     apply_frame_patch(&mut node.frame, frame);
+                    normalize_text_frame(node);
                     node.frame.clone()
                 };
                 state.version += 1;
@@ -461,6 +477,7 @@ pub fn resize_selection(
             node.frame.y = next_top;
             node.frame.w = (next_right - next_left).max(1.0);
             node.frame.h = (next_bottom - next_top).max(1.0);
+            normalize_text_frame(node);
             (previous, node.frame.clone())
         };
 
@@ -681,6 +698,44 @@ fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStyleP
     }
 }
 
+fn normalize_text_frame(node: &mut SceneNode) {
+    if !matches!(node.kind, kernel_doc::SceneNodeKind::Text) {
+        return;
+    }
+
+    let Some(text) = &node.text else {
+        return;
+    };
+
+    if !matches!(text.sizing, TextSizingMode::AutoHeight) {
+        return;
+    }
+
+    node.frame.h = estimate_text_auto_height(node.frame.w, text);
+}
+
+fn normalize_auto_height_nodes(doc: &mut SceneDoc) {
+    for page in &mut doc.pages {
+        for node in &mut page.nodes {
+            normalize_text_frame(node);
+        }
+    }
+}
+
+fn estimate_text_auto_height(width: f32, text: &kernel_doc::TextNodeData) -> f32 {
+    let available_width = width.max(text.font_size);
+    let average_char_width = (text.font_size * 0.56 + text.letter_spacing.max(0.0)).max(1.0);
+    let chars_per_line = ((available_width / average_char_width).floor() as usize).max(1);
+    let mut lines = 0usize;
+
+    for paragraph in text.content.split('\n') {
+        let paragraph_length = paragraph.chars().count().max(1);
+        lines += ((paragraph_length + chars_per_line - 1) / chars_per_line).max(1);
+    }
+
+    text.line_height * (lines.max(1) as f32)
+}
+
 fn move_guide(doc: &mut SceneDoc, page_id: &str, guide_id: &str, position: i32) -> Result<(), CoreError> {
     let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
         CoreError::new(
@@ -759,6 +814,7 @@ fn apply_child_constraints(
                 .map(|constraints| (&constraints.horizontal, &constraints.vertical)),
         );
         node.frame = next.clone();
+        normalize_text_frame(node);
         dirty_ids.push(child_id.clone());
         apply_child_constraints(doc, &child_id, &previous, &next, selected_nodes, dirty_ids)?;
     }
@@ -1172,6 +1228,7 @@ mod tests {
                             letter_spacing: 0.0,
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
+                            sizing: TextSizingMode::AutoHeight,
                         }),
                     },
                 ],
@@ -1337,7 +1394,7 @@ mod tests {
         assert_eq!(resized, vec!["title".to_string()]);
         let node = query_node(&doc, "title").expect("node exists");
         assert_eq!(node.frame.w, 50.0);
-        assert_eq!(node.frame.h, 25.0);
+        assert_eq!(node.frame.h, 48.0);
     }
 
     #[test]
@@ -1364,7 +1421,7 @@ mod tests {
         assert!((node.frame.x - 10.0).abs() < 0.001);
         assert!((node.frame.y - 40.0).abs() < 0.001);
         assert!((node.frame.w - 60.0).abs() < 0.001);
-        assert!((node.frame.h - 20.0).abs() < 0.001);
+        assert!((node.frame.h - 24.0).abs() < 0.001);
     }
 
     #[test]
@@ -1487,5 +1544,56 @@ mod tests {
         assert_eq!(text.font_size, 28.0);
         assert_eq!(text.line_height, 34.0);
         assert_eq!(text.color, "#2859ff");
+        assert!(node.frame.h >= 34.0);
+    }
+
+    #[test]
+    fn auto_height_text_reflows_on_width_change() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::MoveNode {
+                node_id: "title".to_string(),
+                frame: FramePatch {
+                    w: Some(20.0),
+                    ..FramePatch::default()
+                },
+            }],
+        )
+        .expect("move node should succeed");
+
+        let node = query_node(&state.doc, "title").expect("node exists");
+        assert_eq!(node.frame.w, 20.0);
+        assert!(node.frame.h > 24.0);
+    }
+
+    #[test]
+    fn set_text_sizing_fixed_preserves_manual_height() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SetTextSizing {
+                    node_id: "title".to_string(),
+                    sizing: TextSizingMode::Fixed,
+                },
+                EditorCommand::MoveNode {
+                    node_id: "title".to_string(),
+                    frame: FramePatch {
+                        w: Some(20.0),
+                        h: Some(20.0),
+                        ..FramePatch::default()
+                    },
+                },
+            ],
+        )
+        .expect("fixed sizing commands should succeed");
+
+        let node = query_node(&state.doc, "title").expect("node exists");
+        let text = node.text.as_ref().expect("text data exists");
+        assert_eq!(text.sizing, TextSizingMode::Fixed);
+        assert_eq!(node.frame.h, 20.0);
     }
 }

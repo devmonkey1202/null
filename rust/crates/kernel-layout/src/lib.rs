@@ -149,6 +149,7 @@ mod tests {
                             letter_spacing: 0.0,
                             align: kernel_doc::TextAlign::Left,
                             color: "#0f172a".to_string(),
+                            sizing: kernel_doc::TextSizingMode::AutoHeight,
                         }),
                     },
                 ],

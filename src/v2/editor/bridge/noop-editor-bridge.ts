@@ -182,6 +182,42 @@ function applyTextStylePatch(text: TextNodeData, style: TextStylePatch): TextNod
   };
 }
 
+function estimateTextAutoHeight(width: number, text: TextNodeData) {
+  const availableWidth = Math.max(width, text.fontSize);
+  const averageCharWidth = Math.max(text.fontSize * 0.56 + Math.max(text.letterSpacing, 0), 1);
+  const charsPerLine = Math.max(Math.floor(availableWidth / averageCharWidth), 1);
+  const lines = text.content.split("\n").reduce((count, paragraph) => {
+    const paragraphLength = Math.max(Array.from(paragraph).length, 1);
+    return count + Math.max(Math.ceil(paragraphLength / charsPerLine), 1);
+  }, 0);
+
+  return Math.max(text.lineHeight * Math.max(lines, 1), text.lineHeight);
+}
+
+function normalizeTextNode(node: SceneNode): SceneNode {
+  if (node.kind !== "text" || !node.text || node.text.sizing !== "auto_height") {
+    return node;
+  }
+
+  return {
+    ...node,
+    frame: {
+      ...node.frame,
+      h: estimateTextAutoHeight(node.frame.w, node.text),
+    },
+  };
+}
+
+function normalizeAutoHeightNodes(document: SceneDoc): SceneDoc {
+  return {
+    ...document,
+    pages: document.pages.map((page) => ({
+      ...page,
+      nodes: page.nodes.map((node) => normalizeTextNode(node)),
+    })),
+  };
+}
+
 function selectInRect(
   document: SceneDoc,
   currentSelection: string[],
@@ -244,7 +280,7 @@ function resizeSelection(
         const nextRight = nextBounds.x + rightOffset * scaleX;
         const nextBottom = nextBounds.y + bottomOffset * scaleY;
 
-        return {
+        return normalizeTextNode({
           ...node,
           frame: {
             ...node.frame,
@@ -253,7 +289,7 @@ function resizeSelection(
             w: Math.max(nextRight - nextLeft, 1),
             h: Math.max(nextBottom - nextTop, 1),
           },
-        };
+        });
       }),
     })),
     meta: { ...document.meta, updatedAt: new Date().toISOString() },
@@ -549,6 +585,9 @@ function applyChildConstraints(
 
       const previous = structuredClone(child.frame);
       child.frame = constrainedFrame(current.oldParent, current.newParent, child.frame, child.constraints);
+      if (child.kind === "text" && child.text?.sizing === "auto_height") {
+        child.frame.h = estimateTextAutoHeight(child.frame.w, child.text);
+      }
       if (frameSizeChanged(previous, child.frame)) {
         queue.push({
           parentId: child.id,
@@ -571,7 +610,7 @@ export class NoopEditorBridge implements EditorBridge {
   private historyCursor = -1;
 
   constructor(initialDocument: SceneDoc) {
-    this.document = cloneDoc(initialDocument);
+    this.document = normalizeAutoHeightNodes(cloneDoc(initialDocument));
     this.seedHistory();
   }
 
@@ -584,7 +623,7 @@ export class NoopEditorBridge implements EditorBridge {
   }
 
   async loadDocument(document: SceneDoc): Promise<EditorSnapshot> {
-    this.document = cloneDoc(document);
+    this.document = normalizeAutoHeightNodes(cloneDoc(document));
     this.selection = [];
     this.viewport = DEFAULT_VIEWPORT;
     this.version = 1;
@@ -628,15 +667,17 @@ export class NoopEditorBridge implements EditorBridge {
         case "set_text_content":
           this.document = {
             ...this.document,
-            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
-              ...node,
-              text: node.text
-                ? {
-                    ...node.text,
-                    content: command.content,
-                  }
-                : node.text,
-            })),
+            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+              normalizeTextNode({
+                ...node,
+                text: node.text
+                  ? {
+                      ...node.text,
+                      content: command.content,
+                    }
+                  : node.text,
+              }),
+            ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };
           this.version += 1;
@@ -646,10 +687,32 @@ export class NoopEditorBridge implements EditorBridge {
         case "set_text_style":
           this.document = {
             ...this.document,
-            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
-              ...node,
-              text: node.text ? applyTextStylePatch(node.text, command.style) : node.text,
-            })),
+            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+              normalizeTextNode({
+                ...node,
+                text: node.text ? applyTextStylePatch(node.text, command.style) : node.text,
+              }),
+            ),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          };
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_text_sizing":
+          this.document = {
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+              normalizeTextNode({
+                ...node,
+                text: node.text
+                  ? {
+                      ...node.text,
+                      sizing: command.sizing,
+                    }
+                  : node.text,
+              }),
+            ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };
           this.version += 1;
@@ -681,13 +744,15 @@ export class NoopEditorBridge implements EditorBridge {
             .find((node) => node.id === command.nodeId)?.frame;
           this.document = {
             ...this.document,
-            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
-              ...node,
-              frame: {
-                ...node.frame,
-                ...command.frame,
-              },
-            })),
+            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+              normalizeTextNode({
+                ...node,
+                frame: {
+                  ...node.frame,
+                  ...command.frame,
+                },
+              }),
+            ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };
           if (previous) {

@@ -46,6 +46,7 @@ export const sampleSceneDoc: SceneDoc = {
             letterSpacing: -0.6,
             align: "left",
             color: "#0f172a",
+            sizing: "auto_height",
           },
         },
         {
@@ -65,6 +66,7 @@ export const sampleSceneDoc: SceneDoc = {
             letterSpacing: 0,
             align: "left",
             color: "#475569",
+            sizing: "auto_height",
           },
         },
         {
