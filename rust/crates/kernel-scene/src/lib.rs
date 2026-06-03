@@ -1,8 +1,9 @@
 use core_error::CoreError;
 use kernel_doc::{
-    validate_scene_doc, EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch,
-    HorizontalConstraint, SceneDoc, SceneGuide, SceneNode, SelectionSetMode, TextSizingMode,
-    TextStylePatch, TransformHandleKind, ValidationReport, VerticalConstraint,
+    validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, EditorCommand,
+    EditorRect, EditorSnapshot, EditorViewport, FramePatch, HorizontalConstraint, SceneDoc,
+    SceneGuide, SceneNode, SelectionSetMode, TextSizingMode, TextStylePatch,
+    TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
 
@@ -48,7 +49,7 @@ pub struct EditorApplyResult {
 
 impl EditorState {
     pub fn new(mut doc: SceneDoc) -> Self {
-        normalize_auto_height_nodes(&mut doc);
+        normalize_document(&mut doc);
         Self {
             version: 1,
             doc,
@@ -109,47 +110,67 @@ pub fn dispatch_commands(
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetTextContent { node_id, content } => {
-                let node = find_node_mut(&mut state.doc, &node_id)?;
-                ensure_text_node(node)?;
-                if let Some(text) = &mut node.text {
-                    text.content = content;
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    ensure_text_node(node)?;
+                    if let Some(text) = &mut node.text {
+                        text.content = content;
+                    }
                 }
-                normalize_text_frame(node);
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_text_content".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetTextStyle { node_id, style } => {
-                let node = find_node_mut(&mut state.doc, &node_id)?;
-                ensure_text_node(node)?;
-                if let Some(text) = &mut node.text {
-                    apply_text_style_patch(text, style);
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    ensure_text_node(node)?;
+                    if let Some(text) = &mut node.text {
+                        apply_text_style_patch(text, style);
+                    }
                 }
-                normalize_text_frame(node);
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_text_style".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetTextSizing { node_id, sizing } => {
-                let node = find_node_mut(&mut state.doc, &node_id)?;
-                ensure_text_node(node)?;
-                if let Some(text) = &mut node.text {
-                    text.sizing = sizing;
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    ensure_text_node(node)?;
+                    if let Some(text) = &mut node.text {
+                        text.sizing = sizing;
+                    }
                 }
-                normalize_text_frame(node);
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_text_sizing".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetNodeAutoLayout { node_id, layout } => {
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    node.layout = layout;
+                }
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_node_auto_layout".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetNodeConstraints {
                 node_id,
                 constraints,
             } => {
-                let node = find_node_mut(&mut state.doc, &node_id)?;
-                node.constraints = Some(constraints);
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    node.constraints = Some(constraints);
+                }
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_node_constraints".to_string());
@@ -157,6 +178,7 @@ pub fn dispatch_commands(
             }
             EditorCommand::MoveSelection { delta_x, delta_y } => {
                 let moved = move_selection(&mut state.doc, &state.selection, delta_x, delta_y)?;
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("move_selection".to_string());
@@ -191,9 +213,11 @@ pub fn dispatch_commands(
                         &mut dirty_node_ids,
                     )?;
                 }
+                normalize_document(&mut state.doc);
             }
             EditorCommand::RotateSelection { delta_deg } => {
                 let rotated = rotate_selection(&mut state.doc, &state.selection, delta_deg)?;
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("rotate_selection".to_string());
@@ -213,6 +237,7 @@ pub fn dispatch_commands(
                     delta_y,
                     lock_aspect,
                 )?;
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("resize_selection".to_string());
@@ -247,6 +272,7 @@ pub fn dispatch_commands(
                 let dirty_node_id = node.id.clone();
                 let dirty_parent_id = node.parent_id.clone();
                 create_node(&mut state.doc, &page_id, node)?;
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("create_node".to_string());
@@ -258,6 +284,7 @@ pub fn dispatch_commands(
             EditorCommand::DeleteNode { node_id } => {
                 let deleted = delete_node(&mut state.doc, &node_id)?;
                 state.selection.retain(|selected| selected != &node_id);
+                normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("delete_node".to_string());
@@ -720,6 +747,127 @@ fn normalize_auto_height_nodes(doc: &mut SceneDoc) {
             normalize_text_frame(node);
         }
     }
+}
+
+fn normalize_document(doc: &mut SceneDoc) {
+    normalize_auto_height_nodes(doc);
+    normalize_auto_layout_nodes(doc);
+}
+
+fn normalize_auto_layout_nodes(doc: &mut SceneDoc) {
+    for page in &mut doc.pages {
+        let roots = page
+            .nodes
+            .iter()
+            .filter(|node| node.parent_id.is_none())
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+
+        for root_id in roots {
+            apply_auto_layout_recursive(page, &root_id);
+        }
+    }
+}
+
+fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str) {
+    let Some(parent_index) = page.nodes.iter().position(|node| node.id == parent_id) else {
+        return;
+    };
+
+    let child_ids = ordered_child_ids(page, parent_index);
+    let layout = page.nodes[parent_index].layout.clone();
+    let parent_frame = page.nodes[parent_index].frame.clone();
+
+    if let Some(layout) = layout {
+        let index_map = page
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id.clone(), index))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut primary_cursor = match layout.direction {
+            AutoLayoutDirection::Horizontal => parent_frame.x + layout.padding_x,
+            AutoLayoutDirection::Vertical => parent_frame.y + layout.padding_y,
+        };
+
+        let cross_start = match layout.direction {
+            AutoLayoutDirection::Horizontal => parent_frame.y + layout.padding_y,
+            AutoLayoutDirection::Vertical => parent_frame.x + layout.padding_x,
+        };
+
+        let cross_size = match layout.direction {
+            AutoLayoutDirection::Horizontal => (parent_frame.h - layout.padding_y * 2.0).max(1.0),
+            AutoLayoutDirection::Vertical => (parent_frame.w - layout.padding_x * 2.0).max(1.0),
+        };
+
+        for child_id in &child_ids {
+            let Some(child_index) = index_map.get(child_id).copied() else {
+                continue;
+            };
+
+            let child = &mut page.nodes[child_index];
+            match layout.direction {
+                AutoLayoutDirection::Horizontal => {
+                    child.frame.x = primary_cursor;
+                    match layout.align {
+                        AutoLayoutAlign::Start => {
+                            child.frame.y = cross_start;
+                        }
+                        AutoLayoutAlign::Center => {
+                            child.frame.y = cross_start + (cross_size - child.frame.h) / 2.0;
+                        }
+                        AutoLayoutAlign::End => {
+                            child.frame.y = cross_start + cross_size - child.frame.h;
+                        }
+                        AutoLayoutAlign::Stretch => {
+                            child.frame.y = cross_start;
+                            child.frame.h = cross_size.max(1.0);
+                        }
+                    }
+                    normalize_text_frame(child);
+                    primary_cursor += child.frame.w + layout.gap;
+                }
+                AutoLayoutDirection::Vertical => {
+                    child.frame.y = primary_cursor;
+                    match layout.align {
+                        AutoLayoutAlign::Start => {
+                            child.frame.x = cross_start;
+                        }
+                        AutoLayoutAlign::Center => {
+                            child.frame.x = cross_start + (cross_size - child.frame.w) / 2.0;
+                        }
+                        AutoLayoutAlign::End => {
+                            child.frame.x = cross_start + cross_size - child.frame.w;
+                        }
+                        AutoLayoutAlign::Stretch => {
+                            child.frame.x = cross_start;
+                            child.frame.w = cross_size.max(1.0);
+                        }
+                    }
+                    normalize_text_frame(child);
+                    primary_cursor += child.frame.h + layout.gap;
+                }
+            }
+        }
+    }
+
+    for child_id in child_ids {
+        apply_auto_layout_recursive(page, &child_id);
+    }
+}
+
+fn ordered_child_ids(page: &kernel_doc::ScenePage, parent_index: usize) -> Vec<String> {
+    if let Some(children) = &page.nodes[parent_index].children {
+        return children.clone();
+    }
+
+    let parent_id = page.nodes[parent_index].id.as_str();
+    page.nodes
+        .iter()
+        .filter(|node| node.parent_id.as_deref() == Some(parent_id))
+        .map(|node| node.id.clone())
+        .collect()
 }
 
 fn estimate_text_auto_height(width: f32, text: &kernel_doc::TextNodeData) -> f32 {
@@ -1203,6 +1351,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        layout: None,
                         text: None,
                     },
                     SceneNode {
@@ -1219,6 +1368,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        layout: None,
                         text: Some(TextNodeData {
                             content: "Title".to_string(),
                             font_family: "Inter".to_string(),
@@ -1285,6 +1435,7 @@ mod tests {
                 rotation: 0.0,
             },
             constraints: None,
+            layout: None,
             text: None,
         });
         doc.pages[0].nodes[1].children = Some(vec!["leaf".to_string()]);
@@ -1319,6 +1470,7 @@ mod tests {
                 rotation: 0.0,
             },
             constraints: None,
+            layout: None,
             text: None,
         });
 
@@ -1512,6 +1664,62 @@ mod tests {
         let constraints = node.constraints.as_ref().expect("constraints should exist");
         assert_eq!(constraints.horizontal, HorizontalConstraint::Stretch);
         assert_eq!(constraints.vertical, VerticalConstraint::Scale);
+    }
+
+    #[test]
+    fn set_node_auto_layout_reflows_direct_children() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes[0].children = Some(vec!["title".to_string(), "body".to_string()]);
+        doc.pages[0].nodes.push(SceneNode {
+            id: "body".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Body".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 48.0,
+                y: 48.0,
+                w: 60.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            text: Some(TextNodeData {
+                content: "Body copy".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 500,
+                line_height: 22.0,
+                letter_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#475569".to_string(),
+                sizing: TextSizingMode::AutoHeight,
+            }),
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Vertical,
+                    gap: 12.0,
+                    padding_x: 16.0,
+                    padding_y: 20.0,
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let title = query_node(&state.doc, "title").expect("title exists");
+        let body = query_node(&state.doc, "body").expect("body exists");
+        assert_eq!(title.frame.x, 16.0);
+        assert_eq!(title.frame.y, 20.0);
+        assert_eq!(body.frame.x, 16.0);
+        assert_eq!(body.frame.y, title.frame.y + title.frame.h + 12.0);
     }
 
     #[test]

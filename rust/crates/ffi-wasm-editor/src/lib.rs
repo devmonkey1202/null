@@ -306,6 +306,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        layout: None,
                         text: None,
                     },
                     SceneNode {
@@ -322,6 +323,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        layout: None,
                         text: Some(kernel_doc::TextNodeData {
                             content: "Title".to_string(),
                             font_family: "Inter".to_string(),

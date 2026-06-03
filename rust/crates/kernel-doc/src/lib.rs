@@ -59,6 +59,8 @@ pub struct SceneNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<NodeConstraints>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<AutoLayoutData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextNodeData>,
 }
 
@@ -101,6 +103,32 @@ pub enum VerticalConstraint {
 pub struct NodeConstraints {
     pub horizontal: HorizontalConstraint,
     pub vertical: VerticalConstraint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoLayoutDirection {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoLayoutAlign {
+    Start,
+    Center,
+    End,
+    Stretch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoLayoutData {
+    pub direction: AutoLayoutDirection,
+    pub gap: f32,
+    pub padding_x: f32,
+    pub padding_y: f32,
+    pub align: AutoLayoutAlign,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -226,6 +254,11 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         sizing: TextSizingMode,
+    },
+    SetNodeAutoLayout {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        layout: Option<AutoLayoutData>,
     },
     SetNodeConstraints {
         #[serde(rename = "nodeId")]
@@ -601,6 +634,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        layout: None,
                         text: None,
                     },
                     SceneNode {
@@ -620,6 +654,7 @@ mod tests {
                             horizontal: HorizontalConstraint::Stretch,
                             vertical: VerticalConstraint::Min,
                         }),
+                        layout: None,
                         text: Some(TextNodeData {
                             content: "Hello world".to_string(),
                             font_family: "Inter".to_string(),

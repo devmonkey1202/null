@@ -29,6 +29,13 @@ export const sampleSceneDoc: SceneDoc = {
           children: ["hero-title", "hero-body"],
           frame: { x: 280, y: 120, w: 760, h: 320, rotation: 0 },
           constraints: { horizontal: "scale", vertical: "min" },
+          layout: {
+            direction: "vertical",
+            gap: 16,
+            paddingX: 40,
+            paddingY: 40,
+            align: "start",
+          },
         },
         {
           id: "hero-title",

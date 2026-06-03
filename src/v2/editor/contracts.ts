@@ -33,6 +33,18 @@ export type NodeConstraints = {
   vertical: VerticalConstraint;
 };
 
+export type AutoLayoutDirection = "horizontal" | "vertical";
+
+export type AutoLayoutAlign = "start" | "center" | "end" | "stretch";
+
+export type AutoLayoutData = {
+  direction: AutoLayoutDirection;
+  gap: number;
+  paddingX: number;
+  paddingY: number;
+  align: AutoLayoutAlign;
+};
+
 export type TextAlign = "left" | "center" | "right" | "justify";
 
 export type TextSizingMode = "fixed" | "auto_height";
@@ -67,6 +79,7 @@ export type SceneNode = {
   children?: string[];
   frame: EditorRect;
   constraints?: NodeConstraints;
+  layout?: AutoLayoutData;
   text?: TextNodeData;
 };
 
@@ -111,6 +124,7 @@ export type EditorCommand =
   | { kind: "set_text_content"; nodeId: string; content: string }
   | { kind: "set_text_style"; nodeId: string; style: TextStylePatch }
   | { kind: "set_text_sizing"; nodeId: string; sizing: TextSizingMode }
+  | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | {
       kind: "set_node_constraints";
       nodeId: string;

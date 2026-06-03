@@ -1,4 +1,6 @@
 import {
+  type AutoLayoutAlign,
+  type AutoLayoutData,
   type BridgeQuery,
   type EditorApplyResult,
   type EditorBridge,
@@ -216,6 +218,135 @@ function normalizeAutoHeightNodes(document: SceneDoc): SceneDoc {
       nodes: page.nodes.map((node) => normalizeTextNode(node)),
     })),
   };
+}
+
+function orderedChildIds(page: SceneDoc["pages"][number], parent: SceneNode) {
+  if (parent.children?.length) {
+    return parent.children;
+  }
+
+  return page.nodes
+    .filter((node) => node.parentId === parent.id)
+    .map((node) => node.id);
+}
+
+function normalizeAutoLayoutNodes(document: SceneDoc): SceneDoc {
+  const nextDocument = structuredClone(document);
+
+  for (const page of nextDocument.pages) {
+    const rootIds = page.nodes.filter((node) => node.parentId === null).map((node) => node.id);
+    for (const rootId of rootIds) {
+      applyAutoLayoutRecursive(page, rootId);
+    }
+  }
+
+  return nextDocument;
+}
+
+function applyAutoLayoutRecursive(page: SceneDoc["pages"][number], parentId: string) {
+  const parent = page.nodes.find((node) => node.id === parentId);
+  if (!parent) {
+    return;
+  }
+
+  const childIds = orderedChildIds(page, parent);
+  if (parent.layout) {
+    const nextFrames = buildAutoLayoutFrames(page, parent, childIds, parent.layout);
+    for (const [childId, nextFrame] of nextFrames) {
+      const childIndex = page.nodes.findIndex((node) => node.id === childId);
+      if (childIndex === -1) {
+        continue;
+      }
+
+      const current = page.nodes[childIndex]!;
+      page.nodes[childIndex] = normalizeTextNode({
+        ...current,
+        frame: nextFrame,
+      });
+    }
+  }
+
+  for (const childId of childIds) {
+    applyAutoLayoutRecursive(page, childId);
+  }
+}
+
+function buildAutoLayoutFrames(
+  page: SceneDoc["pages"][number],
+  parent: SceneNode,
+  childIds: string[],
+  layout: AutoLayoutData,
+) {
+  const frames = new Map<string, EditorRect>();
+  let primaryCursor =
+    layout.direction === "horizontal"
+      ? parent.frame.x + layout.paddingX
+      : parent.frame.y + layout.paddingY;
+  const crossStart =
+    layout.direction === "horizontal"
+      ? parent.frame.y + layout.paddingY
+      : parent.frame.x + layout.paddingX;
+  const crossSize =
+    layout.direction === "horizontal"
+      ? Math.max(parent.frame.h - layout.paddingY * 2, 1)
+      : Math.max(parent.frame.w - layout.paddingX * 2, 1);
+
+  for (const childId of childIds) {
+    const child = page.nodes.find((node) => node.id === childId);
+    if (!child) {
+      continue;
+    }
+
+    const nextFrame = { ...child.frame };
+    if (layout.direction === "horizontal") {
+      nextFrame.x = primaryCursor;
+      const aligned = alignCrossAxis(nextFrame.h, crossStart, crossSize, layout.align);
+      nextFrame.y = aligned.position;
+      nextFrame.h = aligned.size;
+      nextFrame.h = Math.max(nextFrame.h, 1);
+      primaryCursor += nextFrame.w + layout.gap;
+    } else {
+      nextFrame.y = primaryCursor;
+      const aligned = alignCrossAxis(nextFrame.w, crossStart, crossSize, layout.align);
+      nextFrame.x = aligned.position;
+      nextFrame.w = aligned.size;
+      nextFrame.w = Math.max(nextFrame.w, 1);
+      primaryCursor += nextFrame.h + layout.gap;
+    }
+
+    frames.set(childId, nextFrame);
+  }
+
+  return frames;
+}
+
+function alignCrossAxis(currentSize: number, crossStart: number, crossSize: number, align: AutoLayoutAlign) {
+  switch (align) {
+    case "center":
+      return {
+        position: crossStart + (crossSize - currentSize) / 2,
+        size: currentSize,
+      };
+    case "end":
+      return {
+        position: crossStart + crossSize - currentSize,
+        size: currentSize,
+      };
+    case "stretch":
+      return {
+        position: crossStart,
+        size: crossSize,
+      };
+    default:
+      return {
+        position: crossStart,
+        size: currentSize,
+      };
+  }
+}
+
+function normalizeDocument(document: SceneDoc) {
+  return normalizeAutoLayoutNodes(normalizeAutoHeightNodes(document));
 }
 
 function selectInRect(
@@ -610,7 +741,7 @@ export class NoopEditorBridge implements EditorBridge {
   private historyCursor = -1;
 
   constructor(initialDocument: SceneDoc) {
-    this.document = normalizeAutoHeightNodes(cloneDoc(initialDocument));
+    this.document = normalizeDocument(cloneDoc(initialDocument));
     this.seedHistory();
   }
 
@@ -623,7 +754,7 @@ export class NoopEditorBridge implements EditorBridge {
   }
 
   async loadDocument(document: SceneDoc): Promise<EditorSnapshot> {
-    this.document = normalizeAutoHeightNodes(cloneDoc(document));
+    this.document = normalizeDocument(cloneDoc(document));
     this.selection = [];
     this.viewport = DEFAULT_VIEWPORT;
     this.version = 1;
@@ -665,10 +796,10 @@ export class NoopEditorBridge implements EditorBridge {
           this.recordHistory();
           break;
         case "set_text_content":
-          this.document = {
+          this.document = normalizeDocument({
             ...this.document,
             pages: updateNode(this.document.pages, command.nodeId, (node) =>
-              normalizeTextNode({
+              ({
                 ...node,
                 text: node.text
                   ? {
@@ -679,31 +810,31 @@ export class NoopEditorBridge implements EditorBridge {
               }),
             ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          };
+          });
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
         case "set_text_style":
-          this.document = {
+          this.document = normalizeDocument({
             ...this.document,
             pages: updateNode(this.document.pages, command.nodeId, (node) =>
-              normalizeTextNode({
+              ({
                 ...node,
                 text: node.text ? applyTextStylePatch(node.text, command.style) : node.text,
               }),
             ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          };
+          });
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
         case "set_text_sizing":
-          this.document = {
+          this.document = normalizeDocument({
             ...this.document,
             pages: updateNode(this.document.pages, command.nodeId, (node) =>
-              normalizeTextNode({
+              ({
                 ...node,
                 text: node.text
                   ? {
@@ -714,26 +845,41 @@ export class NoopEditorBridge implements EditorBridge {
               }),
             ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          };
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_node_auto_layout":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              layout: command.layout ? { ...command.layout } : undefined,
+            })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
         case "set_node_constraints":
-          this.document = {
+          this.document = normalizeDocument({
             ...this.document,
             pages: updateNode(this.document.pages, command.nodeId, (node) => ({
               ...node,
               constraints: { ...command.constraints },
             })),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          };
+          });
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
         case "move_selection":
-          this.document = moveSelection(this.document, this.selection, command.deltaX, command.deltaY);
+          this.document = normalizeDocument(
+            moveSelection(this.document, this.selection, command.deltaX, command.deltaY),
+          );
           this.version += 1;
           dirtyNodeIds.push(...this.selection);
           this.recordHistory();
@@ -769,24 +915,29 @@ export class NoopEditorBridge implements EditorBridge {
               );
             }
           }
+          this.document = normalizeDocument(this.document);
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
         case "rotate_selection":
-          this.document = rotateSelection(this.document, this.selection, command.deltaDeg);
+          this.document = normalizeDocument(
+            rotateSelection(this.document, this.selection, command.deltaDeg),
+          );
           this.version += 1;
           dirtyNodeIds.push(...this.selection);
           this.recordHistory();
           break;
         case "resize_selection":
-          this.document = resizeSelection(
-            this.document,
-            this.selection,
-            command.handle,
-            command.deltaX,
-            command.deltaY,
-            command.lockAspect ?? false,
+          this.document = normalizeDocument(
+            resizeSelection(
+              this.document,
+              this.selection,
+              command.handle,
+              command.deltaX,
+              command.deltaY,
+              command.lockAspect ?? false,
+            ),
           );
           this.version += 1;
           dirtyNodeIds.push(...this.selection);
@@ -843,7 +994,7 @@ export class NoopEditorBridge implements EditorBridge {
           this.recordHistory();
           break;
         case "create_node":
-          this.document = {
+          this.document = normalizeDocument({
             ...this.document,
             pages: this.document.pages.map((page) =>
               page.id === command.pageId
@@ -851,7 +1002,7 @@ export class NoopEditorBridge implements EditorBridge {
                 : page,
             ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          };
+          });
           this.version += 1;
           dirtyNodeIds.push(command.node.id);
           if (command.node.parentId) {
@@ -860,14 +1011,14 @@ export class NoopEditorBridge implements EditorBridge {
           this.recordHistory();
           break;
         case "delete_node":
-          this.document = {
+          this.document = normalizeDocument({
             ...this.document,
             pages: this.document.pages.map((page) => ({
               ...page,
               nodes: page.nodes.filter((node) => node.id !== command.nodeId),
             })),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          };
+          });
           this.selection = this.selection.filter((id) => id !== command.nodeId);
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);

@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AutoLayoutAlign,
+  AutoLayoutData,
+  AutoLayoutDirection,
   EditorCommand,
   EditorBridge,
   EditorRect,
@@ -79,8 +82,14 @@ type RulerTick = {
 
 const HORIZONTAL_CONSTRAINT_OPTIONS: HorizontalConstraint[] = ["min", "max", "stretch", "scale"];
 const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretch", "scale"];
+const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "vertical"];
+const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", "stretch"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
+
+function supportsAutoLayout(node: SceneNode | null) {
+  return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
+}
 
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
@@ -852,6 +861,28 @@ export function V2EditorShell() {
           ...current,
           [axis]: value,
         },
+      },
+    ]);
+  }
+
+  async function updateAutoLayout(patch: Partial<AutoLayoutData> | null) {
+    if (!activeNode || !supportsAutoLayout(activeNode)) {
+      return;
+    }
+
+    const current: AutoLayoutData = activeNode.layout ?? {
+      direction: "vertical",
+      gap: 16,
+      paddingX: 24,
+      paddingY: 24,
+      align: "start",
+    };
+
+    await applyAndSync([
+      {
+        kind: "set_node_auto_layout",
+        nodeId: activeNode.id,
+        layout: patch ? { ...current, ...patch } : null,
       },
     ]);
   }
@@ -1883,6 +1914,108 @@ export function V2EditorShell() {
                         </select>
                       </div>
                     </div>
+                    {supportsAutoLayout(activeNode) ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">Auto layout</div>
+                            <div className="text-xs text-slate-500">
+                              Stack direct children in the Rust kernel.
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void updateAutoLayout(activeNode.layout ? null : {})}
+                            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                              activeNode.layout
+                                ? "bg-[#2859ff] text-white"
+                                : "border border-slate-200 bg-white text-slate-600"
+                            }`}
+                          >
+                            {activeNode.layout ? "Enabled" : "Disabled"}
+                          </button>
+                        </div>
+                        {activeNode.layout ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            <label className="block">
+                              <div className="text-slate-400">Direction</div>
+                              <select
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeNode.layout.direction}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    direction: event.target.value as AutoLayoutDirection,
+                                  })
+                                }
+                              >
+                                {AUTO_LAYOUT_DIRECTION_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Align</div>
+                              <select
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeNode.layout.align}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    align: event.target.value as AutoLayoutAlign,
+                                  })
+                                }
+                              >
+                                {AUTO_LAYOUT_ALIGN_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Gap</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeNode.layout.gap}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    gap: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding X</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeNode.layout.paddingX}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingX: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding Y</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeNode.layout.paddingY}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingY: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {activeNode.kind === "text" && activeNode.text ? (
                       <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
                         <div>
