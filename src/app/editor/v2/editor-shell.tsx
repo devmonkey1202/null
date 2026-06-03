@@ -637,8 +637,11 @@ export function V2EditorShell() {
   const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
   const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
+  const [editingTextNodeId, setEditingTextNodeId] = useState<string | null>(null);
+  const [editingTextDraft, setEditingTextDraft] = useState("");
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const bridgeRef = useRef<EditorBridge | null>(null);
+  const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
 
   const syncBridgeState = useCallback(async () => {
     const bridge = bridgeRef.current;
@@ -709,6 +712,13 @@ export function V2EditorShell() {
   const activeNode = useMemo(
     () => selectedNode(nodes, snapshot?.selection ?? []),
     [nodes, snapshot?.selection],
+  );
+  const editingTextNode = useMemo(
+    () =>
+      editingTextNodeId
+        ? nodes.find((node) => node.id === editingTextNodeId && node.kind === "text") ?? null
+        : null,
+    [editingTextNodeId, nodes],
   );
   const rootFrame = useMemo(
     () => nodes.find((node) => node.parentId === null) ?? null,
@@ -832,6 +842,24 @@ export function V2EditorShell() {
     [canvasSize.height, rulerStep, viewViewport.y, viewViewport.zoom],
   );
 
+  useEffect(() => {
+    if (!editingTextNodeId) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const input = textEditorRef.current;
+      if (!input) {
+        return;
+      }
+
+      input.focus();
+      input.select();
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [editingTextNodeId]);
+
   async function applyAndSync(commands: EditorCommand[]) {
     const bridge = bridgeRef.current;
     if (!bridge) {
@@ -899,6 +927,39 @@ export function V2EditorShell() {
         content,
       },
     ]);
+  }
+
+  function beginInlineTextEdit(node: SceneNode) {
+    if (node.kind !== "text") {
+      return;
+    }
+
+    setSelectedGuideId(null);
+    setEditingTextNodeId(node.id);
+    setEditingTextDraft(node.text?.content ?? "");
+  }
+
+  async function commitInlineTextEdit() {
+    if (!editingTextNode) {
+      setEditingTextNodeId(null);
+      setEditingTextDraft("");
+      return;
+    }
+
+    const nextContent = editingTextDraft;
+    setEditingTextNodeId(null);
+    setEditingTextDraft("");
+
+    if (nextContent === (editingTextNode.text?.content ?? "")) {
+      return;
+    }
+
+    await updateTextContent(nextContent);
+  }
+
+  function cancelInlineTextEdit() {
+    setEditingTextNodeId(null);
+    setEditingTextDraft("");
   }
 
   async function updateTextStyle(style: TextStylePatch) {
@@ -1050,6 +1111,10 @@ export function V2EditorShell() {
     event.stopPropagation();
     setSelectedGuideId(null);
 
+    if (editingTextNodeId === nodeId) {
+      return;
+    }
+
     if (event.button !== 0 || spacePressed) {
       return;
     }
@@ -1071,6 +1136,20 @@ export function V2EditorShell() {
       currentY: point.y,
     });
     canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handleNodeDoubleClick(
+    event: React.MouseEvent<HTMLButtonElement>,
+    node: SceneNode,
+  ) {
+    if (node.kind !== "text") {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    void selectNode(node.id);
+    beginInlineTextEdit(node);
   }
 
   function handleTransformHandlePointerDown(
@@ -1553,6 +1632,7 @@ export function V2EditorShell() {
                       type="button"
                       onPointerDown={(event) => void handleNodePointerDown(event, node.id)}
                       onClick={() => void selectNode(node.id)}
+                      onDoubleClick={(event) => handleNodeDoubleClick(event, node)}
                       style={{
                         left: previewX,
                         top: previewY,
@@ -1599,6 +1679,44 @@ export function V2EditorShell() {
                     </button>
                   );
                 })}
+
+                {editingTextNode && editingTextNode.text ? (
+                  <textarea
+                    ref={textEditorRef}
+                    value={editingTextDraft}
+                    onChange={(event) => setEditingTextDraft(event.target.value)}
+                    onBlur={() => void commitInlineTextEdit()}
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelInlineTextEdit();
+                        return;
+                      }
+
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void commitInlineTextEdit();
+                      }
+                    }}
+                    style={{
+                      left: editingTextNode.frame.x,
+                      top: editingTextNode.frame.y,
+                      width: editingTextNode.frame.w,
+                      height: editingTextNode.frame.h,
+                      transform: `rotate(${editingTextNode.frame.rotation}deg)`,
+                      transformOrigin: "center",
+                      fontFamily: editingTextNode.text.fontFamily,
+                      fontSize: editingTextNode.text.fontSize,
+                      fontWeight: editingTextNode.text.fontWeight,
+                      lineHeight: `${editingTextNode.text.lineHeight}px`,
+                      letterSpacing: editingTextNode.text.letterSpacing,
+                      color: editingTextNode.text.color,
+                      textAlign: editingTextNode.text.align,
+                    }}
+                    className="absolute z-20 resize-none overflow-hidden rounded-md border border-[#2859ff] bg-white px-1 py-1 outline-none ring-2 ring-[#2859ff]/15"
+                  />
+                ) : null}
 
                 {previewGuides.map((guide) =>
                   guide.axis === "x" ? (
