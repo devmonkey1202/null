@@ -58,6 +58,8 @@ pub struct SceneNode {
     pub frame: EditorRect,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<NodeConstraints>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextNodeData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,6 +101,47 @@ pub enum VerticalConstraint {
 pub struct NodeConstraints {
     pub horizontal: HorizontalConstraint,
     pub vertical: VerticalConstraint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextNodeData {
+    pub content: String,
+    pub font_family: String,
+    pub font_size: f32,
+    pub font_weight: u16,
+    pub line_height: f32,
+    pub letter_spacing: f32,
+    pub align: TextAlign,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextStylePatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_weight: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_height: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub letter_spacing: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<TextAlign>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,6 +201,16 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         name: String,
+    },
+    SetTextContent {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        content: String,
+    },
+    SetTextStyle {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        style: TextStylePatch,
     },
     SetNodeConstraints {
         #[serde(rename = "nodeId")]
@@ -398,6 +451,41 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
                 ));
             }
 
+            if matches!(node.kind, SceneNodeKind::Text) {
+                match &node.text {
+                    Some(text) => {
+                        if text.content.trim().is_empty() {
+                            issues.push(issue(
+                                format!("text-content-empty-{}", node.id),
+                                ValidationSeverity::Warning,
+                                "scene_text.content.empty",
+                                "Text content is empty.",
+                                Some(node.id.clone()),
+                            ));
+                        }
+
+                        if text.font_size <= 0.0 || text.line_height <= 0.0 {
+                            issues.push(issue(
+                                format!("text-metrics-invalid-{}", node.id),
+                                ValidationSeverity::Error,
+                                "scene_text.metrics.invalid",
+                                "Text font size and line height must be greater than zero.",
+                                Some(node.id.clone()),
+                            ));
+                        }
+                    }
+                    None => {
+                        issues.push(issue(
+                            format!("text-data-missing-{}", node.id),
+                            ValidationSeverity::Error,
+                            "scene_text.data.missing",
+                            "Text node is missing text data.",
+                            Some(node.id.clone()),
+                        ));
+                    }
+                }
+            }
+
             if let Some(parent_id) = &node.parent_id {
                 if !per_page.contains_key(parent_id.as_str()) {
                     issues.push(issue(
@@ -498,6 +586,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        text: None,
                     },
                     SceneNode {
                         id: "child".to_string(),
@@ -515,6 +604,16 @@ mod tests {
                         constraints: Some(NodeConstraints {
                             horizontal: HorizontalConstraint::Stretch,
                             vertical: VerticalConstraint::Min,
+                        }),
+                        text: Some(TextNodeData {
+                            content: "Hello world".to_string(),
+                            font_family: "Inter".to_string(),
+                            font_size: 18.0,
+                            font_weight: 600,
+                            line_height: 24.0,
+                            letter_spacing: 0.0,
+                            align: TextAlign::Left,
+                            color: "#0f172a".to_string(),
                         }),
                     },
                 ],

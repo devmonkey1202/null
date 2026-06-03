@@ -13,6 +13,8 @@ import {
   type SceneDoc,
   type SceneNode,
   type SelectionSetMode,
+  type TextNodeData,
+  type TextStylePatch,
   type TransformHandle,
   type ValidationReport,
   type VerticalConstraint,
@@ -48,6 +50,43 @@ function buildValidation(document: SceneDoc): ValidationReport {
       code: "doc.pages.empty",
       message: "Document must contain at least one page.",
     });
+  }
+
+  for (const page of document.pages) {
+    for (const node of page.nodes) {
+      if (node.kind === "text") {
+        if (!node.text) {
+          issues.push({
+            id: `text-data-missing-${node.id}`,
+            severity: "error" as const,
+            code: "scene_text.data.missing",
+            message: "Text node is missing text data.",
+            targetId: node.id,
+          });
+          continue;
+        }
+
+        if (!node.text.content.trim()) {
+          issues.push({
+            id: `text-content-empty-${node.id}`,
+            severity: "warning" as const,
+            code: "scene_text.content.empty",
+            message: "Text content is empty.",
+            targetId: node.id,
+          });
+        }
+
+        if (node.text.fontSize <= 0 || node.text.lineHeight <= 0) {
+          issues.push({
+            id: `text-metrics-invalid-${node.id}`,
+            severity: "error" as const,
+            code: "scene_text.metrics.invalid",
+            message: "Text font size and line height must be greater than zero.",
+            targetId: node.id,
+          });
+        }
+      }
+    }
   }
 
   return {
@@ -128,6 +167,19 @@ function buildTransformHandles(bounds: ReturnType<typeof buildSelectionBounds>):
     { kind: "w", x: left, y: centerY, cursor: "ew-resize" },
     { kind: "rotate", x: centerX, y: top - rotateOffset, cursor: "grab" },
   ];
+}
+
+function applyTextStylePatch(text: TextNodeData, style: TextStylePatch): TextNodeData {
+  return {
+    ...text,
+    ...(style.fontFamily ? { fontFamily: style.fontFamily } : {}),
+    ...(style.fontSize !== undefined ? { fontSize: Math.max(style.fontSize, 1) } : {}),
+    ...(style.fontWeight !== undefined ? { fontWeight: style.fontWeight } : {}),
+    ...(style.lineHeight !== undefined ? { lineHeight: Math.max(style.lineHeight, 1) } : {}),
+    ...(style.letterSpacing !== undefined ? { letterSpacing: style.letterSpacing } : {}),
+    ...(style.align ? { align: style.align } : {}),
+    ...(style.color ? { color: style.color } : {}),
+  };
 }
 
 function selectInRect(
@@ -566,6 +618,37 @@ export class NoopEditorBridge implements EditorBridge {
             pages: updateNode(this.document.pages, command.nodeId, (node) => ({
               ...node,
               name: command.name,
+            })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          };
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_text_content":
+          this.document = {
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              text: node.text
+                ? {
+                    ...node.text,
+                    content: command.content,
+                  }
+                : node.text,
+            })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          };
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_text_style":
+          this.document = {
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              text: node.text ? applyTextStylePatch(node.text, command.style) : node.text,
             })),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           };

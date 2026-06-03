@@ -33,6 +33,21 @@ export type NodeConstraints = {
   vertical: VerticalConstraint;
 };
 
+export type TextAlign = "left" | "center" | "right" | "justify";
+
+export type TextNodeData = {
+  content: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  lineHeight: number;
+  letterSpacing: number;
+  align: TextAlign;
+  color: string;
+};
+
+export type TextStylePatch = Partial<Omit<TextNodeData, "content">>;
+
 export type SceneGuide = {
   id: string;
   axis: "x" | "y";
@@ -49,6 +64,7 @@ export type SceneNode = {
   children?: string[];
   frame: EditorRect;
   constraints?: NodeConstraints;
+  text?: TextNodeData;
 };
 
 export type ScenePage = {
@@ -89,6 +105,8 @@ export type EditorCommand =
   | { kind: "select_in_rect"; pageId: string; rect: EditorRect; mode?: SelectionSetMode }
   | { kind: "set_viewport"; viewport: EditorViewport }
   | { kind: "rename_node"; nodeId: string; name: string }
+  | { kind: "set_text_content"; nodeId: string; content: string }
+  | { kind: "set_text_style"; nodeId: string; style: TextStylePatch }
   | {
       kind: "set_node_constraints";
       nodeId: string;

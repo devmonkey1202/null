@@ -1,8 +1,8 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch,
-    HorizontalConstraint, SceneDoc, SceneGuide, SceneNode, SelectionSetMode, TransformHandleKind,
-    ValidationReport, VerticalConstraint,
+    HorizontalConstraint, SceneDoc, SceneGuide, SceneNode, SelectionSetMode, TextStylePatch,
+    TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
 
@@ -105,6 +105,28 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("rename_node".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetTextContent { node_id, content } => {
+                let node = find_node_mut(&mut state.doc, &node_id)?;
+                ensure_text_node(node)?;
+                if let Some(text) = &mut node.text {
+                    text.content = content;
+                }
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_text_content".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetTextStyle { node_id, style } => {
+                let node = find_node_mut(&mut state.doc, &node_id)?;
+                ensure_text_node(node)?;
+                if let Some(text) = &mut node.text {
+                    apply_text_style_patch(text, style);
+                }
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_text_style".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetNodeConstraints {
@@ -624,6 +646,41 @@ fn add_guide(doc: &mut SceneDoc, page_id: &str, guide: SceneGuide) -> Result<(),
     Ok(())
 }
 
+fn ensure_text_node(node: &SceneNode) -> Result<(), CoreError> {
+    if matches!(node.kind, kernel_doc::SceneNodeKind::Text) {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            "scene.text.invalid_target",
+            format!("Node '{}' is not a text node.", node.id),
+        ))
+    }
+}
+
+fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStylePatch) {
+    if let Some(font_family) = style.font_family {
+        text.font_family = font_family;
+    }
+    if let Some(font_size) = style.font_size {
+        text.font_size = font_size.max(1.0);
+    }
+    if let Some(font_weight) = style.font_weight {
+        text.font_weight = font_weight;
+    }
+    if let Some(line_height) = style.line_height {
+        text.line_height = line_height.max(1.0);
+    }
+    if let Some(letter_spacing) = style.letter_spacing {
+        text.letter_spacing = letter_spacing;
+    }
+    if let Some(align) = style.align {
+        text.align = align;
+    }
+    if let Some(color) = style.color {
+        text.color = color;
+    }
+}
+
 fn move_guide(doc: &mut SceneDoc, page_id: &str, guide_id: &str, position: i32) -> Result<(), CoreError> {
     let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
         CoreError::new(
@@ -1061,7 +1118,8 @@ fn normalize_degrees(value: f32) -> f32 {
 mod tests {
     use super::*;
     use kernel_doc::{
-        HorizontalConstraint, SceneDocMeta, SceneNodeKind, ScenePage, VerticalConstraint,
+        HorizontalConstraint, SceneDocMeta, SceneNodeKind, ScenePage, TextAlign, TextNodeData,
+        VerticalConstraint,
     };
 
     fn sample_doc() -> SceneDoc {
@@ -1089,6 +1147,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        text: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -1104,6 +1163,16 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        text: Some(TextNodeData {
+                            content: "Title".to_string(),
+                            font_family: "Inter".to_string(),
+                            font_size: 20.0,
+                            font_weight: 700,
+                            line_height: 24.0,
+                            letter_spacing: 0.0,
+                            align: TextAlign::Left,
+                            color: "#0f172a".to_string(),
+                        }),
                     },
                 ],
             }],
@@ -1159,6 +1228,7 @@ mod tests {
                 rotation: 0.0,
             },
             constraints: None,
+            text: None,
         });
         doc.pages[0].nodes[1].children = Some(vec!["leaf".to_string()]);
 
@@ -1192,6 +1262,7 @@ mod tests {
                 rotation: 0.0,
             },
             constraints: None,
+            text: None,
         });
 
         let result = hit_test(&doc, "page-1", 15.0, 15.0, HitTestMode::Topmost)
@@ -1384,5 +1455,37 @@ mod tests {
         let constraints = node.constraints.as_ref().expect("constraints should exist");
         assert_eq!(constraints.horizontal, HorizontalConstraint::Stretch);
         assert_eq!(constraints.vertical, VerticalConstraint::Scale);
+    }
+
+    #[test]
+    fn set_text_content_and_style_updates_text_node() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SetTextContent {
+                    node_id: "title".to_string(),
+                    content: "Updated headline".to_string(),
+                },
+                EditorCommand::SetTextStyle {
+                    node_id: "title".to_string(),
+                    style: TextStylePatch {
+                        font_size: Some(28.0),
+                        line_height: Some(34.0),
+                        color: Some("#2859ff".to_string()),
+                        ..TextStylePatch::default()
+                    },
+                },
+            ],
+        )
+        .expect("text commands should succeed");
+
+        let node = query_node(&state.doc, "title").expect("node exists");
+        let text = node.text.as_ref().expect("text data exists");
+        assert_eq!(text.content, "Updated headline");
+        assert_eq!(text.font_size, 28.0);
+        assert_eq!(text.line_height, 34.0);
+        assert_eq!(text.color, "#2859ff");
     }
 }

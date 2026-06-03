@@ -108,6 +108,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        text: None,
                     },
                     SceneNode {
                         id: "group".to_string(),
@@ -123,6 +124,7 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        text: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -138,6 +140,16 @@ mod tests {
                             rotation: 0.0,
                         },
                         constraints: None,
+                        text: Some(kernel_doc::TextNodeData {
+                            content: "Title".to_string(),
+                            font_family: "Inter".to_string(),
+                            font_size: 20.0,
+                            font_weight: 700,
+                            line_height: 24.0,
+                            letter_spacing: 0.0,
+                            align: kernel_doc::TextAlign::Left,
+                            color: "#0f172a".to_string(),
+                        }),
                     },
                 ],
             }],

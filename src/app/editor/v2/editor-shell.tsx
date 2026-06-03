@@ -10,6 +10,8 @@ import type {
   RuntimeGraph,
   SceneGuide,
   SceneNode,
+  TextAlign,
+  TextStylePatch,
   TransformHandle,
   ValidationReport,
   VerticalConstraint,
@@ -76,6 +78,7 @@ type RulerTick = {
 
 const HORIZONTAL_CONSTRAINT_OPTIONS: HorizontalConstraint[] = ["min", "max", "stretch", "scale"];
 const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretch", "scale"];
+const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 
 function flattenNodes(snapshot: EditorSnapshot | null) {
   return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
@@ -851,6 +854,34 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function updateTextContent(content: string) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_content",
+        nodeId: activeNode.id,
+        content,
+      },
+    ]);
+  }
+
+  async function updateTextStyle(style: TextStylePatch) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_style",
+        nodeId: activeNode.id,
+        style,
+      },
+    ]);
+  }
+
   async function selectNode(nodeId: string) {
     await applyAndSync([{ kind: "select_nodes", nodeIds: [nodeId] }]);
   }
@@ -1468,6 +1499,7 @@ export function V2EditorShell() {
                   const selected = snapshot?.selection.includes(node.id) ?? false;
                   const previewX = selected && dragMoveDelta ? node.frame.x + dragMoveDelta.x : node.frame.x;
                   const previewY = selected && dragMoveDelta ? node.frame.y + dragMoveDelta.y : node.frame.y;
+                  const textData = node.kind === "text" ? node.text : undefined;
                   return (
                     <button
                       key={node.id}
@@ -1490,14 +1522,33 @@ export function V2EditorShell() {
                           : "border-slate-200 hover:border-slate-300"
                       }`}
                     >
-                      <div className="p-4">
-                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
-                          {node.kind}
+                      {textData ? (
+                        <div
+                          className="h-full w-full p-1"
+                          style={{
+                            fontFamily: textData.fontFamily,
+                            fontSize: textData.fontSize,
+                            fontWeight: textData.fontWeight,
+                            lineHeight: `${textData.lineHeight}px`,
+                            letterSpacing: textData.letterSpacing,
+                            color: textData.color,
+                            textAlign: textData.align,
+                            whiteSpace: "pre-wrap",
+                            overflowWrap: "anywhere",
+                          }}
+                        >
+                          {textData.content}
                         </div>
-                        <div className="mt-2 text-sm font-semibold text-slate-900">
-                          {node.name}
+                      ) : (
+                        <div className="p-4">
+                          <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                            {node.kind}
+                          </div>
+                          <div className="mt-2 text-sm font-semibold text-slate-900">
+                            {node.name}
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </button>
                   );
                 })}
@@ -1816,6 +1867,94 @@ export function V2EditorShell() {
                         </select>
                       </div>
                     </div>
+                    {activeNode.kind === "text" && activeNode.text ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div>
+                          <div className="text-slate-400">Content</div>
+                          <textarea
+                            className="mt-1 h-28 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.text.content}
+                            onChange={(event) => void updateTextContent(event.target.value)}
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="block">
+                            <div className="text-slate-400">Font size</div>
+                            <input
+                              type="number"
+                              min={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.fontSize}
+                              onChange={(event) =>
+                                void updateTextStyle({ fontSize: Number(event.target.value) || 1 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Line height</div>
+                            <input
+                              type="number"
+                              min={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.lineHeight}
+                              onChange={(event) =>
+                                void updateTextStyle({ lineHeight: Number(event.target.value) || 1 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Weight</div>
+                            <input
+                              type="number"
+                              min={100}
+                              step={100}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.fontWeight}
+                              onChange={(event) =>
+                                void updateTextStyle({ fontWeight: Number(event.target.value) || 400 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Letter spacing</div>
+                            <input
+                              type="number"
+                              step={0.1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.letterSpacing}
+                              onChange={(event) =>
+                                void updateTextStyle({ letterSpacing: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Align</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.align}
+                              onChange={(event) =>
+                                void updateTextStyle({ align: event.target.value as TextAlign })
+                              }
+                            >
+                              {TEXT_ALIGN_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Color</div>
+                            <input
+                              type="color"
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                              value={activeNode.text.color}
+                              onChange={(event) => void updateTextStyle({ color: event.target.value })}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ) : null}
                   </>
                 ) : (
                   <div className="text-sm text-slate-500">Select a layer or canvas object.</div>
