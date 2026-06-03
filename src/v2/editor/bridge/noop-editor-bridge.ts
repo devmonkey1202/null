@@ -15,6 +15,8 @@ import {
   type SceneDoc,
   type SceneNode,
   type SelectionSetMode,
+  type ShapeNodeData,
+  type ShapeStylePatch,
   type TextNodeData,
   type TextStylePatch,
   type TransformHandle,
@@ -84,6 +86,39 @@ function buildValidation(document: SceneDoc): ValidationReport {
             severity: "error" as const,
             code: "scene_text.metrics.invalid",
             message: "Text font size and line height must be greater than zero.",
+            targetId: node.id,
+          });
+        }
+      }
+
+      if (node.kind === "shape") {
+        if (!node.shape) {
+          issues.push({
+            id: `shape-data-missing-${node.id}`,
+            severity: "error" as const,
+            code: "scene_shape.data.missing",
+            message: "Shape node is missing shape data.",
+            targetId: node.id,
+          });
+          continue;
+        }
+
+        if (node.shape.strokeWidth < 0 || node.shape.cornerRadius < 0) {
+          issues.push({
+            id: `shape-metrics-invalid-${node.id}`,
+            severity: "error" as const,
+            code: "scene_shape.metrics.invalid",
+            message: "Shape stroke width and corner radius must be zero or greater.",
+            targetId: node.id,
+          });
+        }
+
+        if (node.shape.opacity < 0 || node.shape.opacity > 1) {
+          issues.push({
+            id: `shape-opacity-invalid-${node.id}`,
+            severity: "error" as const,
+            code: "scene_shape.opacity.invalid",
+            message: "Shape opacity must be between 0 and 1.",
             targetId: node.id,
           });
         }
@@ -181,6 +216,17 @@ function applyTextStylePatch(text: TextNodeData, style: TextStylePatch): TextNod
     ...(style.letterSpacing !== undefined ? { letterSpacing: style.letterSpacing } : {}),
     ...(style.align ? { align: style.align } : {}),
     ...(style.color ? { color: style.color } : {}),
+  };
+}
+
+function applyShapeStylePatch(shape: ShapeNodeData, style: ShapeStylePatch): ShapeNodeData {
+  return {
+    ...shape,
+    ...(style.fill ? { fill: style.fill } : {}),
+    ...(style.strokeColor ? { strokeColor: style.strokeColor } : {}),
+    ...(style.strokeWidth !== undefined ? { strokeWidth: Math.max(style.strokeWidth, 0) } : {}),
+    ...(style.cornerRadius !== undefined ? { cornerRadius: Math.max(style.cornerRadius, 0) } : {}),
+    ...(style.opacity !== undefined ? { opacity: Math.min(Math.max(style.opacity, 0), 1) } : {}),
   };
 }
 
@@ -844,6 +890,37 @@ export class NoopEditorBridge implements EditorBridge {
                   : node.text,
               }),
             ),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_shape_primitive":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              shape: node.shape
+                ? {
+                    ...node.shape,
+                    primitive: command.primitive,
+                  }
+                : node.shape,
+            })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_shape_style":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              shape: node.shape ? applyShapeStylePatch(node.shape, command.style) : node.shape,
+            })),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           });
           this.version += 1;

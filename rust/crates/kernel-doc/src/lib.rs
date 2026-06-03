@@ -62,6 +62,8 @@ pub struct SceneNode {
     pub layout: Option<AutoLayoutData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextNodeData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<ShapeNodeData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -184,6 +186,40 @@ pub struct TextStylePatch {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ShapePrimitive {
+    Rect,
+    Ellipse,
+    Line,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShapeNodeData {
+    pub primitive: ShapePrimitive,
+    pub fill: String,
+    pub stroke_color: String,
+    pub stroke_width: f32,
+    pub corner_radius: f32,
+    pub opacity: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ShapeStylePatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_radius: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum GuideAxis {
     X,
     Y,
@@ -254,6 +290,16 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         sizing: TextSizingMode,
+    },
+    SetShapePrimitive {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        primitive: ShapePrimitive,
+    },
+    SetShapeStyle {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        style: ShapeStylePatch,
     },
     SetNodeAutoLayout {
         #[serde(rename = "nodeId")]
@@ -575,6 +621,51 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
                     }
                 }
             }
+
+            if matches!(node.kind, SceneNodeKind::Shape) {
+                match &node.shape {
+                    Some(shape) => {
+                        if shape.stroke_width < 0.0 {
+                            issues.push(issue(
+                                format!("shape-stroke-width-invalid-{}", node.id),
+                                ValidationSeverity::Error,
+                                "scene_shape.stroke_width.invalid",
+                                "Shape stroke width must be zero or greater.",
+                                Some(node.id.clone()),
+                            ));
+                        }
+
+                        if shape.corner_radius < 0.0 {
+                            issues.push(issue(
+                                format!("shape-corner-radius-invalid-{}", node.id),
+                                ValidationSeverity::Error,
+                                "scene_shape.corner_radius.invalid",
+                                "Shape corner radius must be zero or greater.",
+                                Some(node.id.clone()),
+                            ));
+                        }
+
+                        if !(0.0..=1.0).contains(&shape.opacity) {
+                            issues.push(issue(
+                                format!("shape-opacity-invalid-{}", node.id),
+                                ValidationSeverity::Error,
+                                "scene_shape.opacity.invalid",
+                                "Shape opacity must be between 0 and 1.",
+                                Some(node.id.clone()),
+                            ));
+                        }
+                    }
+                    None => {
+                        issues.push(issue(
+                            format!("shape-data-missing-{}", node.id),
+                            ValidationSeverity::Error,
+                            "scene_shape.data.missing",
+                            "Shape node is missing shape data.",
+                            Some(node.id.clone()),
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -636,6 +727,7 @@ mod tests {
                         constraints: None,
                         layout: None,
                         text: None,
+                        shape: None,
                     },
                     SceneNode {
                         id: "child".to_string(),
@@ -666,6 +758,7 @@ mod tests {
                             color: "#0f172a".to_string(),
                             sizing: TextSizingMode::AutoHeight,
                         }),
+                        shape: None,
                     },
                 ],
             }],

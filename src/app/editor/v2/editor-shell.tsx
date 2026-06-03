@@ -16,6 +16,8 @@ import type {
   TextAlign,
   TextSizingMode,
   TextStylePatch,
+  ShapePrimitive,
+  ShapeStylePatch,
   TransformHandle,
   ValidationReport,
   VerticalConstraint,
@@ -86,9 +88,14 @@ const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "ver
 const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", "stretch"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
+const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line"];
 
 function supportsAutoLayout(node: SceneNode | null) {
   return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
+}
+
+function supportsShapeEditing(node: SceneNode | null) {
+  return Boolean(node && node.kind === "shape" && node.shape);
 }
 
 function flattenNodes(snapshot: EditorSnapshot | null) {
@@ -990,6 +997,34 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function updateShapePrimitive(primitive: ShapePrimitive) {
+    if (!activeNode || activeNode.kind !== "shape") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_shape_primitive",
+        nodeId: activeNode.id,
+        primitive,
+      },
+    ]);
+  }
+
+  async function updateShapeStyle(style: ShapeStylePatch) {
+    if (!activeNode || activeNode.kind !== "shape") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_shape_style",
+        nodeId: activeNode.id,
+        style,
+      },
+    ]);
+  }
+
   async function selectNode(nodeId: string) {
     await applyAndSync([{ kind: "select_nodes", nodeIds: [nodeId] }]);
   }
@@ -1626,6 +1661,7 @@ export function V2EditorShell() {
                   const previewX = selected && dragMoveDelta ? node.frame.x + dragMoveDelta.x : node.frame.x;
                   const previewY = selected && dragMoveDelta ? node.frame.y + dragMoveDelta.y : node.frame.y;
                   const textData = node.kind === "text" ? node.text : undefined;
+                  const shapeData = node.kind === "shape" ? node.shape : undefined;
                   return (
                     <button
                       key={node.id}
@@ -1666,6 +1702,31 @@ export function V2EditorShell() {
                         >
                           {textData.content}
                         </div>
+                      ) : shapeData ? (
+                        shapeData.primitive === "line" ? (
+                          <div className="flex h-full w-full items-center">
+                            <div
+                              className="w-full"
+                              style={{
+                                borderTop: `${Math.max(shapeData.strokeWidth, 1)}px solid ${shapeData.strokeColor}`,
+                                opacity: shapeData.opacity,
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <div
+                            className="h-full w-full"
+                            style={{
+                              backgroundColor: shapeData.fill,
+                              border: `${shapeData.strokeWidth}px solid ${shapeData.strokeColor}`,
+                              borderRadius:
+                                shapeData.primitive === "ellipse"
+                                  ? "9999px"
+                                  : `${shapeData.cornerRadius}px`,
+                              opacity: shapeData.opacity,
+                            }}
+                          />
+                        )
                       ) : (
                         <div className="p-4">
                           <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
@@ -2233,6 +2294,90 @@ export function V2EditorShell() {
                               className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
                               value={activeNode.text.color}
                               onChange={(event) => void updateTextStyle({ color: event.target.value })}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ) : null}
+                    {supportsShapeEditing(activeNode) ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="text-sm font-semibold text-slate-900">Shape</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="block">
+                            <div className="text-slate-400">Primitive</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.primitive}
+                              onChange={(event) =>
+                                void updateShapePrimitive(event.target.value as ShapePrimitive)
+                              }
+                            >
+                              {SHAPE_PRIMITIVE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Opacity</div>
+                            <input
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.opacity ?? 1}
+                              onChange={(event) =>
+                                void updateShapeStyle({ opacity: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Fill</div>
+                            <input
+                              type="color"
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                              value={activeNode.shape?.fill ?? "#ffffff"}
+                              onChange={(event) => void updateShapeStyle({ fill: event.target.value })}
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Stroke</div>
+                            <input
+                              type="color"
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                              value={activeNode.shape?.strokeColor ?? "#000000"}
+                              onChange={(event) =>
+                                void updateShapeStyle({ strokeColor: event.target.value })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Stroke width</div>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.strokeWidth ?? 0}
+                              onChange={(event) =>
+                                void updateShapeStyle({ strokeWidth: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Radius</div>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              disabled={activeNode.shape?.primitive !== "rect"}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition disabled:bg-slate-100 disabled:text-slate-400 focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.cornerRadius ?? 0}
+                              onChange={(event) =>
+                                void updateShapeStyle({ cornerRadius: Number(event.target.value) || 0 })
+                              }
                             />
                           </label>
                         </div>

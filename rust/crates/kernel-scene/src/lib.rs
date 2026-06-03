@@ -2,8 +2,8 @@ use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, EditorCommand,
     EditorRect, EditorSnapshot, EditorViewport, FramePatch, HorizontalConstraint, SceneDoc,
-    SceneGuide, SceneNode, SelectionSetMode, TextSizingMode, TextStylePatch,
-    TransformHandleKind, ValidationReport, VerticalConstraint,
+    SceneGuide, SceneNode, SelectionSetMode, ShapeStylePatch,
+    TextSizingMode, TextStylePatch, TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
 
@@ -149,6 +149,34 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_text_sizing".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetShapePrimitive { node_id, primitive } => {
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    ensure_shape_node(node)?;
+                    if let Some(shape) = &mut node.shape {
+                        shape.primitive = primitive;
+                    }
+                }
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_shape_primitive".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetShapeStyle { node_id, style } => {
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    ensure_shape_node(node)?;
+                    if let Some(shape) = &mut node.shape {
+                        apply_shape_style_patch(shape, style);
+                    }
+                }
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_shape_style".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetNodeAutoLayout { node_id, layout } => {
@@ -701,6 +729,17 @@ fn ensure_text_node(node: &SceneNode) -> Result<(), CoreError> {
     }
 }
 
+fn ensure_shape_node(node: &SceneNode) -> Result<(), CoreError> {
+    if matches!(node.kind, kernel_doc::SceneNodeKind::Shape) {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            "scene.shape.invalid_target",
+            format!("Node '{}' is not a shape node.", node.id),
+        ))
+    }
+}
+
 fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStylePatch) {
     if let Some(font_family) = style.font_family {
         text.font_family = font_family;
@@ -722,6 +761,24 @@ fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStyleP
     }
     if let Some(color) = style.color {
         text.color = color;
+    }
+}
+
+fn apply_shape_style_patch(shape: &mut kernel_doc::ShapeNodeData, style: ShapeStylePatch) {
+    if let Some(fill) = style.fill {
+        shape.fill = fill;
+    }
+    if let Some(stroke_color) = style.stroke_color {
+        shape.stroke_color = stroke_color;
+    }
+    if let Some(stroke_width) = style.stroke_width {
+        shape.stroke_width = stroke_width.max(0.0);
+    }
+    if let Some(corner_radius) = style.corner_radius {
+        shape.corner_radius = corner_radius.max(0.0);
+    }
+    if let Some(opacity) = style.opacity {
+        shape.opacity = opacity.clamp(0.0, 1.0);
     }
 }
 
@@ -1322,8 +1379,8 @@ fn normalize_degrees(value: f32) -> f32 {
 mod tests {
     use super::*;
     use kernel_doc::{
-        HorizontalConstraint, SceneDocMeta, SceneNodeKind, ScenePage, TextAlign, TextNodeData,
-        VerticalConstraint,
+        HorizontalConstraint, SceneDocMeta, SceneNodeKind, ScenePage, ShapeNodeData,
+        ShapePrimitive, TextAlign, TextNodeData, VerticalConstraint,
     };
 
     fn sample_doc() -> SceneDoc {
@@ -1353,6 +1410,7 @@ mod tests {
                         constraints: None,
                         layout: None,
                         text: None,
+                        shape: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -1380,6 +1438,7 @@ mod tests {
                             color: "#0f172a".to_string(),
                             sizing: TextSizingMode::AutoHeight,
                         }),
+                        shape: None,
                     },
                 ],
             }],
@@ -1437,6 +1496,14 @@ mod tests {
             constraints: None,
             layout: None,
             text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Rect,
+                fill: "#2859ff".to_string(),
+                stroke_color: "#1d4ed8".to_string(),
+                stroke_width: 1.0,
+                corner_radius: 0.0,
+                opacity: 1.0,
+            }),
         });
         doc.pages[0].nodes[1].children = Some(vec!["leaf".to_string()]);
 
@@ -1472,6 +1539,14 @@ mod tests {
             constraints: None,
             layout: None,
             text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Rect,
+                fill: "#2859ff".to_string(),
+                stroke_color: "#1d4ed8".to_string(),
+                stroke_width: 1.0,
+                corner_radius: 0.0,
+                opacity: 1.0,
+            }),
         });
 
         let result = hit_test(&doc, "page-1", 15.0, 15.0, HitTestMode::Topmost)
@@ -1696,6 +1771,7 @@ mod tests {
                 color: "#475569".to_string(),
                 sizing: TextSizingMode::AutoHeight,
             }),
+            shape: None,
         });
 
         let mut state = EditorState::new(doc);

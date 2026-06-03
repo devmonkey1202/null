@@ -138,6 +138,7 @@ mod tests {
                         constraints: None,
                         layout: None,
                         text: None,
+                        shape: None,
                     }],
                 }],
                 meta: SceneDocMeta {

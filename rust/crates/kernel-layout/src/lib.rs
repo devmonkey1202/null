@@ -110,6 +110,7 @@ mod tests {
                         constraints: None,
                         layout: None,
                         text: None,
+                        shape: None,
                     },
                     SceneNode {
                         id: "group".to_string(),
@@ -127,6 +128,7 @@ mod tests {
                         constraints: None,
                         layout: None,
                         text: None,
+                        shape: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -154,6 +156,7 @@ mod tests {
                             color: "#0f172a".to_string(),
                             sizing: kernel_doc::TextSizingMode::AutoHeight,
                         }),
+                        shape: None,
                     },
                 ],
             }],

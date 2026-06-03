@@ -22,6 +22,22 @@ export const sampleSceneDoc: SceneDoc = {
           frame: { x: 0, y: 0, w: 1440, h: 960, rotation: 0 },
         },
         {
+          id: "shape-demo",
+          kind: "shape",
+          name: "Brand Orb",
+          parentId: "root-frame",
+          frame: { x: 120, y: 140, w: 96, h: 96, rotation: 0 },
+          constraints: { horizontal: "min", vertical: "min" },
+          shape: {
+            primitive: "ellipse",
+            fill: "#2859ff",
+            strokeColor: "#1d4ed8",
+            strokeWidth: 2,
+            cornerRadius: 0,
+            opacity: 0.95,
+          },
+        },
+        {
           id: "hero-frame",
           kind: "frame",
           name: "Hero Surface",
