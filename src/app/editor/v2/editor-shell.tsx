@@ -68,6 +68,15 @@ type DragGuide = {
   currentPosition: number;
 };
 
+type DragPathPoint = {
+  nodeId: string;
+  pointIndex: number;
+  points: ShapePathData["points"];
+  closed: boolean;
+  currentX: number;
+  currentY: number;
+};
+
 type CanvasSize = {
   width: number;
   height: number;
@@ -121,6 +130,50 @@ function shapePathToSvgD(path: ShapePathData | undefined) {
     segments.push("Z");
   }
   return segments.join(" ");
+}
+
+function localShapePointFromCanvas(node: SceneNode, canvasX: number, canvasY: number) {
+  const centerX = node.frame.x + node.frame.w / 2;
+  const centerY = node.frame.y + node.frame.h / 2;
+  const radians = (-node.frame.rotation * Math.PI) / 180;
+  const dx = canvasX - centerX;
+  const dy = canvasY - centerY;
+  const localX = dx * Math.cos(radians) - dy * Math.sin(radians) + node.frame.w / 2;
+  const localY = dx * Math.sin(radians) + dy * Math.cos(radians) + node.frame.h / 2;
+
+  return {
+    x: Number(localX.toFixed(3)),
+    y: Number(localY.toFixed(3)),
+  };
+}
+
+function withDraggedPathPoint(
+  nodeId: string,
+  path: ShapePathData | undefined,
+  dragPathPoint: DragPathPoint | null,
+) {
+  if (!path) {
+    return path;
+  }
+
+  if (!dragPathPoint || dragPathPoint.nodeId !== nodeId) {
+    return path;
+  }
+
+  const points = structuredClone(dragPathPoint.points);
+  if (!points[dragPathPoint.pointIndex]) {
+    return path;
+  }
+
+  points[dragPathPoint.pointIndex] = {
+    x: dragPathPoint.currentX,
+    y: dragPathPoint.currentY,
+  };
+
+  return {
+    closed: dragPathPoint.closed,
+    points,
+  };
 }
 
 function supportsAutoLayout(node: SceneNode | null) {
@@ -673,6 +726,7 @@ export function V2EditorShell() {
   const [dragMove, setDragMove] = useState<DragMove | null>(null);
   const [dragTransform, setDragTransform] = useState<DragTransform | null>(null);
   const [dragGuide, setDragGuide] = useState<DragGuide | null>(null);
+  const [dragPathPoint, setDragPathPoint] = useState<DragPathPoint | null>(null);
   const [spacePressed, setSpacePressed] = useState(false);
   const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
@@ -1327,6 +1381,35 @@ export function V2EditorShell() {
     canvasRef.current?.setPointerCapture(event.pointerId);
   }
 
+  function handlePathPointPointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+    node: SceneNode,
+    pointIndex: number,
+  ) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (event.button !== 0 || !node.shape?.path) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    const localPoint = localShapePointFromCanvas(node, point.x, point.y);
+    setDragPathPoint({
+      nodeId: node.id,
+      pointIndex,
+      points: structuredClone(node.shape.path.points),
+      closed: node.shape.path.closed,
+      currentX: localPoint.x,
+      currentY: localPoint.y,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
   function handleTopRulerDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
     event.stopPropagation();
     void addGuide("x", event.clientX, event.clientY);
@@ -1394,6 +1477,30 @@ export function V2EditorShell() {
           ? {
               ...current,
               currentPosition: Math.round(current.axis === "x" ? point.x : point.y),
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (dragPathPoint) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      const targetNode = nodes.find((node) => node.id === dragPathPoint.nodeId);
+      if (!targetNode) {
+        return;
+      }
+
+      const localPoint = localShapePointFromCanvas(targetNode, point.x, point.y);
+      setDragPathPoint((current) =>
+        current
+          ? {
+              ...current,
+              currentX: localPoint.x,
+              currentY: localPoint.y,
             }
           : current,
       );
@@ -1544,6 +1651,33 @@ export function V2EditorShell() {
       return;
     }
 
+    if (dragPathPoint) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragPathPoint;
+      setDragPathPoint(null);
+      const nextPoints = structuredClone(currentDrag.points);
+      if (nextPoints[currentDrag.pointIndex]) {
+        nextPoints[currentDrag.pointIndex] = {
+          x: currentDrag.currentX,
+          y: currentDrag.currentY,
+        };
+        void applyAndSync([
+          {
+            kind: "set_shape_path",
+            nodeId: currentDrag.nodeId,
+            path: {
+              closed: currentDrag.closed,
+              points: nextPoints,
+            },
+          },
+        ]);
+      }
+      return;
+    }
+
     if (dragTransform) {
       if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
         canvasRef.current.releasePointerCapture(event.pointerId);
@@ -1604,6 +1738,7 @@ export function V2EditorShell() {
     }
     setDragPan(null);
     setDragGuide(null);
+    setDragPathPoint(null);
     setDragMove(null);
     setDragTransform(null);
     setDragMarquee(null);
@@ -1735,6 +1870,10 @@ export function V2EditorShell() {
                   const previewY = selected && dragMoveDelta ? node.frame.y + dragMoveDelta.y : node.frame.y;
                   const textData = node.kind === "text" ? node.text : undefined;
                   const shapeData = node.kind === "shape" ? node.shape : undefined;
+                  const previewPath =
+                    shapeData?.primitive === "path"
+                      ? withDraggedPathPoint(node.id, shapeData.path, dragPathPoint)
+                      : shapeData?.path;
                   return (
                     <button
                       key={node.id}
@@ -1787,20 +1926,37 @@ export function V2EditorShell() {
                             />
                           </div>
                         ) : shapeData.primitive === "path" ? (
-                          <svg
-                            className="h-full w-full overflow-visible"
-                            viewBox={`0 0 ${Math.max(node.frame.w, 1)} ${Math.max(node.frame.h, 1)}`}
-                          >
-                            <path
-                              d={shapePathToSvgD(shapeData.path)}
-                              fill={shapeData.path?.closed ? shapeData.fill : "none"}
-                              stroke={shapeData.strokeColor}
-                              strokeWidth={Math.max(shapeData.strokeWidth, 1)}
-                              opacity={shapeData.opacity}
-                              strokeLinejoin="round"
-                              strokeLinecap="round"
-                            />
-                          </svg>
+                          <div className="relative h-full w-full">
+                            <svg
+                              className="h-full w-full overflow-visible"
+                              viewBox={`0 0 ${Math.max(node.frame.w, 1)} ${Math.max(node.frame.h, 1)}`}
+                            >
+                              <path
+                                d={shapePathToSvgD(previewPath)}
+                                fill={previewPath?.closed ? shapeData.fill : "none"}
+                                stroke={shapeData.strokeColor}
+                                strokeWidth={Math.max(shapeData.strokeWidth, 1)}
+                                opacity={shapeData.opacity}
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                            {selected
+                              ? (previewPath?.points ?? []).map((point, pointIndex) => (
+                                  <div
+                                    key={`path-point-${node.id}-${pointIndex}`}
+                                    onPointerDown={(event) =>
+                                      handlePathPointPointerDown(event, node, pointIndex)
+                                    }
+                                    style={{
+                                      left: point.x - 5,
+                                      top: point.y - 5,
+                                    }}
+                                    className="absolute h-3 w-3 rounded-full border border-white bg-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.45)]"
+                                  />
+                                ))
+                              : null}
+                          </div>
                         ) : (
                           <div
                             className="h-full w-full"
