@@ -10,9 +10,12 @@ import type {
   EditorRect,
   EditorSnapshot,
   HorizontalConstraint,
+  MoveSnapPreview,
   RuntimeGraph,
   SceneGuide,
   SceneNode,
+  ResizeSnapPreview,
+  SnapGuide,
   TextAlign,
   TextSizingMode,
   TextStylePatch,
@@ -64,13 +67,6 @@ type DragGuide = {
   currentPosition: number;
 };
 
-type SnapGuide = {
-  axis: "x" | "y";
-  position: number;
-  spanStart: number;
-  spanEnd: number;
-};
-
 type CanvasSize = {
   width: number;
   height: number;
@@ -89,6 +85,13 @@ const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", 
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
 const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line"];
+const EMPTY_MOVE_SNAP_PREVIEW: MoveSnapPreview = { deltaX: 0, deltaY: 0, guides: [] };
+const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
+  bounds: null,
+  deltaX: 0,
+  deltaY: 0,
+  guides: [],
+};
 
 function supportsAutoLayout(node: SceneNode | null) {
   return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
@@ -646,9 +649,12 @@ export function V2EditorShell() {
   const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   const [editingTextNodeId, setEditingTextNodeId] = useState<string | null>(null);
   const [editingTextDraft, setEditingTextDraft] = useState("");
+  const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
+  const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const bridgeRef = useRef<EditorBridge | null>(null);
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const snapQuerySeqRef = useRef(0);
 
   const syncBridgeState = useCallback(async () => {
     const bridge = bridgeRef.current;
@@ -750,52 +756,63 @@ export function V2EditorShell() {
         : null,
     [dragMove],
   );
-  const moveSnapPreview = useMemo(() => {
-    if (!dragMoveDelta || !selectionBounds) {
-      return {
-        deltaX: dragMoveDelta?.x ?? 0,
-        deltaY: dragMoveDelta?.y ?? 0,
-        guides: [] as SnapGuide[],
-      };
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge || !dragMoveDelta) {
+      setMoveSnapPreview(EMPTY_MOVE_SNAP_PREVIEW);
+      return;
     }
 
-    const selectedIds = new Set(snapshot?.selection ?? []);
-    const targetRects = [
-      ...(rootFrame ? [rootFrame.frame] : []),
-      ...canvasNodes
-        .filter((node) => !selectedIds.has(node.id))
-        .map((node) => node.frame),
-    ];
+    const seq = ++snapQuerySeqRef.current;
+    void bridge
+      .query({
+        kind: "move_snap",
+        deltaX: dragMoveDelta.x,
+        deltaY: dragMoveDelta.y,
+      })
+      .then((result) => {
+        if (snapQuerySeqRef.current !== seq) {
+          return;
+        }
 
-    return computeMoveSnap(selectionBounds, dragMoveDelta, targetRects, pageGuides);
-  }, [canvasNodes, dragMoveDelta, pageGuides, rootFrame, selectionBounds, snapshot?.selection]);
-  const resizeSnapPreview = useMemo(() => {
-    if (!selectionBounds || !dragTransform || dragTransform.handle === "rotate") {
-      return {
-        bounds: null as EditorRect | null,
-        deltaX: 0,
-        deltaY: 0,
-        guides: [] as SnapGuide[],
-      };
+        setMoveSnapPreview((result as MoveSnapPreview) ?? EMPTY_MOVE_SNAP_PREVIEW);
+      })
+      .catch(() => {
+        if (snapQuerySeqRef.current === seq) {
+          setMoveSnapPreview(EMPTY_MOVE_SNAP_PREVIEW);
+        }
+      });
+  }, [dragMoveDelta]);
+
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge || !selectionBounds || !dragTransform || dragTransform.handle === "rotate") {
+      setResizeSnapPreview(EMPTY_RESIZE_SNAP_PREVIEW);
+      return;
     }
 
-    const rawBounds = resizePreviewBounds(
-      selectionBounds,
-      dragTransform.handle,
-      dragTransform.currentX - dragTransform.originX,
-      dragTransform.currentY - dragTransform.originY,
-      dragTransform.lockAspect,
-    );
-    const selectedIds = new Set(snapshot?.selection ?? []);
-    const targetRects = [
-      ...(rootFrame ? [rootFrame.frame] : []),
-      ...canvasNodes
-        .filter((node) => !selectedIds.has(node.id))
-        .map((node) => node.frame),
-    ];
+    const seq = ++snapQuerySeqRef.current;
+    void bridge
+      .query({
+        kind: "resize_snap",
+        handle: dragTransform.handle,
+        deltaX: dragTransform.currentX - dragTransform.originX,
+        deltaY: dragTransform.currentY - dragTransform.originY,
+        lockAspect: dragTransform.lockAspect,
+      })
+      .then((result) => {
+        if (snapQuerySeqRef.current !== seq) {
+          return;
+        }
 
-    return computeResizeSnap(selectionBounds, rawBounds, dragTransform.handle, targetRects, pageGuides);
-  }, [canvasNodes, dragTransform, pageGuides, rootFrame, selectionBounds, snapshot?.selection]);
+        setResizeSnapPreview((result as ResizeSnapPreview) ?? EMPTY_RESIZE_SNAP_PREVIEW);
+      })
+      .catch(() => {
+        if (snapQuerySeqRef.current === seq) {
+          setResizeSnapPreview(EMPTY_RESIZE_SNAP_PREVIEW);
+        }
+      });
+  }, [dragTransform, selectionBounds]);
   const previewSelectionBounds = useMemo(() => {
     if (!selectionBounds) {
       return null;

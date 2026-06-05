@@ -2,8 +2,8 @@ use core_error::CoreError;
 use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, TransformHandleKind, ValidationReport};
 use kernel_history::HistoryStore;
 use kernel_scene::{
-    dispatch_commands, hit_test, query_node, selection_bounds, selection_handles, EditorState,
-    HitTestMode,
+    dispatch_commands, hit_test, move_snap_preview, query_node, resize_snap_preview,
+    selection_bounds, selection_handles, EditorState, HitTestMode,
 };
 use serde_json::json;
 use std::cell::RefCell;
@@ -182,6 +182,82 @@ impl EditorBridgeHandle {
         .map_err(|error| CoreError::new("editor.transform_handles.serialize_failed", error.to_string()))
     }
 
+    pub fn move_snap(
+        &self,
+        delta_x: f32,
+        delta_y: f32,
+        threshold: Option<f32>,
+    ) -> Result<String, CoreError> {
+        let state = self.state.borrow();
+        let editor_state = state
+            .as_ref()
+            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+
+        let preview = move_snap_preview(
+            &editor_state.doc,
+            &editor_state.selection,
+            delta_x,
+            delta_y,
+            threshold.unwrap_or(8.0),
+        );
+
+        serde_json::to_string(&json!({
+            "deltaX": preview.delta_x,
+            "deltaY": preview.delta_y,
+            "guides": preview.guides.into_iter().map(|guide| json!({
+                "axis": match guide.axis {
+                    kernel_doc::GuideAxis::X => "x",
+                    kernel_doc::GuideAxis::Y => "y",
+                },
+                "position": guide.position,
+                "spanStart": guide.span_start,
+                "spanEnd": guide.span_end,
+            })).collect::<Vec<_>>(),
+        }))
+        .map_err(|error| CoreError::new("editor.move_snap.serialize_failed", error.to_string()))
+    }
+
+    pub fn resize_snap(
+        &self,
+        handle: &str,
+        delta_x: f32,
+        delta_y: f32,
+        lock_aspect: bool,
+        threshold: Option<f32>,
+    ) -> Result<String, CoreError> {
+        let state = self.state.borrow();
+        let editor_state = state
+            .as_ref()
+            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+
+        let handle = parse_transform_handle_kind(handle)?;
+        let preview = resize_snap_preview(
+            &editor_state.doc,
+            &editor_state.selection,
+            handle,
+            delta_x,
+            delta_y,
+            lock_aspect,
+            threshold.unwrap_or(8.0),
+        );
+
+        serde_json::to_string(&json!({
+            "bounds": preview.bounds,
+            "deltaX": preview.delta_x,
+            "deltaY": preview.delta_y,
+            "guides": preview.guides.into_iter().map(|guide| json!({
+                "axis": match guide.axis {
+                    kernel_doc::GuideAxis::X => "x",
+                    kernel_doc::GuideAxis::Y => "y",
+                },
+                "position": guide.position,
+                "spanStart": guide.span_start,
+                "spanEnd": guide.span_end,
+            })).collect::<Vec<_>>(),
+        }))
+        .map_err(|error| CoreError::new("editor.resize_snap.serialize_failed", error.to_string()))
+    }
+
     pub fn run_validation(&self) -> Result<String, CoreError> {
         let state = self.state.borrow();
         let editor_state = state
@@ -217,6 +293,24 @@ fn transform_handle_kind_name(kind: TransformHandleKind) -> &'static str {
         TransformHandleKind::W => "w",
         TransformHandleKind::Nw => "nw",
         TransformHandleKind::Rotate => "rotate",
+    }
+}
+
+fn parse_transform_handle_kind(raw: &str) -> Result<TransformHandleKind, CoreError> {
+    match raw {
+        "n" => Ok(TransformHandleKind::N),
+        "ne" => Ok(TransformHandleKind::Ne),
+        "e" => Ok(TransformHandleKind::E),
+        "se" => Ok(TransformHandleKind::Se),
+        "s" => Ok(TransformHandleKind::S),
+        "sw" => Ok(TransformHandleKind::Sw),
+        "w" => Ok(TransformHandleKind::W),
+        "nw" => Ok(TransformHandleKind::Nw),
+        "rotate" => Ok(TransformHandleKind::Rotate),
+        _ => Err(CoreError::new(
+            "editor.transform_handle.invalid",
+            format!("Unknown transform handle '{}'.", raw),
+        )),
     }
 }
 
@@ -265,6 +359,23 @@ impl WasmEditorBridgeHandle {
 
     pub fn transform_handles(&self) -> Result<String, JsValue> {
         self.inner.transform_handles().map_err(map_js_error)
+    }
+
+    pub fn move_snap(&self, delta_x: f32, delta_y: f32, threshold: Option<f32>) -> Result<String, JsValue> {
+        self.inner.move_snap(delta_x, delta_y, threshold).map_err(map_js_error)
+    }
+
+    pub fn resize_snap(
+        &self,
+        handle: &str,
+        delta_x: f32,
+        delta_y: f32,
+        lock_aspect: bool,
+        threshold: Option<f32>,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .resize_snap(handle, delta_x, delta_y, lock_aspect, threshold)
+            .map_err(map_js_error)
     }
 
     pub fn run_validation(&self) -> Result<String, JsValue> {

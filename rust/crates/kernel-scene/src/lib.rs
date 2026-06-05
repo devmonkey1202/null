@@ -1,14 +1,11 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, EditorCommand,
-    EditorRect, EditorSnapshot, EditorViewport, FramePatch, HorizontalConstraint, SceneDoc,
-    SceneGuide, SceneNode, SelectionSetMode, ShapeStylePatch,
+    EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis, HorizontalConstraint,
+    SceneDoc, SceneGuide, SceneNode, SelectionSetMode, ShapeStylePatch,
     TextSizingMode, TextStylePatch, TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
-
-#[cfg(test)]
-use kernel_doc::GuideAxis;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitTestMode {
@@ -29,6 +26,29 @@ pub struct TransformHandle {
     pub x: f32,
     pub y: f32,
     pub cursor: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapGuide {
+    pub axis: GuideAxis,
+    pub position: f32,
+    pub span_start: f32,
+    pub span_end: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveSnapPreview {
+    pub delta_x: f32,
+    pub delta_y: f32,
+    pub guides: Vec<SnapGuide>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResizeSnapPreview {
+    pub bounds: Option<EditorRect>,
+    pub delta_x: f32,
+    pub delta_y: f32,
+    pub guides: Vec<SnapGuide>,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +504,102 @@ pub fn selection_handles(bounds: &EditorRect) -> Vec<TransformHandle> {
             cursor: "grab",
         },
     ]
+}
+
+pub fn move_snap_preview(
+    doc: &SceneDoc,
+    selection: &[String],
+    delta_x: f32,
+    delta_y: f32,
+    threshold: f32,
+) -> MoveSnapPreview {
+    let Some(bounds) = selection_bounds(doc, selection) else {
+        return MoveSnapPreview {
+            delta_x,
+            delta_y,
+            guides: Vec::new(),
+        };
+    };
+
+    let Some(page) = selection_page(doc, selection) else {
+        return MoveSnapPreview {
+            delta_x,
+            delta_y,
+            guides: Vec::new(),
+        };
+    };
+
+    let target_rects = page
+        .nodes
+        .iter()
+        .filter(|node| !selection.iter().any(|selected| selected == &node.id))
+        .map(|node| node.frame.clone())
+        .collect::<Vec<_>>();
+
+    compute_move_snap(
+        &bounds,
+        delta_x,
+        delta_y,
+        target_rects.as_slice(),
+        page.guides.as_slice(),
+        threshold,
+    )
+}
+
+pub fn resize_snap_preview(
+    doc: &SceneDoc,
+    selection: &[String],
+    handle: TransformHandleKind,
+    delta_x: f32,
+    delta_y: f32,
+    lock_aspect: bool,
+    threshold: f32,
+) -> ResizeSnapPreview {
+    let Some(bounds) = selection_bounds(doc, selection) else {
+        return ResizeSnapPreview {
+            bounds: None,
+            delta_x: 0.0,
+            delta_y: 0.0,
+            guides: Vec::new(),
+        };
+    };
+
+    if matches!(handle, TransformHandleKind::Rotate) {
+        return ResizeSnapPreview {
+            bounds: Some(bounds),
+            delta_x: 0.0,
+            delta_y: 0.0,
+            guides: Vec::new(),
+        };
+    }
+
+    let preview_bounds = resize_bounds(&bounds, handle.clone(), delta_x, delta_y, lock_aspect);
+
+    let Some(page) = selection_page(doc, selection) else {
+        let snapped = resize_delta_from_bounds(&bounds, &preview_bounds, handle);
+        return ResizeSnapPreview {
+            bounds: Some(preview_bounds),
+            delta_x: snapped.0,
+            delta_y: snapped.1,
+            guides: Vec::new(),
+        };
+    };
+
+    let target_rects = page
+        .nodes
+        .iter()
+        .filter(|node| !selection.iter().any(|selected| selected == &node.id))
+        .map(|node| node.frame.clone())
+        .collect::<Vec<_>>();
+
+    compute_resize_snap(
+        &bounds,
+        &preview_bounds,
+        handle,
+        target_rects.as_slice(),
+        page.guides.as_slice(),
+        threshold,
+    )
 }
 
 pub fn resize_selection(
@@ -1287,6 +1403,335 @@ fn resize_bounds(
         w: (right - left).max(min_size),
         h: (bottom - top).max(min_size),
         rotation: bounds.rotation,
+    }
+}
+
+fn selection_page<'a>(doc: &'a SceneDoc, selection: &[String]) -> Option<&'a kernel_doc::ScenePage> {
+    if let Some(first_selected) = selection.first() {
+        return doc
+            .pages
+            .iter()
+            .find(|page| page.nodes.iter().any(|node| node.id == *first_selected));
+    }
+
+    doc.pages.first()
+}
+
+fn rect_anchors(rect: &EditorRect) -> (f32, f32, f32, f32, f32, f32) {
+    (
+        rect.x,
+        rect.x + rect.w / 2.0,
+        rect.x + rect.w,
+        rect.y,
+        rect.y + rect.h / 2.0,
+        rect.y + rect.h,
+    )
+}
+
+fn compute_move_snap(
+    selection_bounds: &EditorRect,
+    delta_x: f32,
+    delta_y: f32,
+    target_rects: &[EditorRect],
+    target_guides: &[SceneGuide],
+    threshold: f32,
+) -> MoveSnapPreview {
+    let moved_bounds = EditorRect {
+        x: selection_bounds.x + delta_x,
+        y: selection_bounds.y + delta_y,
+        w: selection_bounds.w,
+        h: selection_bounds.h,
+        rotation: selection_bounds.rotation,
+    };
+    let (moved_left, moved_center_x, moved_right, moved_top, moved_center_y, moved_bottom) =
+        rect_anchors(&moved_bounds);
+
+    let mut best_x: Option<(f32, f32, f32, f32)> = None;
+    let mut best_y: Option<(f32, f32, f32, f32)> = None;
+
+    for target in target_rects {
+        let (left, center_x, right, top, center_y, bottom) = rect_anchors(target);
+        for current_x in [moved_left, moved_center_x, moved_right] {
+            for target_x in [left, center_x, right] {
+                let adjust = target_x - current_x;
+                if adjust.abs() <= threshold
+                    && best_x
+                        .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                        .unwrap_or(true)
+                {
+                    best_x = Some((
+                        adjust,
+                        target_x,
+                        moved_top.min(top),
+                        moved_bottom.max(bottom),
+                    ));
+                }
+            }
+        }
+
+        for current_y in [moved_top, moved_center_y, moved_bottom] {
+            for target_y in [top, center_y, bottom] {
+                let adjust = target_y - current_y;
+                if adjust.abs() <= threshold
+                    && best_y
+                        .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                        .unwrap_or(true)
+                {
+                    best_y = Some((
+                        adjust,
+                        target_y,
+                        moved_left.min(left),
+                        moved_right.max(right),
+                    ));
+                }
+            }
+        }
+    }
+
+    for guide in target_guides {
+        match guide.axis {
+            GuideAxis::X => {
+                for current_x in [moved_left, moved_center_x, moved_right] {
+                    let adjust = guide.position as f32 - current_x;
+                    if adjust.abs() <= threshold
+                        && best_x
+                            .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                            .unwrap_or(true)
+                    {
+                        best_x = Some((adjust, guide.position as f32, moved_top, moved_bottom));
+                    }
+                }
+            }
+            GuideAxis::Y => {
+                for current_y in [moved_top, moved_center_y, moved_bottom] {
+                    let adjust = guide.position as f32 - current_y;
+                    if adjust.abs() <= threshold
+                        && best_y
+                            .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                            .unwrap_or(true)
+                    {
+                        best_y = Some((adjust, guide.position as f32, moved_left, moved_right));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut guides = Vec::new();
+    if let Some((_, position, span_start, span_end)) = best_x {
+        guides.push(SnapGuide {
+            axis: GuideAxis::X,
+            position,
+            span_start,
+            span_end,
+        });
+    }
+    if let Some((_, position, span_start, span_end)) = best_y {
+        guides.push(SnapGuide {
+            axis: GuideAxis::Y,
+            position,
+            span_start,
+            span_end,
+        });
+    }
+
+    MoveSnapPreview {
+        delta_x: delta_x + best_x.map(|(adjust, _, _, _)| adjust).unwrap_or(0.0),
+        delta_y: delta_y + best_y.map(|(adjust, _, _, _)| adjust).unwrap_or(0.0),
+        guides,
+    }
+}
+
+fn compute_resize_snap(
+    original_bounds: &EditorRect,
+    preview_bounds: &EditorRect,
+    handle: TransformHandleKind,
+    target_rects: &[EditorRect],
+    target_guides: &[SceneGuide],
+    threshold: f32,
+) -> ResizeSnapPreview {
+    let (preview_left, _, preview_right, preview_top, _, preview_bottom) = rect_anchors(preview_bounds);
+
+    let active_x_values: Vec<f32> = match handle {
+        TransformHandleKind::E | TransformHandleKind::Ne | TransformHandleKind::Se => {
+            vec![preview_right]
+        }
+        TransformHandleKind::W | TransformHandleKind::Nw | TransformHandleKind::Sw => {
+            vec![preview_left]
+        }
+        _ => Vec::new(),
+    };
+    let active_y_values: Vec<f32> = match handle {
+        TransformHandleKind::S | TransformHandleKind::Se | TransformHandleKind::Sw => {
+            vec![preview_bottom]
+        }
+        TransformHandleKind::N | TransformHandleKind::Ne | TransformHandleKind::Nw => {
+            vec![preview_top]
+        }
+        _ => Vec::new(),
+    };
+
+    let mut best_x: Option<(f32, f32, f32, f32)> = None;
+    let mut best_y: Option<(f32, f32, f32, f32)> = None;
+
+    for target in target_rects {
+        let (left, center_x, right, top, center_y, bottom) = rect_anchors(target);
+        for current_x in &active_x_values {
+            for target_x in [left, center_x, right] {
+                let adjust = target_x - *current_x;
+                if adjust.abs() <= threshold
+                    && best_x
+                        .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                        .unwrap_or(true)
+                {
+                    best_x = Some((
+                        adjust,
+                        target_x,
+                        preview_bounds.y.min(top),
+                        (preview_bounds.y + preview_bounds.h).max(bottom),
+                    ));
+                }
+            }
+        }
+
+        for current_y in &active_y_values {
+            for target_y in [top, center_y, bottom] {
+                let adjust = target_y - *current_y;
+                if adjust.abs() <= threshold
+                    && best_y
+                        .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                        .unwrap_or(true)
+                {
+                    best_y = Some((
+                        adjust,
+                        target_y,
+                        preview_bounds.x.min(left),
+                        (preview_bounds.x + preview_bounds.w).max(right),
+                    ));
+                }
+            }
+        }
+    }
+
+    for guide in target_guides {
+        match guide.axis {
+            GuideAxis::X => {
+                for current_x in &active_x_values {
+                    let adjust = guide.position as f32 - *current_x;
+                    if adjust.abs() <= threshold
+                        && best_x
+                            .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                            .unwrap_or(true)
+                    {
+                        best_x = Some((
+                            adjust,
+                            guide.position as f32,
+                            preview_bounds.y,
+                            preview_bounds.y + preview_bounds.h,
+                        ));
+                    }
+                }
+            }
+            GuideAxis::Y => {
+                for current_y in &active_y_values {
+                    let adjust = guide.position as f32 - *current_y;
+                    if adjust.abs() <= threshold
+                        && best_y
+                            .map(|(existing, _, _, _)| adjust.abs() < existing.abs())
+                            .unwrap_or(true)
+                    {
+                        best_y = Some((
+                            adjust,
+                            guide.position as f32,
+                            preview_bounds.x,
+                            preview_bounds.x + preview_bounds.w,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut bounds = preview_bounds.clone();
+    if let Some((adjust, _, _, _)) = best_x {
+        match handle {
+            TransformHandleKind::E | TransformHandleKind::Ne | TransformHandleKind::Se => {
+                bounds.w += adjust;
+            }
+            TransformHandleKind::W | TransformHandleKind::Nw | TransformHandleKind::Sw => {
+                bounds.x += adjust;
+                bounds.w -= adjust;
+            }
+            _ => {}
+        }
+    }
+    if let Some((adjust, _, _, _)) = best_y {
+        match handle {
+            TransformHandleKind::S | TransformHandleKind::Se | TransformHandleKind::Sw => {
+                bounds.h += adjust;
+            }
+            TransformHandleKind::N | TransformHandleKind::Ne | TransformHandleKind::Nw => {
+                bounds.y += adjust;
+                bounds.h -= adjust;
+            }
+            _ => {}
+        }
+    }
+
+    let mut guides = Vec::new();
+    if let Some((_, position, span_start, span_end)) = best_x {
+        guides.push(SnapGuide {
+            axis: GuideAxis::X,
+            position,
+            span_start,
+            span_end,
+        });
+    }
+    if let Some((_, position, span_start, span_end)) = best_y {
+        guides.push(SnapGuide {
+            axis: GuideAxis::Y,
+            position,
+            span_start,
+            span_end,
+        });
+    }
+
+    let (delta_x, delta_y) = resize_delta_from_bounds(original_bounds, &bounds, handle);
+    ResizeSnapPreview {
+        bounds: Some(bounds),
+        delta_x,
+        delta_y,
+        guides,
+    }
+}
+
+fn resize_delta_from_bounds(
+    original_bounds: &EditorRect,
+    bounds: &EditorRect,
+    handle: TransformHandleKind,
+) -> (f32, f32) {
+    match handle {
+        TransformHandleKind::N => (0.0, bounds.y - original_bounds.y),
+        TransformHandleKind::Ne => (
+            bounds.x + bounds.w - (original_bounds.x + original_bounds.w),
+            bounds.y - original_bounds.y,
+        ),
+        TransformHandleKind::E => (
+            bounds.x + bounds.w - (original_bounds.x + original_bounds.w),
+            0.0,
+        ),
+        TransformHandleKind::Se => (
+            bounds.x + bounds.w - (original_bounds.x + original_bounds.w),
+            bounds.y + bounds.h - (original_bounds.y + original_bounds.h),
+        ),
+        TransformHandleKind::S => (0.0, bounds.y + bounds.h - (original_bounds.y + original_bounds.h)),
+        TransformHandleKind::Sw => (
+            bounds.x - original_bounds.x,
+            bounds.y + bounds.h - (original_bounds.y + original_bounds.h),
+        ),
+        TransformHandleKind::W => (bounds.x - original_bounds.x, 0.0),
+        TransformHandleKind::Nw => (bounds.x - original_bounds.x, bounds.y - original_bounds.y),
+        TransformHandleKind::Rotate => (0.0, 0.0),
     }
 }
 

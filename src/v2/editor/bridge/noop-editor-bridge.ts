@@ -10,11 +10,15 @@ import {
   type EditorViewport,
   type HitTestResult,
   type HorizontalConstraint,
+  type MoveSnapPreview,
   type NodeConstraints,
+  type ResizeSnapPreview,
   type RuntimeGraph,
   type SceneDoc,
+  type SceneGuide,
   type SceneNode,
   type SelectionSetMode,
+  type SnapGuide,
   type ShapeNodeData,
   type ShapeStylePatch,
   type TextNodeData,
@@ -204,6 +208,299 @@ function buildTransformHandles(bounds: ReturnType<typeof buildSelectionBounds>):
     { kind: "w", x: left, y: centerY, cursor: "ew-resize" },
     { kind: "rotate", x: centerX, y: top - rotateOffset, cursor: "grab" },
   ];
+}
+
+function selectionPage(document: SceneDoc, selection: string[]) {
+  if (selection.length > 0) {
+    const selectedId = selection[0]!;
+    return document.pages.find((page) => page.nodes.some((node) => node.id === selectedId)) ?? null;
+  }
+
+  return document.pages[0] ?? null;
+}
+
+function offsetRect(rect: EditorRect, deltaX: number, deltaY: number): EditorRect {
+  return {
+    ...rect,
+    x: rect.x + deltaX,
+    y: rect.y + deltaY,
+  };
+}
+
+function rectAnchors(rect: EditorRect) {
+  return {
+    left: rect.x,
+    centerX: rect.x + rect.w / 2,
+    right: rect.x + rect.w,
+    top: rect.y,
+    centerY: rect.y + rect.h / 2,
+    bottom: rect.y + rect.h,
+  };
+}
+
+function computeMoveSnap(
+  selectionBounds: EditorRect | null,
+  delta: { x: number; y: number } | null,
+  targetRects: EditorRect[],
+  targetGuides: SceneGuide[] = [],
+  threshold = 8,
+): MoveSnapPreview {
+  if (!selectionBounds || !delta) {
+    return {
+      deltaX: delta?.x ?? 0,
+      deltaY: delta?.y ?? 0,
+      guides: [],
+    };
+  }
+
+  const movedBounds = offsetRect(selectionBounds, delta.x, delta.y);
+  const moved = rectAnchors(movedBounds);
+
+  let bestX: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+  let bestY: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+
+  for (const target of targetRects) {
+    const anchors = rectAnchors(target);
+    const xValues = [anchors.left, anchors.centerX, anchors.right];
+    const yValues = [anchors.top, anchors.centerY, anchors.bottom];
+    const movedXValues = [moved.left, moved.centerX, moved.right];
+    const movedYValues = [moved.top, moved.centerY, moved.bottom];
+
+    for (const currentX of movedXValues) {
+      for (const targetX of xValues) {
+        const adjust = targetX - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: targetX,
+            spanStart: Math.min(moved.top, anchors.top),
+            spanEnd: Math.max(moved.bottom, anchors.bottom),
+          };
+        }
+      }
+    }
+
+    for (const currentY of movedYValues) {
+      for (const targetY of yValues) {
+        const adjust = targetY - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: targetY,
+            spanStart: Math.min(moved.left, anchors.left),
+            spanEnd: Math.max(moved.right, anchors.right),
+          };
+        }
+      }
+    }
+  }
+
+  for (const guide of targetGuides) {
+    if (guide.axis === "x") {
+      for (const currentX of [moved.left, moved.centerX, moved.right]) {
+        const adjust = guide.position - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: guide.position,
+            spanStart: moved.top,
+            spanEnd: moved.bottom,
+          };
+        }
+      }
+    } else {
+      for (const currentY of [moved.top, moved.centerY, moved.bottom]) {
+        const adjust = guide.position - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: guide.position,
+            spanStart: moved.left,
+            spanEnd: moved.right,
+          };
+        }
+      }
+    }
+  }
+
+  const guides: SnapGuide[] = [];
+  if (bestX) {
+    guides.push({
+      axis: "x",
+      position: bestX.position,
+      spanStart: bestX.spanStart,
+      spanEnd: bestX.spanEnd,
+    });
+  }
+  if (bestY) {
+    guides.push({
+      axis: "y",
+      position: bestY.position,
+      spanStart: bestY.spanStart,
+      spanEnd: bestY.spanEnd,
+    });
+  }
+
+  return {
+    deltaX: delta.x + (bestX?.adjust ?? 0),
+    deltaY: delta.y + (bestY?.adjust ?? 0),
+    guides,
+  };
+}
+
+function computeResizeSnap(
+  originalBounds: EditorRect | null,
+  previewBounds: EditorRect | null,
+  handle: TransformHandle["kind"] | null,
+  targetRects: EditorRect[],
+  targetGuides: SceneGuide[] = [],
+  threshold = 8,
+): ResizeSnapPreview {
+  if (!originalBounds || !previewBounds || !handle || handle === "rotate") {
+    return {
+      bounds: previewBounds,
+      deltaX: 0,
+      deltaY: 0,
+      guides: [],
+    };
+  }
+
+  const preview = rectAnchors(previewBounds);
+  let bestX: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+  let bestY: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+
+  const activeXKeys =
+    handle === "e" || handle === "ne" || handle === "se"
+      ? (["right"] as const)
+      : handle === "w" || handle === "nw" || handle === "sw"
+        ? (["left"] as const)
+        : ([] as const);
+  const activeYKeys =
+    handle === "s" || handle === "se" || handle === "sw"
+      ? (["bottom"] as const)
+      : handle === "n" || handle === "ne" || handle === "nw"
+        ? (["top"] as const)
+        : ([] as const);
+
+  for (const target of targetRects) {
+    const anchors = rectAnchors(target);
+    const targetXValues = [anchors.left, anchors.centerX, anchors.right];
+    const targetYValues = [anchors.top, anchors.centerY, anchors.bottom];
+
+    for (const key of activeXKeys) {
+      const currentX = preview[key];
+      for (const targetX of targetXValues) {
+        const adjust = targetX - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: targetX,
+            spanStart: Math.min(previewBounds.y, anchors.top),
+            spanEnd: Math.max(previewBounds.y + previewBounds.h, anchors.bottom),
+          };
+        }
+      }
+    }
+
+    for (const key of activeYKeys) {
+      const currentY = preview[key];
+      for (const targetY of targetYValues) {
+        const adjust = targetY - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: targetY,
+            spanStart: Math.min(previewBounds.x, anchors.left),
+            spanEnd: Math.max(previewBounds.x + previewBounds.w, anchors.right),
+          };
+        }
+      }
+    }
+  }
+
+  for (const guide of targetGuides) {
+    if (guide.axis === "x") {
+      for (const key of activeXKeys) {
+        const currentX = preview[key];
+        const adjust = guide.position - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: guide.position,
+            spanStart: previewBounds.y,
+            spanEnd: previewBounds.y + previewBounds.h,
+          };
+        }
+      }
+    } else {
+      for (const key of activeYKeys) {
+        const currentY = preview[key];
+        const adjust = guide.position - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: guide.position,
+            spanStart: previewBounds.x,
+            spanEnd: previewBounds.x + previewBounds.w,
+          };
+        }
+      }
+    }
+  }
+
+  const bounds = { ...previewBounds };
+  if (bestX) {
+    if (handle === "e" || handle === "ne" || handle === "se") {
+      bounds.w += bestX.adjust;
+    } else if (handle === "w" || handle === "nw" || handle === "sw") {
+      bounds.x += bestX.adjust;
+      bounds.w -= bestX.adjust;
+    }
+  }
+
+  if (bestY) {
+    if (handle === "s" || handle === "se" || handle === "sw") {
+      bounds.h += bestY.adjust;
+    } else if (handle === "n" || handle === "ne" || handle === "nw") {
+      bounds.y += bestY.adjust;
+      bounds.h -= bestY.adjust;
+    }
+  }
+
+  const guides: SnapGuide[] = [];
+  if (bestX) {
+    guides.push({
+      axis: "x",
+      position: bestX.position,
+      spanStart: bestX.spanStart,
+      spanEnd: bestX.spanEnd,
+    });
+  }
+  if (bestY) {
+    guides.push({
+      axis: "y",
+      position: bestY.position,
+      spanStart: bestY.spanStart,
+      spanEnd: bestY.spanEnd,
+    });
+  }
+
+  return {
+    bounds,
+    deltaX:
+      handle === "e" || handle === "ne" || handle === "se"
+        ? bounds.x + bounds.w - (originalBounds.x + originalBounds.w)
+        : handle === "w" || handle === "nw" || handle === "sw"
+          ? bounds.x - originalBounds.x
+          : 0,
+    deltaY:
+      handle === "s" || handle === "se" || handle === "sw"
+        ? bounds.y + bounds.h - (originalBounds.y + originalBounds.h)
+        : handle === "n" || handle === "ne" || handle === "nw"
+          ? bounds.y - originalBounds.y
+          : 0,
+    guides,
+  };
 }
 
 function applyTextStylePatch(text: TextNodeData, style: TextStylePatch): TextNodeData {
@@ -1153,6 +1450,42 @@ export class NoopEditorBridge implements EditorBridge {
         return buildSelectionBounds(this.document, this.selection);
       case "transform_handles":
         return buildTransformHandles(buildSelectionBounds(this.document, this.selection));
+      case "move_snap": {
+        const selectionBounds = buildSelectionBounds(this.document, this.selection);
+        const page = selectionPage(this.document, this.selection);
+        return computeMoveSnap(
+          selectionBounds,
+          { x: selector.deltaX, y: selector.deltaY },
+          (page?.nodes ?? [])
+            .filter((node) => !this.selection.includes(node.id))
+            .map((node) => node.frame),
+          page?.guides ?? [],
+          selector.threshold ?? 8,
+        );
+      }
+      case "resize_snap": {
+        const selectionBounds = buildSelectionBounds(this.document, this.selection);
+        const previewBounds = selectionBounds
+          ? resizeBounds(
+              selectionBounds,
+              selector.handle,
+              selector.deltaX,
+              selector.deltaY,
+              selector.lockAspect ?? false,
+            )
+          : null;
+        const page = selectionPage(this.document, this.selection);
+        return computeResizeSnap(
+          selectionBounds,
+          previewBounds,
+          selector.handle,
+          (page?.nodes ?? [])
+            .filter((node) => !this.selection.includes(node.id))
+            .map((node) => node.frame),
+          page?.guides ?? [],
+          selector.threshold ?? 8,
+        );
+      }
     }
   }
 

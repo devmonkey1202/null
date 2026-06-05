@@ -6,6 +6,8 @@ import type {
   EditorRect,
   EditorSnapshot,
   HitTestResult,
+  MoveSnapPreview,
+  ResizeSnapPreview,
   RuntimeGraph,
   SceneDoc,
   TransformHandle,
@@ -21,6 +23,14 @@ type WasmEditorBridgeModule = {
     hit_test(pageId: string, x: number, y: number, mode: string): string;
     selection_bounds(): string;
     transform_handles(): string;
+    move_snap(deltaX: number, deltaY: number, threshold?: number): string;
+    resize_snap(
+      handle: string,
+      deltaX: number,
+      deltaY: number,
+      lockAspect: boolean,
+      threshold?: number,
+    ): string;
     run_validation(): string;
     export_document(): string;
   };
@@ -109,7 +119,25 @@ export class BrowserWasmEditorBridge implements EditorBridge {
       return JSON.parse(this.handle.selection_bounds()) as EditorRect | null;
     }
 
-    return JSON.parse(this.handle.transform_handles()) as TransformHandle[];
+    if (selector.kind === "transform_handles") {
+      return JSON.parse(this.handle.transform_handles()) as TransformHandle[];
+    }
+
+    if (selector.kind === "move_snap") {
+      return JSON.parse(
+        this.handle.move_snap(selector.deltaX, selector.deltaY, selector.threshold),
+      ) as MoveSnapPreview;
+    }
+
+    return JSON.parse(
+      this.handle.resize_snap(
+        selector.handle,
+        selector.deltaX,
+        selector.deltaY,
+        selector.lockAspect ?? false,
+        selector.threshold,
+      ),
+    ) as ResizeSnapPreview;
   }
 
   async runValidation() {

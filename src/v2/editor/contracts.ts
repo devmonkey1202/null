@@ -204,13 +204,42 @@ export type TransformHandle = {
   cursor: string;
 };
 
+export type SnapGuide = {
+  axis: "x" | "y";
+  position: number;
+  spanStart: number;
+  spanEnd: number;
+};
+
+export type MoveSnapPreview = {
+  deltaX: number;
+  deltaY: number;
+  guides: SnapGuide[];
+};
+
+export type ResizeSnapPreview = {
+  bounds: EditorRect | null;
+  deltaX: number;
+  deltaY: number;
+  guides: SnapGuide[];
+};
+
 export type BridgeQuery =
   | { kind: "selection" }
   | { kind: "document" }
   | { kind: "node"; nodeId: string }
   | { kind: "hit_test"; pageId: string; x: number; y: number; mode?: HitTestMode }
   | { kind: "selection_bounds" }
-  | { kind: "transform_handles" };
+  | { kind: "transform_handles" }
+  | { kind: "move_snap"; deltaX: number; deltaY: number; threshold?: number }
+  | {
+      kind: "resize_snap";
+      handle: TransformHandleKind;
+      deltaX: number;
+      deltaY: number;
+      lockAspect?: boolean;
+      threshold?: number;
+    };
 
 export type ServiceBinding = {
   id: string;
