@@ -194,9 +194,20 @@ pub enum ShapePrimitive {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShapePathHandle {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ShapePathPoint {
     pub x: f32,
     pub y: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_in: Option<ShapePathHandle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_out: Option<ShapePathHandle>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -882,7 +893,12 @@ mod tests {
                 corner_radius: 0.0,
                 opacity: 1.0,
                 path: Some(ShapePathData {
-                    points: vec![ShapePathPoint { x: 0.0, y: 0.0 }],
+                    points: vec![ShapePathPoint {
+                        x: 0.0,
+                        y: 0.0,
+                        handle_in: None,
+                        handle_out: None,
+                    }],
                     closed: false,
                 }),
             }),

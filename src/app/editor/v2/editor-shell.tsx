@@ -20,6 +20,7 @@ import type {
   TextSizingMode,
   TextStylePatch,
   ShapePrimitive,
+  ShapePathHandle,
   ShapePathData,
   ShapeStylePatch,
   TransformHandle,
@@ -71,6 +72,18 @@ type DragGuide = {
 type DragPathPoint = {
   nodeId: string;
   pointIndex: number;
+  points: ShapePathData["points"];
+  closed: boolean;
+  currentX: number;
+  currentY: number;
+};
+
+type PathHandleKey = "handleIn" | "handleOut";
+
+type DragPathHandle = {
+  nodeId: string;
+  pointIndex: number;
+  handleKey: PathHandleKey;
   points: ShapePathData["points"];
   closed: boolean;
   currentX: number;
@@ -130,13 +143,109 @@ function shapePathToSvgD(path: ShapePathData | undefined) {
 
   const [first, ...rest] = path.points;
   const segments = [`M ${first.x} ${first.y}`];
+  let previous = first;
+
   for (const point of rest) {
-    segments.push(`L ${point.x} ${point.y}`);
+    const controlOut = previous.handleOut;
+    const controlIn = point.handleIn;
+    if (controlOut || controlIn) {
+      const resolvedOut = controlOut ?? previous;
+      const resolvedIn = controlIn ?? point;
+      segments.push(
+        `C ${resolvedOut.x} ${resolvedOut.y} ${resolvedIn.x} ${resolvedIn.y} ${point.x} ${point.y}`,
+      );
+    } else {
+      segments.push(`L ${point.x} ${point.y}`);
+    }
+    previous = point;
   }
+
   if (path.closed) {
+    const last = path.points[path.points.length - 1];
+    if (last && last !== first) {
+      const controlOut = last.handleOut;
+      const controlIn = first.handleIn;
+      if (controlOut || controlIn) {
+        const resolvedOut = controlOut ?? last;
+        const resolvedIn = controlIn ?? first;
+        segments.push(
+          `C ${resolvedOut.x} ${resolvedOut.y} ${resolvedIn.x} ${resolvedIn.y} ${first.x} ${first.y}`,
+        );
+      }
+    }
     segments.push("Z");
   }
   return segments.join(" ");
+}
+
+function roundLocalPoint(value: ShapePathHandle) {
+  return {
+    x: Number(value.x.toFixed(3)),
+    y: Number(value.y.toFixed(3)),
+  };
+}
+
+function applyDraggedPathPointToPoints(
+  points: ShapePathData["points"],
+  pointIndex: number,
+  currentX: number,
+  currentY: number,
+) {
+  const nextPoints = structuredClone(points);
+  const originalPoint = nextPoints[pointIndex];
+  if (!originalPoint) {
+    return nextPoints;
+  }
+
+  const deltaX = currentX - originalPoint.x;
+  const deltaY = currentY - originalPoint.y;
+  nextPoints[pointIndex] = {
+    ...originalPoint,
+    x: currentX,
+    y: currentY,
+    ...(originalPoint.handleIn
+      ? {
+          handleIn: roundLocalPoint({
+            x: originalPoint.handleIn.x + deltaX,
+            y: originalPoint.handleIn.y + deltaY,
+          }),
+        }
+      : {}),
+    ...(originalPoint.handleOut
+      ? {
+          handleOut: roundLocalPoint({
+            x: originalPoint.handleOut.x + deltaX,
+            y: originalPoint.handleOut.y + deltaY,
+          }),
+        }
+      : {}),
+  };
+
+  return nextPoints;
+}
+
+function applyDraggedPathHandleToPoints(
+  points: ShapePathData["points"],
+  pointIndex: number,
+  handleKey: PathHandleKey,
+  currentX: number,
+  currentY: number,
+) {
+  const nextPoints = structuredClone(points);
+  const originalPoint = nextPoints[pointIndex];
+  if (!originalPoint) {
+    return nextPoints;
+  }
+
+  nextPoints[pointIndex] = {
+    ...originalPoint,
+    [handleKey]: roundLocalPoint({
+      x: currentX,
+      y: currentY,
+    }),
+  };
+
+  return nextPoints;
 }
 
 function localShapePointFromCanvas(node: SceneNode, canvasX: number, canvasY: number) {
@@ -154,6 +263,38 @@ function localShapePointFromCanvas(node: SceneNode, canvasX: number, canvasY: nu
   };
 }
 
+function createCurveHandles(
+  points: ShapePathData["points"],
+  pointIndex: number,
+  closed: boolean,
+) {
+  const point = points[pointIndex];
+  if (!point) {
+    return null;
+  }
+
+  const previous =
+    points[pointIndex - 1] ?? (closed ? points[points.length - 1] : undefined) ?? point;
+  const next = points[pointIndex + 1] ?? (closed ? points[0] : undefined) ?? point;
+  const tangentX = next.x - previous.x;
+  const tangentY = next.y - previous.y;
+  const length = Math.hypot(tangentX, tangentY) || 1;
+  const distance = Math.min(40, Math.max(12, length * 0.2));
+  const unitX = tangentX / length;
+  const unitY = tangentY / length;
+
+  return {
+    handleIn: roundLocalPoint({
+      x: point.x - unitX * distance,
+      y: point.y - unitY * distance,
+    }),
+    handleOut: roundLocalPoint({
+      x: point.x + unitX * distance,
+      y: point.y + unitY * distance,
+    }),
+  };
+}
+
 function withDraggedPathPoint(
   nodeId: string,
   path: ShapePathData | undefined,
@@ -167,19 +308,39 @@ function withDraggedPathPoint(
     return path;
   }
 
-  const points = structuredClone(dragPathPoint.points);
-  if (!points[dragPathPoint.pointIndex]) {
+  return {
+    closed: dragPathPoint.closed,
+    points: applyDraggedPathPointToPoints(
+      dragPathPoint.points,
+      dragPathPoint.pointIndex,
+      dragPathPoint.currentX,
+      dragPathPoint.currentY,
+    ),
+  };
+}
+
+function withDraggedPathHandle(
+  nodeId: string,
+  path: ShapePathData | undefined,
+  dragPathHandle: DragPathHandle | null,
+) {
+  if (!path) {
     return path;
   }
 
-  points[dragPathPoint.pointIndex] = {
-    x: dragPathPoint.currentX,
-    y: dragPathPoint.currentY,
-  };
+  if (!dragPathHandle || dragPathHandle.nodeId !== nodeId) {
+    return path;
+  }
 
   return {
-    closed: dragPathPoint.closed,
-    points,
+    closed: dragPathHandle.closed,
+    points: applyDraggedPathHandleToPoints(
+      dragPathHandle.points,
+      dragPathHandle.pointIndex,
+      dragPathHandle.handleKey,
+      dragPathHandle.currentX,
+      dragPathHandle.currentY,
+    ),
   };
 }
 
@@ -778,6 +939,7 @@ export function V2EditorShell() {
   const [dragTransform, setDragTransform] = useState<DragTransform | null>(null);
   const [dragGuide, setDragGuide] = useState<DragGuide | null>(null);
   const [dragPathPoint, setDragPathPoint] = useState<DragPathPoint | null>(null);
+  const [dragPathHandle, setDragPathHandle] = useState<DragPathHandle | null>(null);
   const [activeTool, setActiveTool] = useState<EditorTool>("select");
   const [pathDraft, setPathDraft] = useState<PathDraft | null>(null);
   const [spacePressed, setSpacePressed] = useState(false);
@@ -1205,6 +1367,26 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function updateShapePathPoint(
+    pointIndex: number,
+    updater: (point: ShapePathData["points"][number]) => ShapePathData["points"][number],
+  ) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (!points[pointIndex]) {
+      return;
+    }
+
+    points[pointIndex] = updater(points[pointIndex]!);
+    await updateShapePath({
+      points,
+      closed: activeNode.shape.path?.closed ?? false,
+    });
+  }
+
   async function selectNode(nodeId: string) {
     await applyAndSync([{ kind: "select_nodes", nodeIds: [nodeId] }]);
   }
@@ -1520,6 +1702,37 @@ export function V2EditorShell() {
     canvasRef.current?.setPointerCapture(event.pointerId);
   }
 
+  function handlePathHandlePointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+    node: SceneNode,
+    pointIndex: number,
+    handleKey: PathHandleKey,
+  ) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (event.button !== 0 || !node.shape?.path) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    const localPoint = localShapePointFromCanvas(node, point.x, point.y);
+    setDragPathHandle({
+      nodeId: node.id,
+      pointIndex,
+      handleKey,
+      points: structuredClone(node.shape.path.points),
+      closed: node.shape.path.closed,
+      currentX: localPoint.x,
+      currentY: localPoint.y,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
   function handleTopRulerDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
     event.stopPropagation();
     void addGuide("x", event.clientX, event.clientY);
@@ -1595,6 +1808,30 @@ export function V2EditorShell() {
           ? {
               ...current,
               currentPosition: Math.round(current.axis === "x" ? point.x : point.y),
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (dragPathHandle) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      const targetNode = nodes.find((node) => node.id === dragPathHandle.nodeId);
+      if (!targetNode) {
+        return;
+      }
+
+      const localPoint = localShapePointFromCanvas(targetNode, point.x, point.y);
+      setDragPathHandle((current) =>
+        current
+          ? {
+              ...current,
+              currentX: localPoint.x,
+              currentY: localPoint.y,
             }
           : current,
       );
@@ -1769,6 +2006,32 @@ export function V2EditorShell() {
       return;
     }
 
+    if (dragPathHandle) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragPathHandle;
+      setDragPathHandle(null);
+      void applyAndSync([
+        {
+          kind: "set_shape_path",
+          nodeId: currentDrag.nodeId,
+          path: {
+            closed: currentDrag.closed,
+            points: applyDraggedPathHandleToPoints(
+              currentDrag.points,
+              currentDrag.pointIndex,
+              currentDrag.handleKey,
+              currentDrag.currentX,
+              currentDrag.currentY,
+            ),
+          },
+        },
+      ]);
+      return;
+    }
+
     if (dragPathPoint) {
       if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
         canvasRef.current.releasePointerCapture(event.pointerId);
@@ -1776,23 +2039,21 @@ export function V2EditorShell() {
 
       const currentDrag = dragPathPoint;
       setDragPathPoint(null);
-      const nextPoints = structuredClone(currentDrag.points);
-      if (nextPoints[currentDrag.pointIndex]) {
-        nextPoints[currentDrag.pointIndex] = {
-          x: currentDrag.currentX,
-          y: currentDrag.currentY,
-        };
-        void applyAndSync([
-          {
-            kind: "set_shape_path",
-            nodeId: currentDrag.nodeId,
-            path: {
-              closed: currentDrag.closed,
-              points: nextPoints,
-            },
+      void applyAndSync([
+        {
+          kind: "set_shape_path",
+          nodeId: currentDrag.nodeId,
+          path: {
+            closed: currentDrag.closed,
+            points: applyDraggedPathPointToPoints(
+              currentDrag.points,
+              currentDrag.pointIndex,
+              currentDrag.currentX,
+              currentDrag.currentY,
+            ),
           },
-        ]);
-      }
+        },
+      ]);
       return;
     }
 
@@ -1857,6 +2118,7 @@ export function V2EditorShell() {
     setDragPan(null);
     setDragGuide(null);
     setDragPathPoint(null);
+    setDragPathHandle(null);
     setDragMove(null);
     setDragTransform(null);
     setDragMarquee(null);
@@ -2054,7 +2316,11 @@ export function V2EditorShell() {
                   const shapeData = node.kind === "shape" ? node.shape : undefined;
                   const previewPath =
                     shapeData?.primitive === "path"
-                      ? withDraggedPathPoint(node.id, shapeData.path, dragPathPoint)
+                      ? withDraggedPathHandle(
+                          node.id,
+                          withDraggedPathPoint(node.id, shapeData.path, dragPathPoint),
+                          dragPathHandle,
+                        )
                       : shapeData?.path;
                   return (
                     <button
@@ -2125,17 +2391,88 @@ export function V2EditorShell() {
                             </svg>
                             {selected
                               ? (previewPath?.points ?? []).map((point, pointIndex) => (
-                                  <div
-                                    key={`path-point-${node.id}-${pointIndex}`}
-                                    onPointerDown={(event) =>
-                                      handlePathPointPointerDown(event, node, pointIndex)
-                                    }
-                                    style={{
-                                      left: point.x - 5,
-                                      top: point.y - 5,
-                                    }}
-                                    className="absolute h-3 w-3 rounded-full border border-white bg-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.45)]"
-                                  />
+                                  <div key={`path-point-${node.id}-${pointIndex}`}>
+                                    {point.handleIn ? (
+                                      <>
+                                        <div
+                                          className="absolute border-t border-dashed border-[#2859ff]/70"
+                                          style={{
+                                            left: point.x,
+                                            top: point.y,
+                                            width: Math.max(
+                                              Math.hypot(
+                                                point.handleIn.x - point.x,
+                                                point.handleIn.y - point.y,
+                                              ),
+                                              1,
+                                            ),
+                                            transformOrigin: "left center",
+                                            transform: `translateY(-0.5px) rotate(${(Math.atan2(
+                                              point.handleIn.y - point.y,
+                                              point.handleIn.x - point.x,
+                                            ) *
+                                              180) /
+                                              Math.PI}deg)`,
+                                          }}
+                                        />
+                                        <div
+                                          onPointerDown={(event) =>
+                                            handlePathHandlePointerDown(event, node, pointIndex, "handleIn")
+                                          }
+                                          style={{
+                                            left: point.handleIn.x - 4,
+                                            top: point.handleIn.y - 4,
+                                          }}
+                                          className="absolute h-2.5 w-2.5 rounded-full border border-white bg-white shadow-[0_0_0_1px_rgba(40,89,255,0.7)]"
+                                        />
+                                      </>
+                                    ) : null}
+                                    {point.handleOut ? (
+                                      <>
+                                        <div
+                                          className="absolute border-t border-dashed border-[#2859ff]/70"
+                                          style={{
+                                            left: point.x,
+                                            top: point.y,
+                                            width: Math.max(
+                                              Math.hypot(
+                                                point.handleOut.x - point.x,
+                                                point.handleOut.y - point.y,
+                                              ),
+                                              1,
+                                            ),
+                                            transformOrigin: "left center",
+                                            transform: `translateY(-0.5px) rotate(${(Math.atan2(
+                                              point.handleOut.y - point.y,
+                                              point.handleOut.x - point.x,
+                                            ) *
+                                              180) /
+                                              Math.PI}deg)`,
+                                          }}
+                                        />
+                                        <div
+                                          onPointerDown={(event) =>
+                                            handlePathHandlePointerDown(event, node, pointIndex, "handleOut")
+                                          }
+                                          style={{
+                                            left: point.handleOut.x - 4,
+                                            top: point.handleOut.y - 4,
+                                          }}
+                                          className="absolute h-2.5 w-2.5 rounded-full border border-white bg-white shadow-[0_0_0_1px_rgba(40,89,255,0.7)]"
+                                        />
+                                      </>
+                                    ) : null}
+                                    <div
+                                      onPointerDown={(event) =>
+                                        handlePathPointPointerDown(event, node, pointIndex)
+                                      }
+                                      style={{
+                                        left: point.x - 5,
+                                        top: point.y - 5,
+                                      }}
+                                      className="absolute h-3 w-3 rounded-full border border-white bg-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.45)]"
+                                    />
+                                  </div>
                                 ))
                               : null}
                           </div>
@@ -2852,58 +3189,164 @@ export function V2EditorShell() {
                             </label>
                             <div className="space-y-2">
                               {(activeNode.shape.path?.points ?? []).map((point, index, points) => (
-                                <div key={`path-point-${index}`} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-                                  <input
-                                    type="number"
-                                    step={1}
-                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                    value={point.x}
-                                    onChange={(event) => {
-                                      const nextPoints = structuredClone(points);
-                                      nextPoints[index] = {
-                                        ...nextPoints[index]!,
-                                        x: Number(event.target.value) || 0,
-                                      };
-                                      void updateShapePath({
-                                        points: nextPoints,
-                                        closed: activeNode.shape?.path?.closed ?? false,
-                                      });
-                                    }}
-                                  />
-                                  <input
-                                    type="number"
-                                    step={1}
-                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                    value={point.y}
-                                    onChange={(event) => {
-                                      const nextPoints = structuredClone(points);
-                                      nextPoints[index] = {
-                                        ...nextPoints[index]!,
-                                        y: Number(event.target.value) || 0,
-                                      };
-                                      void updateShapePath({
-                                        points: nextPoints,
-                                        closed: activeNode.shape?.path?.closed ?? false,
-                                      });
-                                    }}
-                                  />
-                                  <button
-                                    type="button"
-                                    disabled={points.length <= 2}
-                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-                                    onClick={() => {
-                                      if (points.length <= 2) {
-                                        return;
+                                <div
+                                  key={`path-point-${index}`}
+                                  className="space-y-2 rounded-xl border border-slate-200 bg-white p-3"
+                                >
+                                  <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                                    <input
+                                      type="number"
+                                      step={1}
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                      value={point.x}
+                                      onChange={(event) =>
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          x: Number(event.target.value) || 0,
+                                        }))
                                       }
-                                      const nextPoints = points.filter((_, pointIndex) => pointIndex !== index);
-                                      void updateShapePath({
-                                        points: nextPoints,
-                                        closed: activeNode.shape?.path?.closed ?? false,
-                                      });
-                                    }}
-                                  >
-                                    Remove
-                                  </button>
+                                    />
+                                    <input
+                                      type="number"
+                                      step={1}
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                      value={point.y}
+                                      onChange={(event) =>
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          y: Number(event.target.value) || 0,
+                                        }))
+                                      }
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={points.length <= 2}
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                      onClick={() => {
+                                        if (points.length <= 2) {
+                                          return;
+                                        }
+                                        const nextPoints = points.filter((_, pointIndex) => pointIndex !== index);
+                                        void updateShapePath({
+                                          points: nextPoints,
+                                          closed: activeNode.shape?.path?.closed ?? false,
+                                        });
+                                      }}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() => {
+                                        const curveHandles = createCurveHandles(
+                                          points,
+                                          index,
+                                          activeNode.shape?.path?.closed ?? false,
+                                        );
+                                        if (!curveHandles) {
+                                          return;
+                                        }
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          ...curveHandles,
+                                        }));
+                                      }}
+                                    >
+                                      Curve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() =>
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          handleIn: undefined,
+                                          handleOut: undefined,
+                                        }))
+                                      }
+                                    >
+                                      Corner
+                                    </button>
+                                  </div>
+                                  {point.handleIn || point.handleOut ? (
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <label className="block">
+                                        <div className="text-slate-400">In X</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleIn?.x ?? point.x}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleIn: {
+                                                x: Number(event.target.value) || 0,
+                                                y: current.handleIn?.y ?? current.y,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                      <label className="block">
+                                        <div className="text-slate-400">In Y</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleIn?.y ?? point.y}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleIn: {
+                                                x: current.handleIn?.x ?? current.x,
+                                                y: Number(event.target.value) || 0,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                      <label className="block">
+                                        <div className="text-slate-400">Out X</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleOut?.x ?? point.x}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleOut: {
+                                                x: Number(event.target.value) || 0,
+                                                y: current.handleOut?.y ?? current.y,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                      <label className="block">
+                                        <div className="text-slate-400">Out Y</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleOut?.y ?? point.y}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleOut: {
+                                                x: current.handleOut?.x ?? current.x,
+                                                y: Number(event.target.value) || 0,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                    </div>
+                                  ) : null}
                                 </div>
                               ))}
                             </div>

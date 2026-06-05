@@ -65,9 +65,16 @@ export type TextStylePatch = Partial<Omit<TextNodeData, "content" | "sizing">>;
 
 export type ShapePrimitive = "rect" | "ellipse" | "line" | "path";
 
+export type ShapePathHandle = {
+  x: number;
+  y: number;
+};
+
 export type ShapePathPoint = {
   x: number;
   y: number;
+  handleIn?: ShapePathHandle;
+  handleOut?: ShapePathHandle;
 };
 
 export type ShapePathData = {

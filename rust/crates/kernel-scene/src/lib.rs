@@ -2384,9 +2384,24 @@ mod tests {
                 node_id: "path-demo".to_string(),
                 path: kernel_doc::ShapePathData {
                     points: vec![
-                        kernel_doc::ShapePathPoint { x: 0.0, y: 64.0 },
-                        kernel_doc::ShapePathPoint { x: 40.0, y: 8.0 },
-                        kernel_doc::ShapePathPoint { x: 88.0, y: 40.0 },
+                        kernel_doc::ShapePathPoint {
+                            x: 0.0,
+                            y: 64.0,
+                            handle_in: None,
+                            handle_out: None,
+                        },
+                        kernel_doc::ShapePathPoint {
+                            x: 40.0,
+                            y: 8.0,
+                            handle_in: None,
+                            handle_out: None,
+                        },
+                        kernel_doc::ShapePathPoint {
+                            x: 88.0,
+                            y: 40.0,
+                            handle_in: None,
+                            handle_out: None,
+                        },
                     ],
                     closed: true,
                 },
