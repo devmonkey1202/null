@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { runBooleanMultiple } from "@/advanced/geom/boolean";
+import { anchorsToPathData, ellipseToPath, pathDataToAnchors, pathDataToBounds, pathDataToPolygon, rectToPath, type PathAnchor } from "@/advanced/geom/pathData";
 import type {
   AutoLayoutAlign,
   AutoLayoutData,
@@ -96,6 +98,8 @@ type PathDraft = {
   points: ShapePathData["points"];
   closed: boolean;
 };
+
+type ShapeBooleanOp = "union" | "subtract" | "intersect" | "exclude";
 
 type CanvasSize = {
   width: number;
@@ -260,6 +264,132 @@ function localShapePointFromCanvas(node: SceneNode, canvasX: number, canvasY: nu
   return {
     x: Number(localX.toFixed(3)),
     y: Number(localY.toFixed(3)),
+  };
+}
+
+function nodeCanvasPointFromLocal(node: SceneNode, localX: number, localY: number) {
+  const centerX = node.frame.x + node.frame.w / 2;
+  const centerY = node.frame.y + node.frame.h / 2;
+  const radians = (node.frame.rotation * Math.PI) / 180;
+  const dx = localX - node.frame.w / 2;
+  const dy = localY - node.frame.h / 2;
+
+  return {
+    x: dx * Math.cos(radians) - dy * Math.sin(radians) + centerX,
+    y: dx * Math.sin(radians) + dy * Math.cos(radians) + centerY,
+  };
+}
+
+function localShapePathToAnchors(path: ShapePathData): PathAnchor[] {
+  return path.points.map((point) => ({
+    x: point.x,
+    y: point.y,
+    handle1X: point.handleIn?.x,
+    handle1Y: point.handleIn?.y,
+    handle2X: point.handleOut?.x,
+    handle2Y: point.handleOut?.y,
+  }));
+}
+
+function transformAnchorsToCanvas(node: SceneNode, anchors: PathAnchor[]) {
+  return anchors.map((anchor) => {
+    const origin = nodeCanvasPointFromLocal(node, anchor.x, anchor.y);
+    const handleIn =
+      anchor.handle1X != null && anchor.handle1Y != null
+        ? nodeCanvasPointFromLocal(node, anchor.handle1X, anchor.handle1Y)
+        : null;
+    const handleOut =
+      anchor.handle2X != null && anchor.handle2Y != null
+        ? nodeCanvasPointFromLocal(node, anchor.handle2X, anchor.handle2Y)
+        : null;
+
+    return {
+      x: origin.x,
+      y: origin.y,
+      ...(handleIn
+        ? {
+            handle1X: handleIn.x,
+            handle1Y: handleIn.y,
+          }
+        : {}),
+      ...(handleOut
+        ? {
+            handle2X: handleOut.x,
+            handle2Y: handleOut.y,
+          }
+        : {}),
+    } satisfies PathAnchor;
+  });
+}
+
+function nodeToAbsolutePathD(node: SceneNode) {
+  if (node.kind !== "shape" || !node.shape) {
+    return null;
+  }
+
+  let localPathD: string | null = null;
+  switch (node.shape.primitive) {
+    case "rect":
+      localPathD = rectToPath({ x: 0, y: 0, w: node.frame.w, h: node.frame.h });
+      break;
+    case "ellipse":
+      localPathD = ellipseToPath({ x: 0, y: 0, w: node.frame.w, h: node.frame.h });
+      break;
+    case "line":
+      return null;
+    case "path":
+      if (!node.shape.path) {
+        return null;
+      }
+      localPathD = anchorsToPathData(localShapePathToAnchors(node.shape.path), node.shape.path.closed);
+      break;
+  }
+
+  if (!localPathD) {
+    return null;
+  }
+
+  const { anchors, closed } = pathDataToAnchors(localPathD);
+  const absoluteAnchors = transformAnchorsToCanvas(node, anchors);
+  return anchorsToPathData(absoluteAnchors, closed);
+}
+
+function pathDToLocalShapePath(pathD: string) {
+  const { anchors, closed } = pathDataToAnchors(pathD);
+  const bounds = pathDataToBounds(pathD);
+  const points = anchors.map((anchor) => ({
+    x: Number((anchor.x - bounds.x).toFixed(3)),
+    y: Number((anchor.y - bounds.y).toFixed(3)),
+    ...(anchor.handle1X != null && anchor.handle1Y != null
+      ? {
+          handleIn: roundLocalPoint({
+            x: anchor.handle1X - bounds.x,
+            y: anchor.handle1Y - bounds.y,
+          }),
+        }
+      : {}),
+    ...(anchor.handle2X != null && anchor.handle2Y != null
+      ? {
+          handleOut: roundLocalPoint({
+            x: anchor.handle2X - bounds.x,
+            y: anchor.handle2Y - bounds.y,
+          }),
+        }
+      : {}),
+  }));
+
+  return {
+    frame: {
+      x: Number(bounds.x.toFixed(3)),
+      y: Number(bounds.y.toFixed(3)),
+      w: Number(bounds.w.toFixed(3)),
+      h: Number(bounds.h.toFixed(3)),
+      rotation: 0,
+    } satisfies EditorRect,
+    path: {
+      points,
+      closed,
+    } satisfies ShapePathData,
   };
 }
 
@@ -1025,6 +1155,16 @@ export function V2EditorShell() {
     () => selectedNode(nodes, snapshot?.selection ?? []),
     [nodes, snapshot?.selection],
   );
+  const selectedShapeNodes = useMemo(
+    () =>
+      (snapshot?.selection ?? [])
+        .map((nodeId) => nodes.find((node) => node.id === nodeId) ?? null)
+        .filter(
+          (node): node is SceneNode =>
+            Boolean(node && node.kind === "shape" && node.shape && node.shape.primitive !== "line"),
+        ),
+    [nodes, snapshot?.selection],
+  );
   const editingTextNode = useMemo(
     () =>
       editingTextNodeId
@@ -1365,6 +1505,78 @@ export function V2EditorShell() {
         path,
       },
     ]);
+  }
+
+  async function runShapeBoolean(op: ShapeBooleanOp) {
+    if (!snapshot || selectedShapeNodes.length < 2) {
+      return;
+    }
+
+    const sourcePathDs = selectedShapeNodes
+      .map((node) => nodeToAbsolutePathD(node))
+      .filter((value): value is string => Boolean(value));
+
+    if (sourcePathDs.length < 2) {
+      return;
+    }
+
+    const rings = sourcePathDs
+      .map((pathD) => pathDataToPolygon(pathD))
+      .filter((ring): ring is number[][] => Boolean(ring));
+
+    if (rings.length < 2) {
+      return;
+    }
+
+    const resultPathD = runBooleanMultiple(rings, op);
+    if (!resultPathD) {
+      return;
+    }
+
+    const normalized = pathDToLocalShapePath(resultPathD);
+    const styleSource = selectedShapeNodes[0]?.shape;
+    const sharedParentId = selectedShapeNodes.every(
+      (node) => node.parentId === selectedShapeNodes[0]?.parentId,
+    )
+      ? selectedShapeNodes[0]?.parentId ?? rootFrame?.id ?? null
+      : rootFrame?.id ?? null;
+    const newNodeId = `boolean-${op}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const newNode: SceneNode = {
+      id: newNodeId,
+      kind: "shape",
+      name: `${op[0]!.toUpperCase()}${op.slice(1)} Result`,
+      parentId: sharedParentId,
+      children: undefined,
+      frame: normalized.frame,
+      shape: {
+        primitive: "path",
+        fill: styleSource?.fill ?? "#93c5fd",
+        strokeColor: styleSource?.strokeColor ?? "#1d4ed8",
+        strokeWidth: styleSource?.strokeWidth ?? 2,
+        cornerRadius: 0,
+        opacity: styleSource?.opacity ?? 1,
+        path: normalized.path,
+      },
+    };
+
+    const commands: EditorCommand[] = [
+      {
+        kind: "create_node",
+        pageId: CANVAS_PAGE_ID,
+        node: newNode,
+      },
+      ...selectedShapeNodes.map((node) => ({
+        kind: "delete_node" as const,
+        nodeId: node.id,
+      })),
+      {
+        kind: "select_nodes",
+        nodeIds: [newNodeId],
+      },
+    ];
+
+    await applyAndSync(commands);
   }
 
   async function updateShapePathPoint(
@@ -2178,6 +2390,38 @@ export function V2EditorShell() {
           >
             Path
           </button>
+          {selectedShapeNodes.length >= 2 ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("union")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Union
+              </button>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("subtract")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Subtract
+              </button>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("intersect")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Intersect
+              </button>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("exclude")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Exclude
+              </button>
+            </>
+          ) : null}
           {activeTool === "path" ? (
             <>
               <label className="flex items-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-xs text-slate-600">
