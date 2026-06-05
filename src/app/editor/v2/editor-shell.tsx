@@ -77,6 +77,13 @@ type DragPathPoint = {
   currentY: number;
 };
 
+type EditorTool = "select" | "path";
+
+type PathDraft = {
+  points: ShapePathData["points"];
+  closed: boolean;
+};
+
 type CanvasSize = {
   width: number;
   height: number;
@@ -714,6 +721,50 @@ function createGuideId() {
   return `guide-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function createDraftPathNode(path: PathDraft, rootFrame: SceneNode | null): SceneNode | null {
+  if (path.points.length < 2) {
+    return null;
+  }
+
+  const minX = Math.min(...path.points.map((point) => point.x));
+  const minY = Math.min(...path.points.map((point) => point.y));
+  const maxX = Math.max(...path.points.map((point) => point.x));
+  const maxY = Math.max(...path.points.map((point) => point.y));
+  const width = Math.max(maxX - minX, 1);
+  const height = Math.max(maxY - minY, 1);
+
+  return {
+    id: `path-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: "shape",
+    name: "Path",
+    parentId: rootFrame?.id ?? null,
+    children: undefined,
+    frame: {
+      x: minX,
+      y: minY,
+      w: width,
+      h: height,
+      rotation: 0,
+    },
+    constraints: { horizontal: "min", vertical: "min" },
+    shape: {
+      primitive: "path",
+      fill: "#93c5fd",
+      strokeColor: "#1d4ed8",
+      strokeWidth: 3,
+      cornerRadius: 0,
+      opacity: 0.9,
+      path: {
+        closed: path.closed,
+        points: path.points.map((point) => ({
+          x: Number((point.x - minX).toFixed(3)),
+          y: Number((point.y - minY).toFixed(3)),
+        })),
+      },
+    },
+  };
+}
+
 export function V2EditorShell() {
   const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
@@ -727,6 +778,8 @@ export function V2EditorShell() {
   const [dragTransform, setDragTransform] = useState<DragTransform | null>(null);
   const [dragGuide, setDragGuide] = useState<DragGuide | null>(null);
   const [dragPathPoint, setDragPathPoint] = useState<DragPathPoint | null>(null);
+  const [activeTool, setActiveTool] = useState<EditorTool>("select");
+  const [pathDraft, setPathDraft] = useState<PathDraft | null>(null);
   const [spacePressed, setSpacePressed] = useState(false);
   const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
@@ -1181,6 +1234,39 @@ export function V2EditorShell() {
     await applyAndSync([{ kind: "redo" }]);
   }, [syncBridgeState]);
 
+  const finishPathDraft = useCallback(async () => {
+    if (!pathDraft) {
+      return;
+    }
+
+    const node = createDraftPathNode(pathDraft, rootFrame);
+    if (!node) {
+      setPathDraft(null);
+      setActiveTool("select");
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "create_node",
+        pageId: CANVAS_PAGE_ID,
+        node,
+      },
+      {
+        kind: "select_nodes",
+        nodeIds: [node.id],
+      },
+    ]);
+
+    setPathDraft(null);
+    setActiveTool("select");
+  }, [applyAndSync, pathDraft, rootFrame]);
+
+  const cancelPathDraft = useCallback(() => {
+    setPathDraft(null);
+    setActiveTool("select");
+  }, []);
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
@@ -1191,6 +1277,20 @@ export function V2EditorShell() {
           target.isContentEditable)
       ) {
         return;
+      }
+
+      if (activeTool === "path") {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          cancelPathDraft();
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void finishPathDraft();
+          return;
+        }
       }
 
       const isMeta = event.metaKey || event.ctrlKey;
@@ -1246,7 +1346,17 @@ export function V2EditorShell() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [applyAndSync, runDeleteSelection, runRedo, runUndo, selectedGuideId, snapshot?.selection.length]);
+  }, [
+    activeTool,
+    applyAndSync,
+    cancelPathDraft,
+    finishPathDraft,
+    runDeleteSelection,
+    runRedo,
+    runUndo,
+    selectedGuideId,
+    snapshot?.selection.length,
+  ]);
 
   function toCanvasPointFromClient(clientX: number, clientY: number) {
     const bounds = canvasRef.current?.getBoundingClientRect();
@@ -1442,6 +1552,14 @@ export function V2EditorShell() {
 
     const point = toCanvasPoint(event);
     if (!point) {
+      return;
+    }
+
+    if (activeTool === "path") {
+      setPathDraft((current) => ({
+        closed: current?.closed ?? false,
+        points: [...(current?.points ?? []), { x: point.x, y: point.y }],
+      }));
       return;
     }
 
@@ -1775,6 +1893,70 @@ export function V2EditorShell() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => {
+              setActiveTool("select");
+              setPathDraft(null);
+            }}
+            className={`rounded-full border px-3 py-2 text-sm font-medium ${
+              activeTool === "select"
+                ? "border-slate-950 bg-slate-950 text-white"
+                : "border-slate-200 text-slate-700"
+            }`}
+          >
+            Select
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTool("path")}
+            className={`rounded-full border px-3 py-2 text-sm font-medium ${
+              activeTool === "path"
+                ? "border-[#2859ff] bg-[#2859ff] text-white"
+                : "border-slate-200 text-slate-700"
+            }`}
+          >
+            Path
+          </button>
+          {activeTool === "path" ? (
+            <>
+              <label className="flex items-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={pathDraft?.closed ?? false}
+                  onChange={(event) =>
+                    setPathDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            closed: event.target.checked,
+                          }
+                        : {
+                            points: [],
+                            closed: event.target.checked,
+                          },
+                    )
+                  }
+                />
+                Closed
+              </label>
+              <button
+                type="button"
+                onClick={() => void finishPathDraft()}
+                disabled={(pathDraft?.points.length ?? 0) < 2}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Finish
+              </button>
+              <button
+                type="button"
+                onClick={cancelPathDraft}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Cancel
+              </button>
+            </>
+          ) : null}
+          <button
+            type="button"
             onClick={() => void zoomCanvas(0.9)}
             className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
           >
@@ -1984,6 +2166,34 @@ export function V2EditorShell() {
                     </button>
                   );
                 })}
+
+                {pathDraft && pathDraft.points.length > 0 ? (
+                  <div className="pointer-events-none absolute inset-0">
+                    <svg className="h-full w-full overflow-visible">
+                      <path
+                        d={shapePathToSvgD({
+                          closed: pathDraft.closed,
+                          points: pathDraft.points,
+                        })}
+                        fill={pathDraft.closed ? "rgba(147,197,253,0.24)" : "none"}
+                        stroke="#2859ff"
+                        strokeWidth={2}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                    {pathDraft.points.map((point, index) => (
+                      <div
+                        key={`draft-path-point-${index}`}
+                        style={{
+                          left: point.x - 4,
+                          top: point.y - 4,
+                        }}
+                        className="absolute h-2.5 w-2.5 rounded-full border border-white bg-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.45)]"
+                      />
+                    ))}
+                  </div>
+                ) : null}
 
                 {editingTextNode && editingTextNode.text ? (
                   <textarea
