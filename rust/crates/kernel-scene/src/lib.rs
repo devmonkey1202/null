@@ -2,7 +2,7 @@ use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, EditorCommand,
     EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis, HorizontalConstraint,
-    SceneDoc, SceneGuide, SceneNode, SelectionSetMode, ShapeStylePatch,
+    SceneDoc, SceneGuide, SceneNode, SelectionSetMode, ShapePathData, ShapeStylePatch,
     TextSizingMode, TextStylePatch, TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::collections::HashSet;
@@ -197,6 +197,20 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_shape_style".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetShapePath { node_id, path } => {
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    ensure_shape_node(node)?;
+                    if let Some(shape) = &mut node.shape {
+                        apply_shape_path(shape, path);
+                    }
+                }
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_shape_path".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetNodeAutoLayout { node_id, layout } => {
@@ -896,6 +910,11 @@ fn apply_shape_style_patch(shape: &mut kernel_doc::ShapeNodeData, style: ShapeSt
     if let Some(opacity) = style.opacity {
         shape.opacity = opacity.clamp(0.0, 1.0);
     }
+}
+
+fn apply_shape_path(shape: &mut kernel_doc::ShapeNodeData, path: ShapePathData) {
+    shape.primitive = kernel_doc::ShapePrimitive::Path;
+    shape.path = Some(path);
 }
 
 fn normalize_text_frame(node: &mut SceneNode) {
@@ -1948,6 +1967,7 @@ mod tests {
                 stroke_width: 1.0,
                 corner_radius: 0.0,
                 opacity: 1.0,
+                path: None,
             }),
         });
         doc.pages[0].nodes[1].children = Some(vec!["leaf".to_string()]);
@@ -1991,6 +2011,7 @@ mod tests {
                 stroke_width: 1.0,
                 corner_radius: 0.0,
                 opacity: 1.0,
+                path: None,
             }),
         });
 
@@ -2324,5 +2345,63 @@ mod tests {
         let text = node.text.as_ref().expect("text data exists");
         assert_eq!(text.sizing, TextSizingMode::Fixed);
         assert_eq!(node.frame.h, 20.0);
+    }
+
+    #[test]
+    fn set_shape_path_updates_shape_node() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes.push(SceneNode {
+            id: "path-demo".to_string(),
+            kind: SceneNodeKind::Shape,
+            name: "Path Demo".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 12.0,
+                y: 12.0,
+                w: 120.0,
+                h: 80.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Rect,
+                fill: "#93c5fd".to_string(),
+                stroke_color: "#1d4ed8".to_string(),
+                stroke_width: 2.0,
+                corner_radius: 0.0,
+                opacity: 1.0,
+                path: None,
+            }),
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetShapePath {
+                node_id: "path-demo".to_string(),
+                path: kernel_doc::ShapePathData {
+                    points: vec![
+                        kernel_doc::ShapePathPoint { x: 0.0, y: 64.0 },
+                        kernel_doc::ShapePathPoint { x: 40.0, y: 8.0 },
+                        kernel_doc::ShapePathPoint { x: 88.0, y: 40.0 },
+                    ],
+                    closed: true,
+                },
+            }],
+        )
+        .expect("set shape path should succeed");
+
+        let node = query_node(&state.doc, "path-demo").expect("node exists");
+        let shape = node.shape.as_ref().expect("shape data exists");
+        assert_eq!(shape.primitive, ShapePrimitive::Path);
+        assert_eq!(shape.path.as_ref().expect("path exists").points.len(), 3);
+        assert!(state
+            .validation()
+            .issues
+            .iter()
+            .all(|issue| issue.code != "scene_shape.path.points.invalid"));
     }
 }

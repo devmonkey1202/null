@@ -18,7 +18,7 @@ export const sampleSceneDoc: SceneDoc = {
           kind: "frame",
           name: "Root Frame",
           parentId: null,
-          children: ["hero-frame", "sidebar-frame"],
+          children: ["shape-demo", "path-demo", "hero-frame", "sidebar-frame"],
           frame: { x: 0, y: 0, w: 1440, h: 960, rotation: 0 },
         },
         {
@@ -35,6 +35,32 @@ export const sampleSceneDoc: SceneDoc = {
             strokeWidth: 2,
             cornerRadius: 0,
             opacity: 0.95,
+          },
+        },
+        {
+          id: "path-demo",
+          kind: "shape",
+          name: "Path Demo",
+          parentId: "root-frame",
+          frame: { x: 120, y: 280, w: 180, h: 120, rotation: 0 },
+          constraints: { horizontal: "min", vertical: "min" },
+          shape: {
+            primitive: "path",
+            fill: "#93c5fd",
+            strokeColor: "#1d4ed8",
+            strokeWidth: 3,
+            cornerRadius: 0,
+            opacity: 0.9,
+            path: {
+              closed: true,
+              points: [
+                { x: 0, y: 96 },
+                { x: 48, y: 12 },
+                { x: 108, y: 60 },
+                { x: 168, y: 0 },
+                { x: 180, y: 108 },
+              ],
+            },
           },
         },
         {

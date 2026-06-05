@@ -190,6 +190,20 @@ pub enum ShapePrimitive {
     Rect,
     Ellipse,
     Line,
+    Path,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShapePathPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShapePathData {
+    pub points: Vec<ShapePathPoint>,
+    pub closed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -201,6 +215,8 @@ pub struct ShapeNodeData {
     pub stroke_width: f32,
     pub corner_radius: f32,
     pub opacity: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ShapePathData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -300,6 +316,11 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         style: ShapeStylePatch,
+    },
+    SetShapePath {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        path: ShapePathData,
     },
     SetNodeAutoLayout {
         #[serde(rename = "nodeId")]
@@ -654,6 +675,41 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
                                 Some(node.id.clone()),
                             ));
                         }
+
+                        if matches!(shape.primitive, ShapePrimitive::Path) {
+                            match &shape.path {
+                                Some(path) => {
+                                    if path.points.len() < 2 {
+                                        issues.push(issue(
+                                            format!("shape-path-points-invalid-{}", node.id),
+                                            ValidationSeverity::Error,
+                                            "scene_shape.path.points.invalid",
+                                            "Path shape must contain at least two points.",
+                                            Some(node.id.clone()),
+                                        ));
+                                    }
+
+                                    if path.closed && path.points.len() < 3 {
+                                        issues.push(issue(
+                                            format!("shape-path-closed-invalid-{}", node.id),
+                                            ValidationSeverity::Error,
+                                            "scene_shape.path.closed.invalid",
+                                            "Closed path shape must contain at least three points.",
+                                            Some(node.id.clone()),
+                                        ));
+                                    }
+                                }
+                                None => {
+                                    issues.push(issue(
+                                        format!("shape-path-missing-{}", node.id),
+                                        ValidationSeverity::Error,
+                                        "scene_shape.path.missing",
+                                        "Path shape is missing path data.",
+                                        Some(node.id.clone()),
+                                    ));
+                                }
+                            }
+                        }
                     }
                     None => {
                         issues.push(issue(
@@ -797,5 +853,46 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "scene_node.frame.invalid_size")
         );
+    }
+
+    #[test]
+    fn validation_reports_invalid_path_shape() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes.push(SceneNode {
+            id: "path-1".to_string(),
+            kind: SceneNodeKind::Shape,
+            name: "Path".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 12.0,
+                y: 12.0,
+                w: 80.0,
+                h: 60.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Path,
+                fill: "#93c5fd".to_string(),
+                stroke_color: "#1d4ed8".to_string(),
+                stroke_width: 2.0,
+                corner_radius: 0.0,
+                opacity: 1.0,
+                path: Some(ShapePathData {
+                    points: vec![ShapePathPoint { x: 0.0, y: 0.0 }],
+                    closed: false,
+                }),
+            }),
+        });
+
+        let report = validate_scene_doc(&doc);
+
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "scene_shape.path.points.invalid"));
     }
 }

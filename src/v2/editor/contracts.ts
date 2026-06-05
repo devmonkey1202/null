@@ -63,7 +63,17 @@ export type TextNodeData = {
 
 export type TextStylePatch = Partial<Omit<TextNodeData, "content" | "sizing">>;
 
-export type ShapePrimitive = "rect" | "ellipse" | "line";
+export type ShapePrimitive = "rect" | "ellipse" | "line" | "path";
+
+export type ShapePathPoint = {
+  x: number;
+  y: number;
+};
+
+export type ShapePathData = {
+  points: ShapePathPoint[];
+  closed: boolean;
+};
 
 export type ShapeNodeData = {
   primitive: ShapePrimitive;
@@ -72,9 +82,10 @@ export type ShapeNodeData = {
   strokeWidth: number;
   cornerRadius: number;
   opacity: number;
+  path?: ShapePathData;
 };
 
-export type ShapeStylePatch = Partial<Omit<ShapeNodeData, "primitive">>;
+export type ShapeStylePatch = Partial<Omit<ShapeNodeData, "primitive" | "path">>;
 
 export type SceneGuide = {
   id: string;
@@ -140,6 +151,7 @@ export type EditorCommand =
   | { kind: "set_text_sizing"; nodeId: string; sizing: TextSizingMode }
   | { kind: "set_shape_primitive"; nodeId: string; primitive: ShapePrimitive }
   | { kind: "set_shape_style"; nodeId: string; style: ShapeStylePatch }
+  | { kind: "set_shape_path"; nodeId: string; path: ShapePathData }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | {
       kind: "set_node_constraints";

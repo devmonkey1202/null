@@ -20,6 +20,7 @@ import {
   type SelectionSetMode,
   type SnapGuide,
   type ShapeNodeData,
+  type ShapePathData,
   type ShapeStylePatch,
   type TextNodeData,
   type TextStylePatch,
@@ -125,6 +126,38 @@ function buildValidation(document: SceneDoc): ValidationReport {
             message: "Shape opacity must be between 0 and 1.",
             targetId: node.id,
           });
+        }
+
+        if (node.shape.primitive === "path") {
+          if (!node.shape.path) {
+            issues.push({
+              id: `shape-path-missing-${node.id}`,
+              severity: "error" as const,
+              code: "scene_shape.path.missing",
+              message: "Path shape is missing path data.",
+              targetId: node.id,
+            });
+          } else {
+            if (node.shape.path.points.length < 2) {
+              issues.push({
+                id: `shape-path-points-invalid-${node.id}`,
+                severity: "error" as const,
+                code: "scene_shape.path.points.invalid",
+                message: "Path shape must contain at least two points.",
+                targetId: node.id,
+              });
+            }
+
+            if (node.shape.path.closed && node.shape.path.points.length < 3) {
+              issues.push({
+                id: `shape-path-closed-invalid-${node.id}`,
+                severity: "error" as const,
+                code: "scene_shape.path.closed.invalid",
+                message: "Closed path shape must contain at least three points.",
+                targetId: node.id,
+              });
+            }
+          }
         }
       }
     }
@@ -524,6 +557,14 @@ function applyShapeStylePatch(shape: ShapeNodeData, style: ShapeStylePatch): Sha
     ...(style.strokeWidth !== undefined ? { strokeWidth: Math.max(style.strokeWidth, 0) } : {}),
     ...(style.cornerRadius !== undefined ? { cornerRadius: Math.max(style.cornerRadius, 0) } : {}),
     ...(style.opacity !== undefined ? { opacity: Math.min(Math.max(style.opacity, 0), 1) } : {}),
+  };
+}
+
+function applyShapePath(shape: ShapeNodeData, path: ShapePathData): ShapeNodeData {
+  return {
+    ...shape,
+    primitive: "path",
+    path: structuredClone(path),
   };
 }
 
@@ -1217,6 +1258,19 @@ export class NoopEditorBridge implements EditorBridge {
             pages: updateNode(this.document.pages, command.nodeId, (node) => ({
               ...node,
               shape: node.shape ? applyShapeStylePatch(node.shape, command.style) : node.shape,
+            })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_shape_path":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              shape: node.shape ? applyShapePath(node.shape, command.path) : node.shape,
             })),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           });

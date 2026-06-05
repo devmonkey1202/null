@@ -20,6 +20,7 @@ import type {
   TextSizingMode,
   TextStylePatch,
   ShapePrimitive,
+  ShapePathData,
   ShapeStylePatch,
   TransformHandle,
   ValidationReport,
@@ -84,7 +85,7 @@ const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "ver
 const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", "stretch"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
-const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line"];
+const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line", "path"];
 const EMPTY_MOVE_SNAP_PREVIEW: MoveSnapPreview = { deltaX: 0, deltaY: 0, guides: [] };
 const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
   bounds: null,
@@ -92,6 +93,35 @@ const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
   deltaY: 0,
   guides: [],
 };
+
+function createDefaultShapePath(frame: EditorRect): ShapePathData {
+  return {
+    closed: true,
+    points: [
+      { x: 0, y: Math.max(frame.h - 16, 0) },
+      { x: Math.max(frame.w * 0.28, 1), y: 12 },
+      { x: Math.max(frame.w * 0.6, 1), y: Math.max(frame.h * 0.55, 1) },
+      { x: Math.max(frame.w - 12, 1), y: 0 },
+      { x: frame.w, y: Math.max(frame.h - 8, 1) },
+    ],
+  };
+}
+
+function shapePathToSvgD(path: ShapePathData | undefined) {
+  if (!path || path.points.length === 0) {
+    return "";
+  }
+
+  const [first, ...rest] = path.points;
+  const segments = [`M ${first.x} ${first.y}`];
+  for (const point of rest) {
+    segments.push(`L ${point.x} ${point.y}`);
+  }
+  if (path.closed) {
+    segments.push("Z");
+  }
+  return segments.join(" ");
+}
 
 function supportsAutoLayout(node: SceneNode | null) {
   return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
@@ -1019,13 +1049,25 @@ export function V2EditorShell() {
       return;
     }
 
-    await applyAndSync([
+    const commands: EditorCommand[] = [
       {
         kind: "set_shape_primitive",
         nodeId: activeNode.id,
         primitive,
       },
-    ]);
+    ];
+
+    if (primitive === "path") {
+      commands.push({
+        kind: "set_shape_path",
+        nodeId: activeNode.id,
+        path: activeNode.shape?.path
+          ? structuredClone(activeNode.shape.path)
+          : createDefaultShapePath(activeNode.frame),
+      });
+    }
+
+    await applyAndSync(commands);
   }
 
   async function updateShapeStyle(style: ShapeStylePatch) {
@@ -1038,6 +1080,20 @@ export function V2EditorShell() {
         kind: "set_shape_style",
         nodeId: activeNode.id,
         style,
+      },
+    ]);
+  }
+
+  async function updateShapePath(path: ShapePathData) {
+    if (!activeNode || activeNode.kind !== "shape") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_shape_path",
+        nodeId: activeNode.id,
+        path,
       },
     ]);
   }
@@ -1730,6 +1786,21 @@ export function V2EditorShell() {
                               }}
                             />
                           </div>
+                        ) : shapeData.primitive === "path" ? (
+                          <svg
+                            className="h-full w-full overflow-visible"
+                            viewBox={`0 0 ${Math.max(node.frame.w, 1)} ${Math.max(node.frame.h, 1)}`}
+                          >
+                            <path
+                              d={shapePathToSvgD(shapeData.path)}
+                              fill={shapeData.path?.closed ? shapeData.fill : "none"}
+                              stroke={shapeData.strokeColor}
+                              strokeWidth={Math.max(shapeData.strokeWidth, 1)}
+                              opacity={shapeData.opacity}
+                              strokeLinejoin="round"
+                              strokeLinecap="round"
+                            />
+                          </svg>
                         ) : (
                           <div
                             className="h-full w-full"
@@ -2398,6 +2469,101 @@ export function V2EditorShell() {
                             />
                           </label>
                         </div>
+                        {activeNode.shape?.primitive === "path" ? (
+                          <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                            <label className="flex items-center justify-between text-sm font-medium text-slate-700">
+                              <span>Closed path</span>
+                              <input
+                                type="checkbox"
+                                checked={activeNode.shape.path?.closed ?? false}
+                                onChange={(event) =>
+                                  void updateShapePath({
+                                    points: structuredClone(activeNode.shape?.path?.points ?? []),
+                                    closed: event.target.checked,
+                                  })
+                                }
+                              />
+                            </label>
+                            <div className="space-y-2">
+                              {(activeNode.shape.path?.points ?? []).map((point, index, points) => (
+                                <div key={`path-point-${index}`} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                                  <input
+                                    type="number"
+                                    step={1}
+                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                    value={point.x}
+                                    onChange={(event) => {
+                                      const nextPoints = structuredClone(points);
+                                      nextPoints[index] = {
+                                        ...nextPoints[index]!,
+                                        x: Number(event.target.value) || 0,
+                                      };
+                                      void updateShapePath({
+                                        points: nextPoints,
+                                        closed: activeNode.shape?.path?.closed ?? false,
+                                      });
+                                    }}
+                                  />
+                                  <input
+                                    type="number"
+                                    step={1}
+                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                    value={point.y}
+                                    onChange={(event) => {
+                                      const nextPoints = structuredClone(points);
+                                      nextPoints[index] = {
+                                        ...nextPoints[index]!,
+                                        y: Number(event.target.value) || 0,
+                                      };
+                                      void updateShapePath({
+                                        points: nextPoints,
+                                        closed: activeNode.shape?.path?.closed ?? false,
+                                      });
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={points.length <= 2}
+                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                    onClick={() => {
+                                      if (points.length <= 2) {
+                                        return;
+                                      }
+                                      const nextPoints = points.filter((_, pointIndex) => pointIndex !== index);
+                                      void updateShapePath({
+                                        points: nextPoints,
+                                        closed: activeNode.shape?.path?.closed ?? false,
+                                      });
+                                    }}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300"
+                              onClick={() => {
+                                const points = structuredClone(activeNode.shape?.path?.points ?? []);
+                                const lastPoint = points[points.length - 1] ?? {
+                                  x: Math.round(activeNode.frame.w / 2),
+                                  y: Math.round(activeNode.frame.h / 2),
+                                };
+                                points.push({
+                                  x: Math.min(lastPoint.x + 24, activeNode.frame.w),
+                                  y: Math.min(lastPoint.y + 24, activeNode.frame.h),
+                                });
+                                void updateShapePath({
+                                  points,
+                                  closed: activeNode.shape?.path?.closed ?? false,
+                                });
+                              }}
+                            >
+                              Add point
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </>
