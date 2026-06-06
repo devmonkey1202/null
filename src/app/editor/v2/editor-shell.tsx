@@ -1730,6 +1730,23 @@ export function V2EditorShell() {
     await applyAndSync([{ kind: "redo" }]);
   }, [syncBridgeState]);
 
+  const runNudgeSelection = useCallback(
+    async (deltaX: number, deltaY: number) => {
+      if (!snapshot?.selection.length) {
+        return;
+      }
+
+      await applyAndSync([
+        {
+          kind: "move_selection",
+          deltaX,
+          deltaY,
+        },
+      ]);
+    },
+    [snapshot?.selection, syncBridgeState],
+  );
+
   const finishPathDraft = useCallback(async () => {
     if (!pathDraft) {
       return;
@@ -1807,6 +1824,34 @@ export function V2EditorShell() {
         return;
       }
 
+      if (
+        event.key === "ArrowLeft" ||
+        event.key === "ArrowRight" ||
+        event.key === "ArrowUp" ||
+        event.key === "ArrowDown"
+      ) {
+        if (snapshot?.selection.length) {
+          event.preventDefault();
+          const step = event.shiftKey ? 10 : 1;
+          if (event.key === "ArrowLeft") {
+            void runNudgeSelection(-step, 0);
+            return;
+          }
+          if (event.key === "ArrowRight") {
+            void runNudgeSelection(step, 0);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            void runNudgeSelection(0, -step);
+            return;
+          }
+          if (event.key === "ArrowDown") {
+            void runNudgeSelection(0, step);
+            return;
+          }
+        }
+      }
+
       if (!isMeta) {
         return;
       }
@@ -1848,6 +1893,7 @@ export function V2EditorShell() {
     cancelPathDraft,
     finishPathDraft,
     runDeleteSelection,
+    runNudgeSelection,
     runRedo,
     runUndo,
     selectedGuideId,
