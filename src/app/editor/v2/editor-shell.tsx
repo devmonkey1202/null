@@ -1078,6 +1078,7 @@ export function V2EditorShell() {
   const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   const [editingTextNodeId, setEditingTextNodeId] = useState<string | null>(null);
   const [editingTextDraft, setEditingTextDraft] = useState("");
+  const [editingTextComposing, setEditingTextComposing] = useState(false);
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
   const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -1398,6 +1399,7 @@ export function V2EditorShell() {
     }
 
     setSelectedGuideId(null);
+    setEditingTextComposing(false);
     setEditingTextNodeId(node.id);
     setEditingTextDraft(node.text?.content ?? "");
   }
@@ -1406,12 +1408,14 @@ export function V2EditorShell() {
     if (!editingTextNode) {
       setEditingTextNodeId(null);
       setEditingTextDraft("");
+      setEditingTextComposing(false);
       return;
     }
 
     const nextContent = editingTextDraft;
     setEditingTextNodeId(null);
     setEditingTextDraft("");
+    setEditingTextComposing(false);
 
     if (nextContent === (editingTextNode.text?.content ?? "")) {
       return;
@@ -1423,6 +1427,7 @@ export function V2EditorShell() {
   function cancelInlineTextEdit() {
     setEditingTextNodeId(null);
     setEditingTextDraft("");
+    setEditingTextComposing(false);
   }
 
   async function updateTextStyle(style: TextStylePatch) {
@@ -2781,9 +2786,15 @@ export function V2EditorShell() {
                     ref={textEditorRef}
                     value={editingTextDraft}
                     onChange={(event) => setEditingTextDraft(event.target.value)}
+                    onCompositionStart={() => setEditingTextComposing(true)}
+                    onCompositionEnd={() => setEditingTextComposing(false)}
                     onBlur={() => void commitInlineTextEdit()}
                     onKeyDown={(event) => {
                       event.stopPropagation();
+                      if (editingTextComposing || event.nativeEvent.isComposing) {
+                        return;
+                      }
+
                       if (event.key === "Escape") {
                         event.preventDefault();
                         cancelInlineTextEdit();
