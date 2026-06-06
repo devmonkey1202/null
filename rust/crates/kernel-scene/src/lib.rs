@@ -1,10 +1,12 @@
 use core_error::CoreError;
 use kernel_doc::{
-    validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, EditorCommand,
+    validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, ComponentNodeData, EditorCommand,
     EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis, HorizontalConstraint,
-    SceneDoc, SceneGuide, SceneNode, SelectionSetMode, ShapePathData, ShapeStylePatch,
-    TextSizingMode, TextStylePatch, TransformHandleKind, ValidationReport, VerticalConstraint,
+    InstanceNodeData, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
+    ShapePathData, ShapeStylePatch, TextSizingMode, TextStylePatch, TransformHandleKind,
+    ValidationReport, VerticalConstraint,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +213,68 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_shape_path".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::PromoteToComponent {
+                node_id,
+                component_key,
+            } => {
+                promote_to_component(&mut state.doc, &node_id, component_key)?;
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("promote_to_component".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetComponentKey {
+                node_id,
+                component_key,
+            } => {
+                sync_component_key(&mut state.doc, &node_id, &component_key)?;
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_component_key".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::CreateInstanceFromComponent {
+                page_id,
+                source_node_id,
+                offset_x,
+                offset_y,
+            } => {
+                let created_ids = create_instance_from_component(
+                    &mut state.doc,
+                    &page_id,
+                    &source_node_id,
+                    offset_x.unwrap_or(48.0),
+                    offset_y.unwrap_or(48.0),
+                )?;
+                state.selection = created_ids
+                    .first()
+                    .cloned()
+                    .into_iter()
+                    .collect();
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("create_instance_from_component".to_string());
+                dirty_node_ids.extend(created_ids);
+            }
+            EditorCommand::RefreshInstance { node_id } => {
+                let refreshed_ids = refresh_instance_from_source(&mut state.doc, &node_id)?;
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("refresh_instance".to_string());
+                dirty_node_ids.extend(refreshed_ids);
+            }
+            EditorCommand::DetachInstance { node_id } => {
+                detach_instance(&mut state.doc, &node_id)?;
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("detach_instance".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetNodeAutoLayout { node_id, layout } => {
@@ -827,6 +891,394 @@ fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreErr
         "scene.node.not_found",
         format!("Node '{}' was not found.", node_id),
     ))
+}
+
+fn promote_to_component(
+    doc: &mut SceneDoc,
+    node_id: &str,
+    component_key: Option<String>,
+) -> Result<(), CoreError> {
+    let node = find_node_mut(doc, node_id)?;
+    match node.kind {
+        SceneNodeKind::Frame | SceneNodeKind::Group | SceneNodeKind::Component => {}
+        _ => {
+            return Err(CoreError::new(
+                "scene.component.invalid_target",
+                format!("Node '{}' cannot be promoted to a component.", node_id),
+            ))
+        }
+    }
+
+    let next_key = component_key.unwrap_or_else(|| format!("component-{}", node.id));
+    node.kind = SceneNodeKind::Component;
+    node.component = Some(ComponentNodeData {
+        component_key: next_key,
+    });
+    node.instance = None;
+    Ok(())
+}
+
+fn sync_component_key(doc: &mut SceneDoc, node_id: &str, component_key: &str) -> Result<(), CoreError> {
+    let next_key = component_key.trim();
+    if next_key.is_empty() {
+        return Err(CoreError::new(
+            "scene.component.key_invalid",
+            "Component key cannot be empty.",
+        ));
+    }
+
+    {
+        let node = find_node_mut(doc, node_id)?;
+        if !matches!(node.kind, SceneNodeKind::Component) {
+            return Err(CoreError::new(
+                "scene.component.key_invalid_target",
+                format!("Node '{}' is not a component.", node_id),
+            ));
+        }
+        if let Some(component) = &mut node.component {
+            component.component_key = next_key.to_string();
+        }
+    }
+
+    for page in &mut doc.pages {
+        for node in &mut page.nodes {
+            if let Some(instance) = &mut node.instance {
+                if instance.source_component_id == node_id {
+                    instance.source_component_key = next_key.to_string();
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn create_instance_from_component(
+    doc: &mut SceneDoc,
+    page_id: &str,
+    source_node_id: &str,
+    offset_x: f32,
+    offset_y: f32,
+) -> Result<Vec<String>, CoreError> {
+    let source_page_index = doc
+        .pages
+        .iter()
+        .position(|page| page.nodes.iter().any(|node| node.id == source_node_id))
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.component.source_missing",
+                format!("Component '{}' was not found.", source_node_id),
+            )
+        })?;
+
+    let source_page_nodes = doc.pages[source_page_index].nodes.clone();
+    let source_root = source_page_nodes
+        .iter()
+        .find(|node| node.id == source_node_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.component.source_missing",
+                format!("Component '{}' was not found.", source_node_id),
+            )
+        })?;
+
+    if !matches!(source_root.kind, SceneNodeKind::Component) {
+        return Err(CoreError::new(
+            "scene.component.source_invalid",
+            format!("Node '{}' is not a component.", source_node_id),
+        ));
+    }
+
+    let component_key = source_root
+        .component
+        .as_ref()
+        .map(|component| component.component_key.clone())
+        .unwrap_or_else(|| format!("component-{}", source_root.id));
+
+    let subtree_ids = collect_subtree_ids(source_page_nodes.as_slice(), source_node_id)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+
+    let id_map = subtree_ids
+        .iter()
+        .enumerate()
+        .map(|(index, old_id)| {
+            (
+                old_id.clone(),
+                format!("instance-{}-{}-{}", source_node_id, nonce, index),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let target_page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
+        CoreError::new(
+            "scene.page.not_found",
+            format!("Page '{}' was not found.", page_id),
+        )
+    })?;
+
+    let fallback_parent_id = Some(target_page.root_id.clone());
+    let target_parent_id = source_root
+        .parent_id
+        .as_ref()
+        .filter(|parent_id| target_page.nodes.iter().any(|node| node.id == **parent_id))
+        .cloned()
+        .or(fallback_parent_id);
+
+    let mut created_nodes = Vec::with_capacity(subtree_ids.len());
+    for old_id in &subtree_ids {
+        let original = source_page_nodes
+            .iter()
+            .find(|node| node.id == *old_id)
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", old_id),
+                )
+            })?;
+
+        let mut clone = original.clone();
+        clone.id = id_map
+            .get(old_id)
+            .cloned()
+            .ok_or_else(|| CoreError::new("scene.component.clone_failed", "Missing id map entry."))?;
+        clone.parent_id = if old_id == source_node_id {
+            target_parent_id.clone()
+        } else {
+            original
+                .parent_id
+                .as_ref()
+                .and_then(|parent_id| id_map.get(parent_id).cloned())
+        };
+        clone.children = original.children.as_ref().map(|children| {
+            children
+                .iter()
+                .filter_map(|child_id| id_map.get(child_id).cloned())
+                .collect::<Vec<_>>()
+        });
+        clone.frame.x += offset_x;
+        clone.frame.y += offset_y;
+
+        if old_id == source_node_id {
+            clone.kind = SceneNodeKind::Instance;
+            clone.component = None;
+            clone.instance = Some(InstanceNodeData {
+                source_component_id: source_root.id.clone(),
+                source_component_key: component_key.clone(),
+            });
+        }
+
+        created_nodes.push(clone);
+    }
+
+    let created_root_id = created_nodes
+        .first()
+        .map(|node| node.id.clone())
+        .ok_or_else(|| CoreError::new("scene.component.clone_empty", "No instance nodes were created."))?;
+
+    if let Some(parent_id) = &target_parent_id {
+        let parent = target_page
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == *parent_id)
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.parent_missing",
+                    format!("Parent '{}' was not found.", parent_id),
+                )
+            })?;
+        let children = parent.children.get_or_insert_with(Vec::new);
+        children.push(created_root_id.clone());
+    }
+
+    for node in &created_nodes {
+        if target_page.nodes.iter().any(|existing| existing.id == node.id) {
+            return Err(CoreError::new(
+                "scene.node.duplicate_id",
+                format!("Node '{}' already exists.", node.id),
+            ));
+        }
+    }
+
+    target_page.nodes.extend(created_nodes.iter().cloned());
+
+    Ok(created_nodes.into_iter().map(|node| node.id).collect())
+}
+
+fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreError> {
+    let (instance_page_id, source_component_id, source_component_key, instance_parent_id, instance_frame) = {
+        let instance_page = doc
+            .pages
+            .iter()
+            .find(|page| page.nodes.iter().any(|node| node.id == node_id))
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.instance.not_found",
+                    format!("Instance '{}' was not found.", node_id),
+                )
+            })?;
+        let instance_root = instance_page
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .ok_or_else(|| CoreError::new("scene.instance.not_found", "Instance root was not found."))?;
+        if !matches!(instance_root.kind, SceneNodeKind::Instance) {
+            return Err(CoreError::new(
+                "scene.instance.invalid_target",
+                format!("Node '{}' is not an instance.", node_id),
+            ));
+        }
+        let instance = instance_root.instance.as_ref().ok_or_else(|| {
+            CoreError::new(
+                "scene.instance.metadata_missing",
+                format!("Instance '{}' is missing source metadata.", node_id),
+            )
+        })?;
+        (
+            instance_page.id.clone(),
+            instance.source_component_id.clone(),
+            instance.source_component_key.clone(),
+            instance_root.parent_id.clone(),
+            instance_root.frame.clone(),
+        )
+    };
+
+    let source_page = doc
+        .pages
+        .iter()
+        .find(|page| page.nodes.iter().any(|node| node.id == source_component_id))
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.component.source_missing",
+                format!("Component '{}' was not found.", source_component_id),
+            )
+        })?
+        .clone();
+    let source_root = source_page
+        .nodes
+        .iter()
+        .find(|node| node.id == source_component_id)
+        .ok_or_else(|| CoreError::new("scene.component.source_missing", "Component source was not found."))?;
+    if !matches!(source_root.kind, SceneNodeKind::Component) {
+        return Err(CoreError::new(
+            "scene.component.source_invalid",
+            format!("Node '{}' is not a component.", source_component_id),
+        ));
+    }
+
+    let dx = instance_frame.x - source_root.frame.x;
+    let dy = instance_frame.y - source_root.frame.y;
+    let subtree_ids = collect_subtree_ids(source_page.nodes.as_slice(), &source_component_id)?;
+    let old_instance_subtree_ids = {
+        let instance_page = doc
+            .pages
+            .iter()
+            .find(|page| page.id == instance_page_id)
+            .ok_or_else(|| CoreError::new("scene.page.not_found", "Instance page was not found."))?;
+        collect_subtree_ids(instance_page.nodes.as_slice(), node_id)?
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let id_map = subtree_ids
+        .iter()
+        .enumerate()
+        .map(|(index, old_id)| {
+            let next_id = if old_id == &source_component_id {
+                node_id.to_string()
+            } else {
+                format!("instance-{}-refresh-{}-{}", source_component_id, nonce, index)
+            };
+            (old_id.clone(), next_id)
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let target_page = doc
+        .pages
+        .iter_mut()
+        .find(|page| page.id == instance_page_id)
+        .ok_or_else(|| CoreError::new("scene.page.not_found", "Instance page was not found."))?;
+    let remove_set: HashSet<&str> = old_instance_subtree_ids
+        .iter()
+        .filter(|old_id| old_id.as_str() != node_id)
+        .map(String::as_str)
+        .collect();
+    target_page
+        .nodes
+        .retain(|node| !remove_set.contains(node.id.as_str()));
+
+    let mut refreshed_nodes = Vec::new();
+    for old_id in &subtree_ids {
+        let original = source_page
+            .nodes
+            .iter()
+            .find(|node| node.id == *old_id)
+            .ok_or_else(|| CoreError::new("scene.node.not_found", "Source subtree node was not found."))?;
+        let mut clone = original.clone();
+        clone.id = id_map
+            .get(old_id)
+            .cloned()
+            .ok_or_else(|| CoreError::new("scene.component.clone_failed", "Missing refresh id map entry."))?;
+        clone.parent_id = if old_id == &source_component_id {
+            instance_parent_id.clone()
+        } else {
+            original
+                .parent_id
+                .as_ref()
+                .and_then(|parent_id| id_map.get(parent_id).cloned())
+        };
+        clone.children = original.children.as_ref().map(|children| {
+            children
+                .iter()
+                .filter_map(|child_id| id_map.get(child_id).cloned())
+                .collect::<Vec<_>>()
+        });
+        clone.frame.x += dx;
+        clone.frame.y += dy;
+
+        if old_id == &source_component_id {
+            clone.kind = SceneNodeKind::Instance;
+            clone.component = None;
+            clone.instance = Some(InstanceNodeData {
+                source_component_id: source_component_id.clone(),
+                source_component_key: source_component_key.clone(),
+            });
+        }
+
+        refreshed_nodes.push(clone);
+    }
+
+    for refreshed in refreshed_nodes {
+        if let Some(existing) = target_page.nodes.iter_mut().find(|node| node.id == refreshed.id) {
+            *existing = refreshed;
+        } else {
+            target_page.nodes.push(refreshed);
+        }
+    }
+
+    Ok(dedupe_ids(
+        old_instance_subtree_ids
+            .into_iter()
+            .chain(target_page.nodes.iter().filter(|node| node.id == node_id || node.id.contains(&format!("instance-{}-refresh-", source_component_id))).map(|node| node.id.clone()))
+            .collect(),
+    ))
+}
+
+fn detach_instance(doc: &mut SceneDoc, node_id: &str) -> Result<(), CoreError> {
+    let node = find_node_mut(doc, node_id)?;
+    if !matches!(node.kind, SceneNodeKind::Instance) {
+        return Err(CoreError::new(
+            "scene.instance.invalid_target",
+            format!("Node '{}' is not an instance.", node_id),
+        ));
+    }
+
+    node.kind = SceneNodeKind::Frame;
+    node.instance = None;
+    Ok(())
 }
 
 fn add_guide(doc: &mut SceneDoc, page_id: &str, guide: SceneGuide) -> Result<(), CoreError> {
@@ -1875,6 +2327,8 @@ mod tests {
                         layout: None,
                         text: None,
                         shape: None,
+                        component: None,
+                        instance: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -1903,6 +2357,8 @@ mod tests {
                             sizing: TextSizingMode::AutoHeight,
                         }),
                         shape: None,
+                        component: None,
+                        instance: None,
                     },
                 ],
             }],
@@ -1969,6 +2425,8 @@ mod tests {
                 opacity: 1.0,
                 path: None,
             }),
+            component: None,
+            instance: None,
         });
         doc.pages[0].nodes[1].children = Some(vec!["leaf".to_string()]);
 
@@ -2013,6 +2471,8 @@ mod tests {
                 opacity: 1.0,
                 path: None,
             }),
+            component: None,
+            instance: None,
         });
 
         let result = hit_test(&doc, "page-1", 15.0, 15.0, HitTestMode::Topmost)
@@ -2238,6 +2698,8 @@ mod tests {
                 sizing: TextSizingMode::AutoHeight,
             }),
             shape: None,
+            component: None,
+            instance: None,
         });
 
         let mut state = EditorState::new(doc);
@@ -2375,6 +2837,8 @@ mod tests {
                 opacity: 1.0,
                 path: None,
             }),
+            component: None,
+            instance: None,
         });
 
         let mut state = EditorState::new(doc);
@@ -2418,5 +2882,119 @@ mod tests {
             .issues
             .iter()
             .all(|issue| issue.code != "scene_shape.path.points.invalid"));
+    }
+
+    #[test]
+    fn set_component_key_syncs_existing_instances() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::PromoteToComponent {
+                node_id: "root".to_string(),
+                component_key: Some("hero-card".to_string()),
+            }],
+        )
+        .expect("promote should succeed");
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::CreateInstanceFromComponent {
+                page_id: "page-1".to_string(),
+                source_node_id: "root".to_string(),
+                offset_x: Some(120.0),
+                offset_y: Some(0.0),
+            }],
+        )
+        .expect("instance create should succeed");
+
+        let instance_id = state.selection.first().cloned().expect("instance selected");
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetComponentKey {
+                node_id: "root".to_string(),
+                component_key: "hero-card-v2".to_string(),
+            }],
+        )
+        .expect("set component key should succeed");
+
+        let instance_root = query_node(&state.doc, &instance_id).expect("instance exists");
+        assert_eq!(
+            instance_root
+                .instance
+                .as_ref()
+                .map(|instance| instance.source_component_key.as_str()),
+            Some("hero-card-v2")
+        );
+    }
+
+    #[test]
+    fn refresh_and_detach_instance_flow_updates_subtree() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::PromoteToComponent {
+                    node_id: "root".to_string(),
+                    component_key: Some("hero-card".to_string()),
+                },
+                EditorCommand::CreateInstanceFromComponent {
+                    page_id: "page-1".to_string(),
+                    source_node_id: "root".to_string(),
+                    offset_x: Some(120.0),
+                    offset_y: Some(0.0),
+                },
+            ],
+        )
+        .expect("component + instance should succeed");
+
+        let instance_id = state.selection.first().cloned().expect("instance root selected");
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetTextContent {
+                node_id: "title".to_string(),
+                content: "Updated source".to_string(),
+            }],
+        )
+        .expect("source text update should succeed");
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::RefreshInstance {
+                node_id: instance_id.clone(),
+            }],
+        )
+        .expect("refresh should succeed");
+
+        let instance_root = query_node(&state.doc, &instance_id).expect("instance exists after refresh");
+        let instance_child_id = instance_root
+            .children
+            .as_ref()
+            .and_then(|children| children.first())
+            .cloned()
+            .expect("instance child exists");
+        let instance_child = query_node(&state.doc, &instance_child_id).expect("instance child exists");
+        assert_eq!(
+            instance_child
+                .text
+                .as_ref()
+                .map(|text| text.content.as_str()),
+            Some("Updated source")
+        );
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::DetachInstance {
+                node_id: instance_id.clone(),
+            }],
+        )
+        .expect("detach should succeed");
+
+        let detached = query_node(&state.doc, &instance_id).expect("detached root exists");
+        assert!(matches!(detached.kind, SceneNodeKind::Frame));
+        assert!(detached.instance.is_none());
     }
 }

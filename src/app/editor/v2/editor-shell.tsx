@@ -478,6 +478,18 @@ function supportsAutoLayout(node: SceneNode | null) {
   return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
 }
 
+function supportsComponentPromotion(node: SceneNode | null) {
+  return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
+}
+
+function isComponentNode(node: SceneNode | null) {
+  return Boolean(node && node.kind === "component" && node.component);
+}
+
+function isInstanceNode(node: SceneNode | null) {
+  return Boolean(node && node.kind === "instance" && node.instance);
+}
+
 function supportsShapeEditing(node: SceneNode | null) {
   return Boolean(node && node.kind === "shape" && node.shape);
 }
@@ -1375,6 +1387,76 @@ export function V2EditorShell() {
         kind: "set_node_auto_layout",
         nodeId: activeNode.id,
         layout: patch ? { ...current, ...patch } : null,
+      },
+    ]);
+  }
+
+  async function promoteActiveNodeToComponent(componentKey?: string) {
+    if (!activeNode || !supportsComponentPromotion(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "promote_to_component",
+        nodeId: activeNode.id,
+        ...(componentKey !== undefined ? { componentKey } : {}),
+      },
+    ]);
+  }
+
+  async function updateActiveComponentKey(componentKey: string) {
+    if (!activeNode || !isComponentNode(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_component_key",
+        nodeId: activeNode.id,
+        componentKey,
+      },
+    ]);
+  }
+
+  async function createInstanceFromActiveComponent() {
+    if (!activeNode || !isComponentNode(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "create_instance_from_component",
+        pageId: CANVAS_PAGE_ID,
+        sourceNodeId: activeNode.id,
+        offsetX: 56,
+        offsetY: 56,
+      },
+    ]);
+  }
+
+  async function refreshActiveInstance() {
+    if (!activeNode || !isInstanceNode(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "refresh_instance",
+        nodeId: activeNode.id,
+      },
+    ]);
+  }
+
+  async function detachActiveInstance() {
+    if (!activeNode || !isInstanceNode(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "detach_instance",
+        nodeId: activeNode.id,
       },
     ]);
   }
@@ -2395,6 +2477,24 @@ export function V2EditorShell() {
           >
             Path
           </button>
+          {supportsComponentPromotion(activeNode) && activeNode?.kind !== "component" ? (
+            <button
+              type="button"
+              onClick={() => void promoteActiveNodeToComponent()}
+              className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+            >
+              Create component
+            </button>
+          ) : null}
+          {isComponentNode(activeNode) ? (
+            <button
+              type="button"
+              onClick={() => void createInstanceFromActiveComponent()}
+              className="rounded-full border border-[#2859ff]/25 bg-[#2859ff]/10 px-3 py-2 text-sm font-medium text-[#2859ff]"
+            >
+              Create instance
+            </button>
+          ) : null}
           {selectedShapeNodes.length >= 2 ? (
             <>
               <button
@@ -2594,6 +2694,16 @@ export function V2EditorShell() {
                           : "border-slate-200 hover:border-slate-300"
                       }`}
                     >
+                      {node.kind === "component" ? (
+                        <div className="pointer-events-none absolute left-2 top-2 rounded-full bg-[#2859ff] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white">
+                          Component
+                        </div>
+                      ) : null}
+                      {node.kind === "instance" ? (
+                        <div className="pointer-events-none absolute left-2 top-2 rounded-full border border-[#2859ff]/25 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#2859ff]">
+                          Instance
+                        </div>
+                      ) : null}
                       {textData ? (
                         <div
                           className="h-full w-full p-1"
@@ -3237,6 +3347,78 @@ export function V2EditorShell() {
                                 }
                               />
                             </label>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {supportsComponentPromotion(activeNode) || isInstanceNode(activeNode) ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">Component</div>
+                            <div className="text-xs text-slate-500">
+                              Promote reusable frames and place linked instances.
+                            </div>
+                          </div>
+                          {supportsComponentPromotion(activeNode) && activeNode.kind !== "component" ? (
+                            <button
+                              type="button"
+                              onClick={() => void promoteActiveNodeToComponent()}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Create component
+                            </button>
+                          ) : null}
+                          {isComponentNode(activeNode) ? (
+                            <button
+                              type="button"
+                              onClick={() => void createInstanceFromActiveComponent()}
+                              className="rounded-full bg-[#2859ff] px-3 py-1 text-xs font-semibold text-white"
+                            >
+                              Create instance
+                            </button>
+                          ) : null}
+                        </div>
+                        {isComponentNode(activeNode) ? (
+                          <label className="block">
+                            <div className="text-slate-400">Component key</div>
+                            <input
+                              type="text"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.component?.componentKey ?? ""}
+                              onChange={(event) =>
+                                void updateActiveComponentKey(event.target.value)
+                              }
+                            />
+                          </label>
+                        ) : null}
+                        {isInstanceNode(activeNode) ? (
+                          <div className="space-y-3 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm">
+                            <div>
+                              <div className="text-slate-400">Source component</div>
+                              <div className="mt-1 font-medium text-slate-900">
+                                {activeNode.instance?.sourceComponentKey}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                {activeNode.instance?.sourceComponentId}
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void refreshActiveInstance()}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Refresh
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void detachActiveInstance()}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Detach
+                              </button>
+                            </div>
                           </div>
                         ) : null}
                       </div>

@@ -64,6 +64,10 @@ pub struct SceneNode {
     pub text: Option<TextNodeData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<ShapeNodeData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentNodeData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<InstanceNodeData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -230,6 +234,19 @@ pub struct ShapeNodeData {
     pub path: Option<ShapePathData>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentNodeData {
+    pub component_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceNodeData {
+    pub source_component_id: String,
+    pub source_component_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ShapeStylePatch {
@@ -332,6 +349,36 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         path: ShapePathData,
+    },
+    PromoteToComponent {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        #[serde(default, rename = "componentKey", skip_serializing_if = "Option::is_none")]
+        component_key: Option<String>,
+    },
+    SetComponentKey {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        #[serde(rename = "componentKey")]
+        component_key: String,
+    },
+    CreateInstanceFromComponent {
+        #[serde(rename = "pageId")]
+        page_id: String,
+        #[serde(rename = "sourceNodeId")]
+        source_node_id: String,
+        #[serde(default, rename = "offsetX", skip_serializing_if = "Option::is_none")]
+        offset_x: Option<f32>,
+        #[serde(default, rename = "offsetY", skip_serializing_if = "Option::is_none")]
+        offset_y: Option<f32>,
+    },
+    RefreshInstance {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+    },
+    DetachInstance {
+        #[serde(rename = "nodeId")]
+        node_id: String,
     },
     SetNodeAutoLayout {
         #[serde(rename = "nodeId")]
@@ -612,6 +659,69 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
                 }
             }
 
+            if matches!(node.kind, SceneNodeKind::Component) {
+                match &node.component {
+                    Some(component) if !component.component_key.trim().is_empty() => {}
+                    _ => {
+                        issues.push(issue(
+                            format!("component-data-missing-{}", node.id),
+                            ValidationSeverity::Error,
+                            "scene_component.data.missing",
+                            "Component node is missing component metadata.",
+                            Some(node.id.clone()),
+                        ));
+                    }
+                }
+            } else if node.component.is_some() {
+                issues.push(issue(
+                    format!("component-data-unexpected-{}", node.id),
+                    ValidationSeverity::Error,
+                    "scene_component.data.unexpected",
+                    "Only component nodes may contain component metadata.",
+                    Some(node.id.clone()),
+                ));
+            }
+
+            if matches!(node.kind, SceneNodeKind::Instance) {
+                match &node.instance {
+                    Some(instance)
+                        if !instance.source_component_id.trim().is_empty()
+                            && !instance.source_component_key.trim().is_empty() =>
+                    {
+                        let source_node = per_page.get(instance.source_component_id.as_str());
+                        if !matches!(
+                            source_node.map(|candidate| &candidate.kind),
+                            Some(SceneNodeKind::Component)
+                        ) {
+                            issues.push(issue(
+                                format!("instance-source-invalid-{}", node.id),
+                                ValidationSeverity::Error,
+                                "scene_instance.source.invalid",
+                                "Instance source component must exist on the same page.",
+                                Some(node.id.clone()),
+                            ));
+                        }
+                    }
+                    _ => {
+                        issues.push(issue(
+                            format!("instance-data-missing-{}", node.id),
+                            ValidationSeverity::Error,
+                            "scene_instance.data.missing",
+                            "Instance node is missing source metadata.",
+                            Some(node.id.clone()),
+                        ));
+                    }
+                }
+            } else if node.instance.is_some() {
+                issues.push(issue(
+                    format!("instance-data-unexpected-{}", node.id),
+                    ValidationSeverity::Error,
+                    "scene_instance.data.unexpected",
+                    "Only instance nodes may contain instance metadata.",
+                    Some(node.id.clone()),
+                ));
+            }
+
             if let Some(parent_id) = &node.parent_id {
                 if !per_page.contains_key(parent_id.as_str()) {
                     issues.push(issue(
@@ -795,6 +905,8 @@ mod tests {
                         layout: None,
                         text: None,
                         shape: None,
+                        component: None,
+                        instance: None,
                     },
                     SceneNode {
                         id: "child".to_string(),
@@ -826,6 +938,8 @@ mod tests {
                             sizing: TextSizingMode::AutoHeight,
                         }),
                         shape: None,
+                        component: None,
+                        instance: None,
                     },
                 ],
             }],
@@ -902,6 +1016,8 @@ mod tests {
                     closed: false,
                 }),
             }),
+            component: None,
+            instance: None,
         });
 
         let report = validate_scene_doc(&doc);

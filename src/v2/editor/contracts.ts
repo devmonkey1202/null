@@ -94,6 +94,15 @@ export type ShapeNodeData = {
 
 export type ShapeStylePatch = Partial<Omit<ShapeNodeData, "primitive" | "path">>;
 
+export type ComponentNodeData = {
+  componentKey: string;
+};
+
+export type InstanceNodeData = {
+  sourceComponentId: string;
+  sourceComponentKey: string;
+};
+
 export type SceneGuide = {
   id: string;
   axis: "x" | "y";
@@ -113,6 +122,8 @@ export type SceneNode = {
   layout?: AutoLayoutData;
   text?: TextNodeData;
   shape?: ShapeNodeData;
+  component?: ComponentNodeData;
+  instance?: InstanceNodeData;
 };
 
 export type ScenePage = {
@@ -159,6 +170,17 @@ export type EditorCommand =
   | { kind: "set_shape_primitive"; nodeId: string; primitive: ShapePrimitive }
   | { kind: "set_shape_style"; nodeId: string; style: ShapeStylePatch }
   | { kind: "set_shape_path"; nodeId: string; path: ShapePathData }
+  | { kind: "promote_to_component"; nodeId: string; componentKey?: string }
+  | { kind: "set_component_key"; nodeId: string; componentKey: string }
+  | {
+      kind: "create_instance_from_component";
+      pageId: string;
+      sourceNodeId: string;
+      offsetX?: number;
+      offsetY?: number;
+    }
+  | { kind: "refresh_instance"; nodeId: string }
+  | { kind: "detach_instance"; nodeId: string }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | {
       kind: "set_node_constraints";

@@ -139,6 +139,8 @@ mod tests {
                         layout: None,
                         text: None,
                         shape: None,
+                        component: None,
+                        instance: None,
                     }],
                 }],
                 meta: SceneDocMeta {

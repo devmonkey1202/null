@@ -111,6 +111,8 @@ mod tests {
                         layout: None,
                         text: None,
                         shape: None,
+                        component: None,
+                        instance: None,
                     },
                     SceneNode {
                         id: "group".to_string(),
@@ -129,6 +131,8 @@ mod tests {
                         layout: None,
                         text: None,
                         shape: None,
+                        component: None,
+                        instance: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -157,6 +161,8 @@ mod tests {
                             sizing: kernel_doc::TextSizingMode::AutoHeight,
                         }),
                         shape: None,
+                        component: None,
+                        instance: None,
                     },
                 ],
             }],

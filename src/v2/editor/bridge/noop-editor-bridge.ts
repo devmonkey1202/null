@@ -2,6 +2,7 @@ import {
   type AutoLayoutAlign,
   type AutoLayoutData,
   type BridgeQuery,
+  type ComponentNodeData,
   type EditorApplyResult,
   type EditorBridge,
   type EditorCommand,
@@ -17,6 +18,8 @@ import {
   type SceneDoc,
   type SceneGuide,
   type SceneNode,
+  type ScenePage,
+  type InstanceNodeData,
   type SelectionSetMode,
   type SnapGuide,
   type ShapeNodeData,
@@ -94,6 +97,53 @@ function buildValidation(document: SceneDoc): ValidationReport {
             targetId: node.id,
           });
         }
+      }
+
+      if (node.kind === "component") {
+        if (!node.component?.componentKey?.trim()) {
+          issues.push({
+            id: `component-data-missing-${node.id}`,
+            severity: "error" as const,
+            code: "scene_component.data.missing",
+            message: "Component node is missing component metadata.",
+            targetId: node.id,
+          });
+        }
+      } else if (node.component) {
+        issues.push({
+          id: `component-data-unexpected-${node.id}`,
+          severity: "error" as const,
+          code: "scene_component.data.unexpected",
+          message: "Only component nodes may contain component metadata.",
+          targetId: node.id,
+        });
+      }
+
+      if (node.kind === "instance") {
+        const source = page.nodes.find(
+          (candidate) => candidate.id === node.instance?.sourceComponentId,
+        );
+        if (
+          !node.instance?.sourceComponentId?.trim() ||
+          !node.instance?.sourceComponentKey?.trim() ||
+          source?.kind !== "component"
+        ) {
+          issues.push({
+            id: `instance-data-missing-${node.id}`,
+            severity: "error" as const,
+            code: "scene_instance.data.invalid",
+            message: "Instance node must reference an existing component on the same page.",
+            targetId: node.id,
+          });
+        }
+      } else if (node.instance) {
+        issues.push({
+          id: `instance-data-unexpected-${node.id}`,
+          severity: "error" as const,
+          code: "scene_instance.data.unexpected",
+          message: "Only instance nodes may contain instance metadata.",
+          targetId: node.id,
+        });
       }
 
       if (node.kind === "shape") {
@@ -565,6 +615,251 @@ function applyShapePath(shape: ShapeNodeData, path: ShapePathData): ShapeNodeDat
     ...shape,
     primitive: "path",
     path: structuredClone(path),
+  };
+}
+
+function promoteNodeToComponent(
+  node: SceneNode,
+  componentKey?: string,
+): SceneNode {
+  if (node.kind !== "frame" && node.kind !== "group" && node.kind !== "component") {
+    throw new Error(`Node '${node.id}' cannot be promoted to a component.`);
+  }
+
+  return {
+    ...node,
+    kind: "component",
+    component: {
+      componentKey: componentKey?.trim() || `component-${node.id}`,
+    } satisfies ComponentNodeData,
+    instance: undefined,
+  };
+}
+
+function syncComponentKeyOnPages(pages: ScenePage[], nodeId: string, componentKey: string) {
+  const nextKey = componentKey.trim();
+  if (!nextKey) {
+    throw new Error("Component key cannot be empty.");
+  }
+
+  return pages.map((page) => ({
+    ...page,
+    nodes: page.nodes.map((node) => {
+      if (node.id === nodeId) {
+        if (node.kind !== "component" || !node.component) {
+          throw new Error(`Node '${nodeId}' is not a component.`);
+        }
+        return {
+          ...node,
+          component: {
+            componentKey: nextKey,
+          } satisfies ComponentNodeData,
+        };
+      }
+      if (node.instance?.sourceComponentId === nodeId) {
+        return {
+          ...node,
+          instance: {
+            ...node.instance,
+            sourceComponentKey: nextKey,
+          } satisfies InstanceNodeData,
+        };
+      }
+      return node;
+    }),
+  }));
+}
+
+function createInstanceSubtree(
+  document: SceneDoc,
+  pageId: string,
+  sourceNodeId: string,
+  offsetX: number,
+  offsetY: number,
+) {
+  const sourcePage = document.pages.find((page) => page.nodes.some((node) => node.id === sourceNodeId));
+  if (!sourcePage) {
+    throw new Error(`Component '${sourceNodeId}' was not found.`);
+  }
+
+  const sourceRoot = sourcePage.nodes.find((node) => node.id === sourceNodeId);
+  if (!sourceRoot || sourceRoot.kind !== "component" || !sourceRoot.component) {
+    throw new Error(`Node '${sourceNodeId}' is not a component.`);
+  }
+
+  const targetPage = document.pages.find((page) => page.id === pageId);
+  if (!targetPage) {
+    throw new Error(`Page '${pageId}' was not found.`);
+  }
+
+  const visited = new Set<string>();
+  const order: string[] = [];
+  const stack = [sourceNodeId];
+  while (stack.length) {
+    const currentId = stack.pop()!;
+    if (visited.has(currentId)) {
+      continue;
+    }
+    visited.add(currentId);
+    order.push(currentId);
+    const current = sourcePage.nodes.find((node) => node.id === currentId);
+    for (const childId of [...(current?.children ?? [])].reverse()) {
+      stack.push(childId);
+    }
+  }
+
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const idMap = new Map(order.map((oldId, index) => [oldId, `instance-${sourceNodeId}-${nonce}-${index}`]));
+  const targetParentId =
+    sourceRoot.parentId && targetPage.nodes.some((node) => node.id === sourceRoot.parentId)
+      ? sourceRoot.parentId
+      : targetPage.rootId;
+
+  const clonedNodes = order.map((oldId) => {
+    const original = sourcePage.nodes.find((node) => node.id === oldId)!;
+    const next: SceneNode = structuredClone(original);
+    next.id = idMap.get(oldId)!;
+    next.parentId =
+      oldId === sourceNodeId
+        ? targetParentId
+        : original.parentId
+          ? (idMap.get(original.parentId) ?? null)
+          : null;
+    next.children = original.children?.map((childId) => idMap.get(childId)!).filter(Boolean);
+    next.frame = {
+      ...next.frame,
+      x: next.frame.x + offsetX,
+      y: next.frame.y + offsetY,
+    };
+    if (oldId === sourceNodeId) {
+      next.kind = "instance";
+      next.component = undefined;
+      next.instance = {
+        sourceComponentId: sourceRoot.id,
+        sourceComponentKey: sourceRoot.component!.componentKey,
+      } satisfies InstanceNodeData;
+    }
+    return next;
+  });
+
+  const createdRootId = clonedNodes[0]!.id;
+  return {
+    targetParentId,
+    createdRootId,
+    clonedNodes,
+  };
+}
+
+function refreshInstanceSubtree(document: SceneDoc, nodeId: string) {
+  const instancePage = document.pages.find((page) => page.nodes.some((node) => node.id === nodeId));
+  if (!instancePage) {
+    throw new Error(`Instance '${nodeId}' was not found.`);
+  }
+
+  const instanceRoot = instancePage.nodes.find((node) => node.id === nodeId);
+  if (!instanceRoot || instanceRoot.kind !== "instance" || !instanceRoot.instance) {
+    throw new Error(`Node '${nodeId}' is not an instance.`);
+  }
+
+  const sourcePage = document.pages.find((page: ScenePage) =>
+    page.nodes.some((node) => node.id === instanceRoot.instance?.sourceComponentId),
+  );
+  if (!sourcePage) {
+    throw new Error(`Component '${instanceRoot.instance.sourceComponentId}' was not found.`);
+  }
+
+  const sourceRoot = sourcePage.nodes.find(
+    (node) => node.id === instanceRoot.instance?.sourceComponentId,
+  );
+  if (!sourceRoot || sourceRoot.kind !== "component" || !sourceRoot.component) {
+    throw new Error(`Node '${instanceRoot.instance.sourceComponentId}' is not a component.`);
+  }
+
+  const order: string[] = [];
+  const stack = [sourceRoot.id];
+  const visited = new Set<string>();
+  while (stack.length) {
+    const currentId = stack.pop()!;
+    if (visited.has(currentId)) {
+      continue;
+    }
+    visited.add(currentId);
+    order.push(currentId);
+    const current = sourcePage.nodes.find((node) => node.id === currentId);
+    for (const childId of [...(current?.children ?? [])].reverse()) {
+      stack.push(childId);
+    }
+  }
+
+  const oldInstanceIds: string[] = [];
+  const oldStack = [nodeId];
+  const oldVisited = new Set<string>();
+  while (oldStack.length) {
+    const currentId = oldStack.pop()!;
+    if (oldVisited.has(currentId)) {
+      continue;
+    }
+    oldVisited.add(currentId);
+    oldInstanceIds.push(currentId);
+    const current = instancePage.nodes.find((node) => node.id === currentId);
+    for (const childId of [...(current?.children ?? [])].reverse()) {
+      oldStack.push(childId);
+    }
+  }
+
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const idMap = new Map(
+    order.map((oldId, index) => [
+      oldId,
+      oldId === sourceRoot.id ? nodeId : `instance-${sourceRoot.id}-refresh-${nonce}-${index}`,
+    ]),
+  );
+  const offsetX = instanceRoot.frame.x - sourceRoot.frame.x;
+  const offsetY = instanceRoot.frame.y - sourceRoot.frame.y;
+
+  const refreshedNodes = order.map((oldId) => {
+    const original = sourcePage.nodes.find((node) => node.id === oldId)!;
+    const next: SceneNode = structuredClone(original);
+    next.id = idMap.get(oldId)!;
+    next.parentId =
+      oldId === sourceRoot.id
+        ? instanceRoot.parentId
+        : original.parentId
+          ? (idMap.get(original.parentId) ?? null)
+          : null;
+    next.children = original.children?.map((childId) => idMap.get(childId)!).filter(Boolean);
+    next.frame = {
+      ...next.frame,
+      x: next.frame.x + offsetX,
+      y: next.frame.y + offsetY,
+    };
+    if (oldId === sourceRoot.id) {
+      next.kind = "instance";
+      next.component = undefined;
+      next.instance = {
+        sourceComponentId: sourceRoot.id,
+        sourceComponentKey: sourceRoot.component!.componentKey,
+      } satisfies InstanceNodeData;
+    }
+    return next;
+  });
+
+  return {
+    pageId: instancePage.id,
+    refreshedNodes,
+    oldInstanceIds,
+  };
+}
+
+function detachInstanceNode(node: SceneNode): SceneNode {
+  if (node.kind !== "instance") {
+    throw new Error(`Node '${node.id}' is not an instance.`);
+  }
+
+  return {
+    ...node,
+    kind: "frame",
+    instance: undefined,
   };
 }
 
@@ -1272,6 +1567,112 @@ export class NoopEditorBridge implements EditorBridge {
               ...node,
               shape: node.shape ? applyShapePath(node.shape, command.path) : node.shape,
             })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "promote_to_component":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+              promoteNodeToComponent(node, command.componentKey),
+            ),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_component_key":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: syncComponentKeyOnPages(this.document.pages, command.nodeId, command.componentKey),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "create_instance_from_component": {
+          const { targetParentId, createdRootId, clonedNodes } = createInstanceSubtree(
+            this.document,
+            command.pageId,
+            command.sourceNodeId,
+            command.offsetX ?? 48,
+            command.offsetY ?? 48,
+          );
+
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: this.document.pages.map((page) => {
+              if (page.id !== command.pageId) {
+                return page;
+              }
+
+              const nextNodes = page.nodes.map((node) =>
+                node.id === targetParentId
+                  ? {
+                      ...node,
+                      children: [...(node.children ?? []), createdRootId],
+                    }
+                  : node,
+              );
+
+              nextNodes.push(...clonedNodes);
+
+              return {
+                ...page,
+                nodes: nextNodes,
+              };
+            }),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.selection = [createdRootId];
+          this.version += 1;
+          dirtyNodeIds.push(...clonedNodes.map((node) => node.id), targetParentId);
+          this.recordHistory();
+          break;
+        }
+        case "refresh_instance": {
+          const { pageId, refreshedNodes, oldInstanceIds } = refreshInstanceSubtree(
+            this.document,
+            command.nodeId,
+          );
+          const refreshedNodeIds = refreshedNodes.map((node) => node.id);
+          const removeSet = new Set(oldInstanceIds.filter((id) => id !== command.nodeId));
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: this.document.pages.map((page) => {
+              if (page.id !== pageId) {
+                return page;
+              }
+              const nextNodes = page.nodes
+                .filter((node) => !removeSet.has(node.id))
+                .map((node) => refreshedNodes.find((candidate) => candidate.id === node.id) ?? node);
+              for (const refreshedNode of refreshedNodes) {
+                if (!nextNodes.some((node) => node.id === refreshedNode.id)) {
+                  nextNodes.push(refreshedNode);
+                }
+              }
+              return {
+                ...page,
+                nodes: nextNodes,
+              };
+            }),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.selection = [command.nodeId];
+          this.version += 1;
+          dirtyNodeIds.push(...oldInstanceIds, ...refreshedNodeIds);
+          this.recordHistory();
+          break;
+        }
+        case "detach_instance":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => detachInstanceNode(node)),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           });
           this.version += 1;
