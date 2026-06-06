@@ -1,10 +1,10 @@
 use core_error::CoreError;
 use kernel_doc::{
-    validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, ComponentNodeData, EditorCommand,
-    EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis, HorizontalConstraint,
-    InstanceNodeData, InstanceTextOverride, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
-    ShapePathData, ShapeStylePatch, TextSizingMode, TextStylePatch, TransformHandleKind,
-    ValidationReport, VerticalConstraint,
+    validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, AutoLayoutJustify, ComponentNodeData,
+    EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis,
+    HorizontalConstraint, InstanceNodeData, InstanceTextOverride, SceneDoc, SceneGuide, SceneNode,
+    SceneNodeKind, SelectionSetMode, ShapePathData, ShapeStylePatch, TextSizingMode, TextStylePatch,
+    TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
@@ -1592,6 +1592,35 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
             AutoLayoutDirection::Horizontal => parent_frame.x + layout.padding_x,
             AutoLayoutDirection::Vertical => parent_frame.y + layout.padding_y,
         };
+        let available_primary = match layout.direction {
+            AutoLayoutDirection::Horizontal => (parent_frame.w - layout.padding_x * 2.0).max(1.0),
+            AutoLayoutDirection::Vertical => (parent_frame.h - layout.padding_y * 2.0).max(1.0),
+        };
+        let fixed_primary_sum: f32 = child_ids
+            .iter()
+            .filter_map(|child_id| index_map.get(child_id).copied())
+            .map(|child_index| match layout.direction {
+                AutoLayoutDirection::Horizontal => page.nodes[child_index].frame.w,
+                AutoLayoutDirection::Vertical => page.nodes[child_index].frame.h,
+            })
+            .sum();
+        let gap_count = child_ids.len().saturating_sub(1) as f32;
+        let mut actual_gap = layout.gap;
+        let content_primary = fixed_primary_sum + layout.gap * gap_count;
+        match layout.justify {
+            AutoLayoutJustify::Start => {}
+            AutoLayoutJustify::Center => {
+                primary_cursor += (available_primary - content_primary) / 2.0;
+            }
+            AutoLayoutJustify::End => {
+                primary_cursor += available_primary - content_primary;
+            }
+            AutoLayoutJustify::SpaceBetween => {
+                if child_ids.len() > 1 && available_primary > fixed_primary_sum {
+                    actual_gap = (available_primary - fixed_primary_sum) / gap_count.max(1.0);
+                }
+            }
+        }
 
         let cross_start = match layout.direction {
             AutoLayoutDirection::Horizontal => parent_frame.y + layout.padding_y,
@@ -1628,7 +1657,7 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                         }
                     }
                     normalize_text_frame(child);
-                    primary_cursor += child.frame.w + layout.gap;
+                    primary_cursor += child.frame.w + actual_gap;
                 }
                 AutoLayoutDirection::Vertical => {
                     child.frame.y = primary_cursor;
@@ -1648,7 +1677,7 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                         }
                     }
                     normalize_text_frame(child);
-                    primary_cursor += child.frame.h + layout.gap;
+                    primary_cursor += child.frame.h + actual_gap;
                 }
             }
         }
@@ -2876,6 +2905,7 @@ mod tests {
                     padding_x: 16.0,
                     padding_y: 20.0,
                     align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Start,
                 }),
             }],
         )
@@ -2887,6 +2917,30 @@ mod tests {
         assert_eq!(title.frame.y, 20.0);
         assert_eq!(body.frame.x, 16.0);
         assert_eq!(body.frame.y, title.frame.y + title.frame.h + 12.0);
+    }
+
+    #[test]
+    fn set_node_auto_layout_with_center_justify_offsets_children() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Horizontal,
+                    gap: 0.0,
+                    padding_x: 10.0,
+                    padding_y: 10.0,
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Center,
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let title = query_node(&state.doc, "title").expect("title exists");
+        assert_eq!(title.frame.x, 30.0);
     }
 
     #[test]

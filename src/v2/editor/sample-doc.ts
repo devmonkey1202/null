@@ -84,6 +84,7 @@ export const sampleSceneDoc: SceneDoc = {
             paddingX: 40,
             paddingY: 40,
             align: "start",
+            justify: "start",
           },
         },
         {
@@ -148,6 +149,7 @@ export const sampleSceneDoc: SceneDoc = {
             paddingX: 18,
             paddingY: 14,
             align: "center",
+            justify: "center",
           },
           component: {
             componentKey: "badge-primary",
@@ -186,6 +188,7 @@ export const sampleSceneDoc: SceneDoc = {
             paddingX: 18,
             paddingY: 14,
             align: "center",
+            justify: "center",
           },
           instance: {
             sourceComponentId: "badge-component",

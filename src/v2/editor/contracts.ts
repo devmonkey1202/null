@@ -37,12 +37,15 @@ export type AutoLayoutDirection = "horizontal" | "vertical";
 
 export type AutoLayoutAlign = "start" | "center" | "end" | "stretch";
 
+export type AutoLayoutJustify = "start" | "center" | "end" | "space_between";
+
 export type AutoLayoutData = {
   direction: AutoLayoutDirection;
   gap: number;
   paddingX: number;
   paddingY: number;
   align: AutoLayoutAlign;
+  justify: AutoLayoutJustify;
 };
 
 export type TextAlign = "left" | "center" | "right" | "justify";

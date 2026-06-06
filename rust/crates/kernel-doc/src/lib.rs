@@ -129,6 +129,15 @@ pub enum AutoLayoutAlign {
     Stretch,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoLayoutJustify {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoLayoutData {
@@ -137,6 +146,7 @@ pub struct AutoLayoutData {
     pub padding_x: f32,
     pub padding_y: f32,
     pub align: AutoLayoutAlign,
+    pub justify: AutoLayoutJustify,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

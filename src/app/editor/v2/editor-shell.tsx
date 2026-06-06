@@ -7,6 +7,7 @@ import type {
   AutoLayoutAlign,
   AutoLayoutData,
   AutoLayoutDirection,
+  AutoLayoutJustify,
   EditorCommand,
   EditorBridge,
   EditorRect,
@@ -116,6 +117,7 @@ const HORIZONTAL_CONSTRAINT_OPTIONS: HorizontalConstraint[] = ["min", "max", "st
 const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretch", "scale"];
 const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "vertical"];
 const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", "stretch"];
+const AUTO_LAYOUT_JUSTIFY_OPTIONS: AutoLayoutJustify[] = ["start", "center", "end", "space_between"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
 const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line", "path"];
@@ -1388,6 +1390,7 @@ export function V2EditorShell() {
       paddingX: 24,
       paddingY: 24,
       align: "start",
+      justify: "start",
     };
 
     await applyAndSync([
@@ -3364,6 +3367,24 @@ export function V2EditorShell() {
                                 }
                               >
                                 {AUTO_LAYOUT_ALIGN_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Justify</div>
+                              <select
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeNode.layout.justify}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    justify: event.target.value as AutoLayoutJustify,
+                                  })
+                                }
+                              >
+                                {AUTO_LAYOUT_JUSTIFY_OPTIONS.map((option) => (
                                   <option key={option} value={option}>
                                     {option}
                                   </option>
