@@ -2,7 +2,7 @@ use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, ComponentNodeData, EditorCommand,
     EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis, HorizontalConstraint,
-    InstanceNodeData, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
+    InstanceNodeData, InstanceTextOverride, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
     ShapePathData, ShapeStylePatch, TextSizingMode, TextStylePatch, TransformHandleKind,
     ValidationReport, VerticalConstraint,
 };
@@ -139,6 +139,7 @@ pub fn dispatch_commands(
                         text.content = content;
                     }
                 }
+                capture_text_content_override(&mut state.doc, &node_id)?;
                 normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
@@ -150,9 +151,10 @@ pub fn dispatch_commands(
                     let node = find_node_mut(&mut state.doc, &node_id)?;
                     ensure_text_node(node)?;
                     if let Some(text) = &mut node.text {
-                        apply_text_style_patch(text, style);
+                        apply_text_style_patch(text, style.clone());
                     }
                 }
+                capture_text_style_override(&mut state.doc, &node_id, &style)?;
                 normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
@@ -915,6 +917,7 @@ fn promote_to_component(
         component_key: next_key,
     });
     node.instance = None;
+    node.instance_source_node_id = None;
     Ok(())
 }
 
@@ -1060,6 +1063,7 @@ fn create_instance_from_component(
         });
         clone.frame.x += offset_x;
         clone.frame.y += offset_y;
+        clone.instance_source_node_id = Some(original.id.clone());
 
         if old_id == source_node_id {
             clone.kind = SceneNodeKind::Instance;
@@ -1067,6 +1071,7 @@ fn create_instance_from_component(
             clone.instance = Some(InstanceNodeData {
                 source_component_id: source_root.id.clone(),
                 source_component_key: component_key.clone(),
+                text_overrides: Vec::new(),
             });
         }
 
@@ -1108,7 +1113,7 @@ fn create_instance_from_component(
 }
 
 fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreError> {
-    let (instance_page_id, source_component_id, source_component_key, instance_parent_id, instance_frame) = {
+    let (instance_page_id, source_component_id, source_component_key, instance_parent_id, instance_frame, text_overrides) = {
         let instance_page = doc
             .pages
             .iter()
@@ -1142,6 +1147,7 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
             instance.source_component_key.clone(),
             instance_root.parent_id.clone(),
             instance_root.frame.clone(),
+            instance.text_overrides.clone(),
         )
     };
 
@@ -1238,6 +1244,7 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
         });
         clone.frame.x += dx;
         clone.frame.y += dy;
+        clone.instance_source_node_id = Some(original.id.clone());
 
         if old_id == &source_component_id {
             clone.kind = SceneNodeKind::Instance;
@@ -1245,11 +1252,14 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
             clone.instance = Some(InstanceNodeData {
                 source_component_id: source_component_id.clone(),
                 source_component_key: source_component_key.clone(),
+                text_overrides: text_overrides.clone(),
             });
         }
 
         refreshed_nodes.push(clone);
     }
+
+    apply_text_overrides_to_instance_nodes(&mut refreshed_nodes, &text_overrides);
 
     for refreshed in refreshed_nodes {
         if let Some(existing) = target_page.nodes.iter_mut().find(|node| node.id == refreshed.id) {
@@ -1278,7 +1288,155 @@ fn detach_instance(doc: &mut SceneDoc, node_id: &str) -> Result<(), CoreError> {
 
     node.kind = SceneNodeKind::Frame;
     node.instance = None;
+    node.instance_source_node_id = None;
     Ok(())
+}
+
+fn capture_text_content_override(doc: &mut SceneDoc, node_id: &str) -> Result<(), CoreError> {
+    let Some(instance_root_id) = find_instance_root_id(doc, node_id) else {
+        return Ok(());
+    };
+    let source_node_id = query_node(doc, node_id)
+        .and_then(|node| node.instance_source_node_id.clone())
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.instance.override_source_missing",
+                format!("Node '{}' is missing instance source metadata.", node_id),
+            )
+        })?;
+    let content = query_node(doc, node_id)
+        .and_then(|node| node.text.as_ref().map(|text| text.content.clone()))
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.text.invalid_target",
+                format!("Node '{}' is not a text node.", node_id),
+            )
+        })?;
+    let instance_root = find_node_mut(doc, &instance_root_id)?;
+    let instance = instance_root.instance.as_mut().ok_or_else(|| {
+        CoreError::new(
+            "scene.instance.metadata_missing",
+            format!("Instance '{}' is missing metadata.", instance_root_id),
+        )
+    })?;
+    upsert_text_override(&mut instance.text_overrides, &source_node_id, Some(content), None);
+    Ok(())
+}
+
+fn capture_text_style_override(
+    doc: &mut SceneDoc,
+    node_id: &str,
+    style: &TextStylePatch,
+) -> Result<(), CoreError> {
+    let Some(instance_root_id) = find_instance_root_id(doc, node_id) else {
+        return Ok(());
+    };
+    let source_node_id = query_node(doc, node_id)
+        .and_then(|node| node.instance_source_node_id.clone())
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.instance.override_source_missing",
+                format!("Node '{}' is missing instance source metadata.", node_id),
+            )
+        })?;
+    let instance_root = find_node_mut(doc, &instance_root_id)?;
+    let instance = instance_root.instance.as_mut().ok_or_else(|| {
+        CoreError::new(
+            "scene.instance.metadata_missing",
+            format!("Instance '{}' is missing metadata.", instance_root_id),
+        )
+    })?;
+    upsert_text_override(
+        &mut instance.text_overrides,
+        &source_node_id,
+        None,
+        Some(style.clone()),
+    );
+    Ok(())
+}
+
+fn find_instance_root_id(doc: &SceneDoc, node_id: &str) -> Option<String> {
+    let mut current_id = Some(node_id.to_string());
+    while let Some(id) = current_id {
+        let node = query_node(doc, &id)?;
+        if matches!(node.kind, SceneNodeKind::Instance) {
+            return Some(node.id.clone());
+        }
+        current_id = node.parent_id.clone();
+    }
+    None
+}
+
+fn upsert_text_override(
+    overrides: &mut Vec<InstanceTextOverride>,
+    source_node_id: &str,
+    content: Option<String>,
+    style: Option<TextStylePatch>,
+) {
+    if let Some(existing) = overrides
+        .iter_mut()
+        .find(|entry| entry.source_node_id == source_node_id)
+    {
+        if let Some(next_content) = content {
+            existing.content = Some(next_content);
+        }
+        if let Some(next_style) = style {
+            existing.style = Some(merge_text_style_patch(existing.style.clone(), next_style));
+        }
+        return;
+    }
+
+    overrides.push(InstanceTextOverride {
+        source_node_id: source_node_id.to_string(),
+        content,
+        style,
+    });
+}
+
+fn merge_text_style_patch(current: Option<TextStylePatch>, next: TextStylePatch) -> TextStylePatch {
+    let mut merged = current.unwrap_or_default();
+    if next.font_family.is_some() {
+        merged.font_family = next.font_family;
+    }
+    if next.font_size.is_some() {
+        merged.font_size = next.font_size;
+    }
+    if next.font_weight.is_some() {
+        merged.font_weight = next.font_weight;
+    }
+    if next.line_height.is_some() {
+        merged.line_height = next.line_height;
+    }
+    if next.letter_spacing.is_some() {
+        merged.letter_spacing = next.letter_spacing;
+    }
+    if next.align.is_some() {
+        merged.align = next.align;
+    }
+    if next.color.is_some() {
+        merged.color = next.color;
+    }
+    merged
+}
+
+fn apply_text_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[InstanceTextOverride]) {
+    for override_entry in overrides {
+        let Some(node) = nodes
+            .iter_mut()
+            .find(|candidate| candidate.instance_source_node_id.as_deref() == Some(override_entry.source_node_id.as_str()))
+        else {
+            continue;
+        };
+        let Some(text) = &mut node.text else {
+            continue;
+        };
+        if let Some(content) = &override_entry.content {
+            text.content = content.clone();
+        }
+        if let Some(style) = &override_entry.style {
+            apply_text_style_patch(text, style.clone());
+        }
+    }
 }
 
 fn add_guide(doc: &mut SceneDoc, page_id: &str, guide: SceneGuide) -> Result<(), CoreError> {
@@ -2329,6 +2487,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -2359,6 +2518,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     },
                 ],
             }],
@@ -2427,6 +2587,7 @@ mod tests {
             }),
             component: None,
             instance: None,
+            instance_source_node_id: None,
         });
         doc.pages[0].nodes[1].children = Some(vec!["leaf".to_string()]);
 
@@ -2473,6 +2634,7 @@ mod tests {
             }),
             component: None,
             instance: None,
+            instance_source_node_id: None,
         });
 
         let result = hit_test(&doc, "page-1", 15.0, 15.0, HitTestMode::Topmost)
@@ -2700,6 +2862,7 @@ mod tests {
             shape: None,
             component: None,
             instance: None,
+            instance_source_node_id: None,
         });
 
         let mut state = EditorState::new(doc);
@@ -2839,6 +3002,7 @@ mod tests {
             }),
             component: None,
             instance: None,
+            instance_source_node_id: None,
         });
 
         let mut state = EditorState::new(doc);
@@ -2951,13 +3115,43 @@ mod tests {
         .expect("component + instance should succeed");
 
         let instance_id = state.selection.first().cloned().expect("instance root selected");
+        let original_instance_child_id = query_node(&state.doc, &instance_id)
+            .and_then(|root| root.children.as_ref().and_then(|children| children.first()).cloned())
+            .expect("instance child exists");
 
         dispatch_commands(
             &mut state,
-            vec![EditorCommand::SetTextContent {
-                node_id: "title".to_string(),
-                content: "Updated source".to_string(),
-            }],
+            vec![
+                EditorCommand::SetTextContent {
+                    node_id: original_instance_child_id.clone(),
+                    content: "Local override".to_string(),
+                },
+                EditorCommand::SetTextStyle {
+                    node_id: original_instance_child_id,
+                    style: TextStylePatch {
+                        font_weight: Some(500),
+                        ..TextStylePatch::default()
+                    },
+                },
+            ],
+        )
+        .expect("instance text override should succeed");
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SetTextContent {
+                    node_id: "title".to_string(),
+                    content: "Updated source".to_string(),
+                },
+                EditorCommand::SetTextStyle {
+                    node_id: "title".to_string(),
+                    style: TextStylePatch {
+                        font_weight: Some(300),
+                        ..TextStylePatch::default()
+                    },
+                },
+            ],
         )
         .expect("source text update should succeed");
 
@@ -2982,7 +3176,11 @@ mod tests {
                 .text
                 .as_ref()
                 .map(|text| text.content.as_str()),
-            Some("Updated source")
+            Some("Local override")
+        );
+        assert_eq!(
+            instance_child.text.as_ref().map(|text| text.font_weight),
+            Some(500)
         );
 
         dispatch_commands(

@@ -3461,9 +3461,12 @@ export function V2EditorShell() {
                               <div className="mt-1 font-medium text-slate-900">
                                 {activeNode.instance?.sourceComponentKey}
                               </div>
-                              <div className="mt-1 text-xs text-slate-500">
-                                {activeNode.instance?.sourceComponentId}
-                              </div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              {activeNode.instance?.sourceComponentId}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-500">
+                              Text overrides: {activeNode.instance?.textOverrides?.length ?? 0}
+                            </div>
                             </div>
                             <div className="flex gap-2">
                               <button

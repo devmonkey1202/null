@@ -98,9 +98,16 @@ export type ComponentNodeData = {
   componentKey: string;
 };
 
+export type InstanceTextOverride = {
+  sourceNodeId: string;
+  content?: string;
+  style?: TextStylePatch;
+};
+
 export type InstanceNodeData = {
   sourceComponentId: string;
   sourceComponentKey: string;
+  textOverrides?: InstanceTextOverride[];
 };
 
 export type SceneGuide = {
@@ -124,6 +131,7 @@ export type SceneNode = {
   shape?: ShapeNodeData;
   component?: ComponentNodeData;
   instance?: InstanceNodeData;
+  instanceSourceNodeId?: string;
 };
 
 export type ScenePage = {

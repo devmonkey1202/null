@@ -20,6 +20,7 @@ import {
   type SceneNode,
   type ScenePage,
   type InstanceNodeData,
+  type InstanceTextOverride,
   type SelectionSetMode,
   type SnapGuide,
   type ShapeNodeData,
@@ -633,7 +634,52 @@ function promoteNodeToComponent(
       componentKey: componentKey?.trim() || `component-${node.id}`,
     } satisfies ComponentNodeData,
     instance: undefined,
+    instanceSourceNodeId: undefined,
   };
+}
+
+function mergeTextStylePatch(
+  current: TextStylePatch | undefined,
+  next: TextStylePatch,
+): TextStylePatch {
+  return {
+    ...(current ?? {}),
+    ...(next.fontFamily !== undefined ? { fontFamily: next.fontFamily } : {}),
+    ...(next.fontSize !== undefined ? { fontSize: next.fontSize } : {}),
+    ...(next.fontWeight !== undefined ? { fontWeight: next.fontWeight } : {}),
+    ...(next.lineHeight !== undefined ? { lineHeight: next.lineHeight } : {}),
+    ...(next.letterSpacing !== undefined ? { letterSpacing: next.letterSpacing } : {}),
+    ...(next.align !== undefined ? { align: next.align } : {}),
+    ...(next.color !== undefined ? { color: next.color } : {}),
+  };
+}
+
+function upsertInstanceTextOverride(
+  overrides: InstanceTextOverride[] | undefined,
+  sourceNodeId: string,
+  patch: {
+    content?: string;
+    style?: TextStylePatch;
+  },
+) {
+  const nextOverrides = structuredClone(overrides ?? []);
+  const current = nextOverrides.find((entry) => entry.sourceNodeId === sourceNodeId);
+  if (current) {
+    if (patch.content !== undefined) {
+      current.content = patch.content;
+    }
+    if (patch.style) {
+      current.style = mergeTextStylePatch(current.style, patch.style);
+    }
+    return nextOverrides;
+  }
+
+  nextOverrides.push({
+    sourceNodeId,
+    ...(patch.content !== undefined ? { content: patch.content } : {}),
+    ...(patch.style ? { style: patch.style } : {}),
+  } satisfies InstanceTextOverride);
+  return nextOverrides;
 }
 
 function syncComponentKeyOnPages(pages: ScenePage[], nodeId: string, componentKey: string) {
@@ -666,6 +712,60 @@ function syncComponentKeyOnPages(pages: ScenePage[], nodeId: string, componentKe
         };
       }
       return node;
+    }),
+  }));
+}
+
+function findInstanceRootId(document: SceneDoc, nodeId: string) {
+  let currentId: string | null = nodeId;
+  while (currentId) {
+    const currentNode = document.pages
+      .flatMap((page) => page.nodes)
+      .find((node) => node.id === currentId);
+    if (!currentNode) {
+      return null;
+    }
+    if (currentNode.kind === "instance" && currentNode.instance) {
+      return currentNode.id;
+    }
+    currentId = currentNode.parentId;
+  }
+  return null;
+}
+
+function syncTextOverrideOnPages(
+  document: SceneDoc,
+  nodeId: string,
+  patch: {
+    content?: string;
+    style?: TextStylePatch;
+  },
+) {
+  const instanceRootId = findInstanceRootId(document, nodeId);
+  if (!instanceRootId) {
+    return document.pages;
+  }
+
+  const node = document.pages.flatMap((page) => page.nodes).find((candidate) => candidate.id === nodeId);
+  const sourceNodeId = node?.instanceSourceNodeId;
+  if (!sourceNodeId) {
+    return document.pages;
+  }
+
+  return document.pages.map((page) => ({
+    ...page,
+    nodes: page.nodes.map((candidate) => {
+      if (candidate.id !== instanceRootId || candidate.kind !== "instance" || !candidate.instance) {
+        return candidate;
+      }
+
+      return {
+        ...candidate,
+        instance: {
+          ...candidate.instance,
+          textOverrides: upsertInstanceTextOverride(candidate.instance.textOverrides, sourceNodeId, patch),
+        } satisfies InstanceNodeData,
+      };
     }),
   }));
 }
@@ -731,12 +831,14 @@ function createInstanceSubtree(
       x: next.frame.x + offsetX,
       y: next.frame.y + offsetY,
     };
+    next.instanceSourceNodeId = original.id;
     if (oldId === sourceNodeId) {
       next.kind = "instance";
       next.component = undefined;
       next.instance = {
         sourceComponentId: sourceRoot.id,
         sourceComponentKey: sourceRoot.component!.componentKey,
+        textOverrides: [],
       } satisfies InstanceNodeData;
     }
     return next;
@@ -833,16 +935,33 @@ function refreshInstanceSubtree(document: SceneDoc, nodeId: string) {
       x: next.frame.x + offsetX,
       y: next.frame.y + offsetY,
     };
+    next.instanceSourceNodeId = original.id;
     if (oldId === sourceRoot.id) {
       next.kind = "instance";
       next.component = undefined;
       next.instance = {
         sourceComponentId: sourceRoot.id,
         sourceComponentKey: sourceRoot.component!.componentKey,
+        textOverrides: structuredClone(instanceRoot.instance?.textOverrides ?? []),
       } satisfies InstanceNodeData;
     }
     return next;
   });
+
+  const overrides = instanceRoot.instance.textOverrides ?? [];
+  for (const override of overrides) {
+    const targetNode = refreshedNodes.find(
+      (candidate) => candidate.instanceSourceNodeId === override.sourceNodeId,
+    );
+    if (!targetNode?.text) {
+      continue;
+    }
+    targetNode.text = {
+      ...targetNode.text,
+      ...(override.content !== undefined ? { content: override.content } : {}),
+      ...(override.style ? applyTextStylePatch(targetNode.text, override.style) : {}),
+    };
+  }
 
   return {
     pageId: instancePage.id,
@@ -860,6 +979,7 @@ function detachInstanceNode(node: SceneNode): SceneNode {
     ...node,
     kind: "frame",
     instance: undefined,
+    instanceSourceNodeId: undefined,
   };
 }
 
@@ -1475,9 +1595,8 @@ export class NoopEditorBridge implements EditorBridge {
           this.recordHistory();
           break;
         case "set_text_content":
-          this.document = normalizeDocument({
-            ...this.document,
-            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+          {
+            const nextPages = updateNode(this.document.pages, command.nodeId, (node) =>
               ({
                 ...node,
                 text: node.text
@@ -1487,24 +1606,45 @@ export class NoopEditorBridge implements EditorBridge {
                     }
                   : node.text,
               }),
-            ),
-            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          });
+            );
+            this.document = normalizeDocument({
+              ...this.document,
+              pages: syncTextOverrideOnPages(
+                {
+                  ...this.document,
+                  pages: nextPages,
+                },
+                command.nodeId,
+                { content: command.content },
+              ),
+              meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+            });
+          }
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
         case "set_text_style":
-          this.document = normalizeDocument({
-            ...this.document,
-            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+          {
+            const nextPages = updateNode(this.document.pages, command.nodeId, (node) =>
               ({
                 ...node,
                 text: node.text ? applyTextStylePatch(node.text, command.style) : node.text,
               }),
-            ),
-            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          });
+            );
+            this.document = normalizeDocument({
+              ...this.document,
+              pages: syncTextOverrideOnPages(
+                {
+                  ...this.document,
+                  pages: nextPages,
+                },
+                command.nodeId,
+                { style: command.style },
+              ),
+              meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+            });
+          }
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();

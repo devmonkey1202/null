@@ -68,6 +68,8 @@ pub struct SceneNode {
     pub component: Option<ComponentNodeData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<InstanceNodeData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_source_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -240,11 +242,23 @@ pub struct ComponentNodeData {
     pub component_key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceNodeData {
     pub source_component_id: String,
     pub source_component_key: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_overrides: Vec<InstanceTextOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceTextOverride {
+    pub source_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<TextStylePatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -907,6 +921,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     },
                     SceneNode {
                         id: "child".to_string(),
@@ -940,6 +955,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     },
                 ],
             }],
@@ -1018,6 +1034,7 @@ mod tests {
             }),
             component: None,
             instance: None,
+            instance_source_node_id: None,
         });
 
         let report = validate_scene_doc(&doc);

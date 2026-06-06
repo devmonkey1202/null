@@ -113,6 +113,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     },
                     SceneNode {
                         id: "group".to_string(),
@@ -133,6 +134,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     },
                     SceneNode {
                         id: "title".to_string(),
@@ -163,6 +165,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     },
                 ],
             }],

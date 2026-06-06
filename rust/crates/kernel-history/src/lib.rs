@@ -141,6 +141,7 @@ mod tests {
                         shape: None,
                         component: None,
                         instance: None,
+                        instance_source_node_id: None,
                     }],
                 }],
                 meta: SceneDocMeta {
