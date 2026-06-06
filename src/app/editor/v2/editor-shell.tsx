@@ -1178,6 +1178,14 @@ export function V2EditorShell() {
         ),
     [nodes, snapshot?.selection],
   );
+  const componentNodes = useMemo(
+    () =>
+      nodes.filter(
+        (node): node is SceneNode & { component: NonNullable<SceneNode["component"]> } =>
+          node.kind === "component" && Boolean(node.component),
+      ),
+    [nodes],
+  );
   const editingTextNode = useMemo(
     () =>
       editingTextNodeId
@@ -1424,11 +1432,15 @@ export function V2EditorShell() {
       return;
     }
 
+    await createInstanceFromComponentNode(activeNode.id);
+  }
+
+  async function createInstanceFromComponentNode(sourceNodeId: string) {
     await applyAndSync([
       {
         kind: "create_instance_from_component",
         pageId: CANVAS_PAGE_ID,
-        sourceNodeId: activeNode.id,
+        sourceNodeId,
         offsetX: 56,
         offsetY: 56,
       },
@@ -2627,6 +2639,56 @@ export function V2EditorShell() {
                 </button>
               );
             })}
+          </div>
+          <div className="border-t border-slate-200 px-4 py-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Components
+            </div>
+          </div>
+          <div className="space-y-2 p-3">
+            {componentNodes.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                No components yet.
+              </div>
+            ) : (
+              componentNodes.map((node) => {
+                const instanceCount = nodes.filter(
+                  (candidate) => candidate.instance?.sourceComponentId === node.id,
+                ).length;
+
+                return (
+                  <div
+                    key={`component-panel-${node.id}`}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void selectNode(node.id)}
+                        className="min-w-0 text-left"
+                      >
+                        <div className="truncate text-sm font-semibold text-slate-900">
+                          {node.name}
+                        </div>
+                        <div className="mt-1 truncate text-xs text-slate-500">
+                          {node.component.componentKey}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void createInstanceFromComponentNode(node.id)}
+                        className="shrink-0 rounded-full bg-[#2859ff] px-3 py-1 text-xs font-semibold text-white"
+                      >
+                        Insert
+                      </button>
+                    </div>
+                    <div className="mt-3 text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                      {instanceCount} instance{instanceCount === 1 ? "" : "s"}
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </aside>
 
