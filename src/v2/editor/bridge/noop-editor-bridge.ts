@@ -20,6 +20,7 @@ import {
   type SceneNode,
   type ScenePage,
   type InstanceNodeData,
+  type InstanceShapeOverride,
   type InstanceTextOverride,
   type SelectionSetMode,
   type SnapGuide,
@@ -682,6 +683,39 @@ function upsertInstanceTextOverride(
   return nextOverrides;
 }
 
+function upsertInstanceShapeOverride(
+  overrides: InstanceShapeOverride[] | undefined,
+  sourceNodeId: string,
+  style: ShapeStylePatch,
+) {
+  const nextOverrides = structuredClone(overrides ?? []);
+  const current = nextOverrides.find((entry) => entry.sourceNodeId === sourceNodeId);
+  if (current) {
+    current.style = mergeShapeStylePatch(current.style, style);
+    return nextOverrides;
+  }
+
+  nextOverrides.push({
+    sourceNodeId,
+    style: structuredClone(style),
+  } satisfies InstanceShapeOverride);
+  return nextOverrides;
+}
+
+function mergeShapeStylePatch(
+  current: ShapeStylePatch | undefined,
+  next: ShapeStylePatch,
+): ShapeStylePatch {
+  return {
+    ...(current ?? {}),
+    ...(next.fill !== undefined ? { fill: next.fill } : {}),
+    ...(next.strokeColor !== undefined ? { strokeColor: next.strokeColor } : {}),
+    ...(next.strokeWidth !== undefined ? { strokeWidth: next.strokeWidth } : {}),
+    ...(next.cornerRadius !== undefined ? { cornerRadius: next.cornerRadius } : {}),
+    ...(next.opacity !== undefined ? { opacity: next.opacity } : {}),
+  };
+}
+
 function syncComponentKeyOnPages(pages: ScenePage[], nodeId: string, componentKey: string) {
   const nextKey = componentKey.trim();
   if (!nextKey) {
@@ -770,6 +804,40 @@ function syncTextOverrideOnPages(
   }));
 }
 
+function syncShapeOverrideOnPages(
+  document: SceneDoc,
+  nodeId: string,
+  style: ShapeStylePatch,
+) {
+  const instanceRootId = findInstanceRootId(document, nodeId);
+  if (!instanceRootId) {
+    return document.pages;
+  }
+
+  const node = document.pages.flatMap((page) => page.nodes).find((candidate) => candidate.id === nodeId);
+  const sourceNodeId = node?.instanceSourceNodeId;
+  if (!sourceNodeId) {
+    return document.pages;
+  }
+
+  return document.pages.map((page) => ({
+    ...page,
+    nodes: page.nodes.map((candidate) => {
+      if (candidate.id !== instanceRootId || candidate.kind !== "instance" || !candidate.instance) {
+        return candidate;
+      }
+
+      return {
+        ...candidate,
+        instance: {
+          ...candidate.instance,
+          shapeOverrides: upsertInstanceShapeOverride(candidate.instance.shapeOverrides, sourceNodeId, style),
+        } satisfies InstanceNodeData,
+      };
+    }),
+  }));
+}
+
 function createInstanceSubtree(
   document: SceneDoc,
   pageId: string,
@@ -839,6 +907,7 @@ function createInstanceSubtree(
         sourceComponentId: sourceRoot.id,
         sourceComponentKey: sourceRoot.component!.componentKey,
         textOverrides: [],
+        shapeOverrides: [],
       } satisfies InstanceNodeData;
     }
     return next;
@@ -943,6 +1012,7 @@ function refreshInstanceSubtree(document: SceneDoc, nodeId: string) {
         sourceComponentId: sourceRoot.id,
         sourceComponentKey: sourceRoot.component!.componentKey,
         textOverrides: structuredClone(instanceRoot.instance?.textOverrides ?? []),
+        shapeOverrides: structuredClone(instanceRoot.instance?.shapeOverrides ?? []),
       } satisfies InstanceNodeData;
     }
     return next;
@@ -961,6 +1031,17 @@ function refreshInstanceSubtree(document: SceneDoc, nodeId: string) {
       ...(override.content !== undefined ? { content: override.content } : {}),
       ...(override.style ? applyTextStylePatch(targetNode.text, override.style) : {}),
     };
+  }
+
+  const shapeOverrides = instanceRoot.instance.shapeOverrides ?? [];
+  for (const override of shapeOverrides) {
+    const targetNode = refreshedNodes.find(
+      (candidate) => candidate.instanceSourceNodeId === override.sourceNodeId,
+    );
+    if (!targetNode?.shape || !override.style) {
+      continue;
+    }
+    targetNode.shape = applyShapeStylePatch(targetNode.shape, override.style);
   }
 
   return {
@@ -1688,14 +1769,24 @@ export class NoopEditorBridge implements EditorBridge {
           this.recordHistory();
           break;
         case "set_shape_style":
-          this.document = normalizeDocument({
-            ...this.document,
-            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+          {
+            const nextPages = updateNode(this.document.pages, command.nodeId, (node) => ({
               ...node,
               shape: node.shape ? applyShapeStylePatch(node.shape, command.style) : node.shape,
-            })),
-            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
-          });
+            }));
+            this.document = normalizeDocument({
+              ...this.document,
+              pages: syncShapeOverrideOnPages(
+                {
+                  ...this.document,
+                  pages: nextPages,
+                },
+                command.nodeId,
+                command.style,
+              ),
+              meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+            });
+          }
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();

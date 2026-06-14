@@ -2,9 +2,9 @@ use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, AutoLayoutJustify, ComponentNodeData,
     EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis,
-    HorizontalConstraint, InstanceNodeData, InstanceTextOverride, SceneDoc, SceneGuide, SceneNode,
-    SceneNodeKind, SelectionSetMode, ShapePathData, ShapeStylePatch, TextSizingMode, TextStylePatch,
-    TransformHandleKind, ValidationReport, VerticalConstraint,
+    HorizontalConstraint, InstanceNodeData, InstanceShapeOverride, InstanceTextOverride, SceneDoc,
+    SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode, ShapePathData, ShapeStylePatch,
+    TextSizingMode, TextStylePatch, TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
@@ -194,9 +194,10 @@ pub fn dispatch_commands(
                     let node = find_node_mut(&mut state.doc, &node_id)?;
                     ensure_shape_node(node)?;
                     if let Some(shape) = &mut node.shape {
-                        apply_shape_style_patch(shape, style);
+                        apply_shape_style_patch(shape, style.clone());
                     }
                 }
+                capture_shape_style_override(&mut state.doc, &node_id, &style)?;
                 normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
@@ -1072,6 +1073,7 @@ fn create_instance_from_component(
                 source_component_id: source_root.id.clone(),
                 source_component_key: component_key.clone(),
                 text_overrides: Vec::new(),
+                shape_overrides: Vec::new(),
             });
         }
 
@@ -1113,7 +1115,7 @@ fn create_instance_from_component(
 }
 
 fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreError> {
-    let (instance_page_id, source_component_id, source_component_key, instance_parent_id, instance_frame, text_overrides) = {
+    let (instance_page_id, source_component_id, source_component_key, instance_parent_id, instance_frame, text_overrides, shape_overrides) = {
         let instance_page = doc
             .pages
             .iter()
@@ -1148,6 +1150,7 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
             instance_root.parent_id.clone(),
             instance_root.frame.clone(),
             instance.text_overrides.clone(),
+            instance.shape_overrides.clone(),
         )
     };
 
@@ -1253,6 +1256,7 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
                 source_component_id: source_component_id.clone(),
                 source_component_key: source_component_key.clone(),
                 text_overrides: text_overrides.clone(),
+                shape_overrides: shape_overrides.clone(),
             });
         }
 
@@ -1260,6 +1264,7 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
     }
 
     apply_text_overrides_to_instance_nodes(&mut refreshed_nodes, &text_overrides);
+    apply_shape_overrides_to_instance_nodes(&mut refreshed_nodes, &shape_overrides);
 
     for refreshed in refreshed_nodes {
         if let Some(existing) = target_page.nodes.iter_mut().find(|node| node.id == refreshed.id) {
@@ -1355,6 +1360,37 @@ fn capture_text_style_override(
     Ok(())
 }
 
+fn capture_shape_style_override(
+    doc: &mut SceneDoc,
+    node_id: &str,
+    style: &ShapeStylePatch,
+) -> Result<(), CoreError> {
+    let Some(instance_root_id) = find_instance_root_id(doc, node_id) else {
+        return Ok(());
+    };
+    let source_node_id = query_node(doc, node_id)
+        .and_then(|node| node.instance_source_node_id.clone())
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.instance.override_source_missing",
+                format!("Node '{}' is missing instance source metadata.", node_id),
+            )
+        })?;
+    let instance_root = find_node_mut(doc, &instance_root_id)?;
+    let instance = instance_root.instance.as_mut().ok_or_else(|| {
+        CoreError::new(
+            "scene.instance.metadata_missing",
+            format!("Instance '{}' is missing metadata.", instance_root_id),
+        )
+    })?;
+    upsert_shape_override(
+        &mut instance.shape_overrides,
+        &source_node_id,
+        Some(style.clone()),
+    );
+    Ok(())
+}
+
 fn find_instance_root_id(doc: &SceneDoc, node_id: &str) -> Option<String> {
     let mut current_id = Some(node_id.to_string());
     while let Some(id) = current_id {
@@ -1393,6 +1429,27 @@ fn upsert_text_override(
     });
 }
 
+fn upsert_shape_override(
+    overrides: &mut Vec<InstanceShapeOverride>,
+    source_node_id: &str,
+    style: Option<ShapeStylePatch>,
+) {
+    if let Some(existing) = overrides
+        .iter_mut()
+        .find(|entry| entry.source_node_id == source_node_id)
+    {
+        if let Some(next_style) = style {
+            existing.style = Some(merge_shape_style_patch(existing.style.clone(), next_style));
+        }
+        return;
+    }
+
+    overrides.push(InstanceShapeOverride {
+        source_node_id: source_node_id.to_string(),
+        style,
+    });
+}
+
 fn merge_text_style_patch(current: Option<TextStylePatch>, next: TextStylePatch) -> TextStylePatch {
     let mut merged = current.unwrap_or_default();
     if next.font_family.is_some() {
@@ -1419,6 +1476,26 @@ fn merge_text_style_patch(current: Option<TextStylePatch>, next: TextStylePatch)
     merged
 }
 
+fn merge_shape_style_patch(current: Option<ShapeStylePatch>, next: ShapeStylePatch) -> ShapeStylePatch {
+    let mut merged = current.unwrap_or_default();
+    if next.fill.is_some() {
+        merged.fill = next.fill;
+    }
+    if next.stroke_color.is_some() {
+        merged.stroke_color = next.stroke_color;
+    }
+    if next.stroke_width.is_some() {
+        merged.stroke_width = next.stroke_width;
+    }
+    if next.corner_radius.is_some() {
+        merged.corner_radius = next.corner_radius;
+    }
+    if next.opacity.is_some() {
+        merged.opacity = next.opacity;
+    }
+    merged
+}
+
 fn apply_text_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[InstanceTextOverride]) {
     for override_entry in overrides {
         let Some(node) = nodes
@@ -1435,6 +1512,23 @@ fn apply_text_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[
         }
         if let Some(style) = &override_entry.style {
             apply_text_style_patch(text, style.clone());
+        }
+    }
+}
+
+fn apply_shape_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[InstanceShapeOverride]) {
+    for override_entry in overrides {
+        let Some(node) = nodes
+            .iter_mut()
+            .find(|candidate| candidate.instance_source_node_id.as_deref() == Some(override_entry.source_node_id.as_str()))
+        else {
+            continue;
+        };
+        let Some(shape) = &mut node.shape else {
+            continue;
+        };
+        if let Some(style) = &override_entry.style {
+            apply_shape_style_patch(shape, style.clone());
         }
     }
 }

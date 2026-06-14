@@ -259,6 +259,8 @@ pub struct InstanceNodeData {
     pub source_component_key: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text_overrides: Vec<InstanceTextOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shape_overrides: Vec<InstanceShapeOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -269,6 +271,14 @@ pub struct InstanceTextOverride {
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<TextStylePatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceShapeOverride {
+    pub source_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<ShapeStylePatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

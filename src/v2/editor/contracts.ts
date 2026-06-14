@@ -107,10 +107,16 @@ export type InstanceTextOverride = {
   style?: TextStylePatch;
 };
 
+export type InstanceShapeOverride = {
+  sourceNodeId: string;
+  style?: ShapeStylePatch;
+};
+
 export type InstanceNodeData = {
   sourceComponentId: string;
   sourceComponentKey: string;
   textOverrides?: InstanceTextOverride[];
+  shapeOverrides?: InstanceShapeOverride[];
 };
 
 export type SceneGuide = {

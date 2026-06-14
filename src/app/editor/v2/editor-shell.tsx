@@ -3534,6 +3534,9 @@ export function V2EditorShell() {
                             <div className="mt-2 text-xs text-slate-500">
                               Text overrides: {activeNode.instance?.textOverrides?.length ?? 0}
                             </div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              Shape overrides: {activeNode.instance?.shapeOverrides?.length ?? 0}
+                            </div>
                             </div>
                             <div className="flex gap-2">
                               <button
