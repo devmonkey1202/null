@@ -139,3 +139,24 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 
 > NULL v2의 최종 목적은 더 넓은 앱 플랫폼으로 확장 가능한 구조를 갖는 것이지만,  
 > 현재 구현의 1순위는 상용 수준 에디터 완성이다.
+
+## 11. `main` Reflect Conditions
+
+`v2-rebuild`의 변경을 `main`에 반영하는 조건은 아래를 모두 만족해야 합니다.
+
+1. Editor Kernel 핵심 축이 내부 QA 기준으로 녹색일 것
+   - selection / move / rotate / resize
+   - snapping / guides / rulers
+   - text editing
+   - vector path editing
+   - component / instance 기본 흐름
+2. `cargo test`, `build:v2:editor-wasm`, `verify:types`가 안정적으로 통과할 것
+3. v2 editor shell이 기본 작업 흐름에서 noop fallback 없이도 사용 가능한 수준일 것
+4. editor 성능 기준과 quality gate가 staging에서 확인될 것
+5. v1 경로와 충돌하지 않는 전환 계획이 준비될 것
+6. Vercel production 자동 배포 조건을 통제할 것
+
+그 전까지는:
+- GitHub 최신 작업은 `v2-rebuild` 브랜치에서 계속 누적
+- `main`은 의도적으로 최신화하지 않음
+- GitHub 메인 화면이 오래돼 보이는 것은 정상

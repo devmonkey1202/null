@@ -210,3 +210,23 @@ v2를 기본값으로 전환하기 전, 최소 기준:
 
 v2는 “리팩터링 배포”가 아니라 “병행 플랫폼 교체”로 접근해야 합니다.  
 즉, 새 제품을 기존 옆에 놓고 충분히 성숙한 뒤 스위치하는 방식이 맞습니다.
+
+## 13. `main` Merge Gate
+
+`main` 반영은 개발 진행 자체와 분리된 별도 게이트입니다.
+
+반영 전 필수 조건:
+- `v2-rebuild`에서 에디터 핵심 기능이 내부 QA 통과
+- staging validation 통과
+- noop bridge 의존이 기본 경로에서 제거되거나, fallback이 비활성화 가능 수준으로 검증
+- 성능/SLO 기준 통과
+- rollback 절차 확인
+- Vercel preview / production 자동 동작 영향 범위 확인
+
+반영 방식:
+1. `v2-rebuild`에서 release candidate commit 고정
+2. staging 검증
+3. `main` merge
+4. 필요한 경우에만 production 반영
+
+즉, `main`은 “개발 로그를 모으는 브랜치”가 아니라 “검증된 전환 지점”으로만 사용합니다.
