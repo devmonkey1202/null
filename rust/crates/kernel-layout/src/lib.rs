@@ -158,6 +158,7 @@ mod tests {
                             font_weight: 700,
                             line_height: 24.0,
                             letter_spacing: 0.0,
+                            paragraph_spacing: 0.0,
                             align: kernel_doc::TextAlign::Left,
                             color: "#0f172a".to_string(),
                             sizing: kernel_doc::TextSizingMode::AutoHeight,

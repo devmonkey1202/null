@@ -3619,6 +3619,19 @@ export function V2EditorShell() {
                             />
                           </label>
                           <label className="block">
+                            <div className="text-slate-400">Paragraph spacing</div>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.paragraphSpacing}
+                              onChange={(event) =>
+                                void updateTextStyle({ paragraphSpacing: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
                             <div className="text-slate-400">Align</div>
                             <select
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"

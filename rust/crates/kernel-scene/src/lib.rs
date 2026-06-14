@@ -1590,6 +1590,9 @@ fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStyleP
     if let Some(letter_spacing) = style.letter_spacing {
         text.letter_spacing = letter_spacing;
     }
+    if let Some(paragraph_spacing) = style.paragraph_spacing {
+        text.paragraph_spacing = paragraph_spacing.max(0.0);
+    }
     if let Some(align) = style.align {
         text.align = align;
     }
@@ -1799,14 +1802,17 @@ fn estimate_text_auto_height(width: f32, text: &kernel_doc::TextNodeData) -> f32
     let available_width = width.max(text.font_size);
     let average_char_width = (text.font_size * 0.56 + text.letter_spacing.max(0.0)).max(1.0);
     let chars_per_line = ((available_width / average_char_width).floor() as usize).max(1);
+    let paragraphs = text.content.split('\n').collect::<Vec<_>>();
     let mut lines = 0usize;
 
-    for paragraph in text.content.split('\n') {
+    for paragraph in &paragraphs {
         let paragraph_length = paragraph.chars().count().max(1);
         lines += ((paragraph_length + chars_per_line - 1) / chars_per_line).max(1);
     }
 
-    text.line_height * (lines.max(1) as f32)
+    let paragraph_gap = text.paragraph_spacing.max(0.0) * paragraphs.len().saturating_sub(1) as f32;
+
+    text.line_height * (lines.max(1) as f32) + paragraph_gap
 }
 
 fn move_guide(doc: &mut SceneDoc, page_id: &str, guide_id: &str, position: i32) -> Result<(), CoreError> {
@@ -2634,6 +2640,7 @@ mod tests {
                             font_weight: 700,
                             line_height: 24.0,
                             letter_spacing: 0.0,
+                            paragraph_spacing: 0.0,
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
                             sizing: TextSizingMode::AutoHeight,
@@ -2978,6 +2985,7 @@ mod tests {
                 font_weight: 500,
                 line_height: 22.0,
                 letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
                 align: TextAlign::Left,
                 color: "#475569".to_string(),
                 sizing: TextSizingMode::AutoHeight,

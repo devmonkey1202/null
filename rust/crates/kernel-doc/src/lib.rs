@@ -175,6 +175,8 @@ pub struct TextNodeData {
     pub font_weight: u16,
     pub line_height: f32,
     pub letter_spacing: f32,
+    #[serde(default)]
+    pub paragraph_spacing: f32,
     pub align: TextAlign,
     pub color: String,
     #[serde(default)]
@@ -194,6 +196,8 @@ pub struct TextStylePatch {
     pub line_height: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub letter_spacing: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph_spacing: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub align: Option<TextAlign>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -680,6 +684,15 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
                                 Some(node.id.clone()),
                             ));
                         }
+                        if text.paragraph_spacing < 0.0 {
+                            issues.push(issue(
+                                format!("text-paragraph-spacing-invalid-{}", node.id),
+                                ValidationSeverity::Error,
+                                "scene_text.paragraph_spacing.invalid",
+                                "Text paragraph spacing must be zero or greater.",
+                                Some(node.id.clone()),
+                            ));
+                        }
                     }
                     None => {
                         issues.push(issue(
@@ -968,6 +981,7 @@ mod tests {
                             font_weight: 600,
                             line_height: 24.0,
                             letter_spacing: 0.0,
+                            paragraph_spacing: 0.0,
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
                             sizing: TextSizingMode::AutoHeight,

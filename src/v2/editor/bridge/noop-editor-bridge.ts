@@ -596,6 +596,7 @@ function applyTextStylePatch(text: TextNodeData, style: TextStylePatch): TextNod
     ...(style.fontWeight !== undefined ? { fontWeight: style.fontWeight } : {}),
     ...(style.lineHeight !== undefined ? { lineHeight: Math.max(style.lineHeight, 1) } : {}),
     ...(style.letterSpacing !== undefined ? { letterSpacing: style.letterSpacing } : {}),
+    ...(style.paragraphSpacing !== undefined ? { paragraphSpacing: Math.max(style.paragraphSpacing, 0) } : {}),
     ...(style.align ? { align: style.align } : {}),
     ...(style.color ? { color: style.color } : {}),
   };
@@ -1068,12 +1069,14 @@ function estimateTextAutoHeight(width: number, text: TextNodeData) {
   const availableWidth = Math.max(width, text.fontSize);
   const averageCharWidth = Math.max(text.fontSize * 0.56 + Math.max(text.letterSpacing, 0), 1);
   const charsPerLine = Math.max(Math.floor(availableWidth / averageCharWidth), 1);
-  const lines = text.content.split("\n").reduce((count, paragraph) => {
+  const paragraphs = text.content.split("\n");
+  const lines = paragraphs.reduce((count, paragraph) => {
     const paragraphLength = Math.max(Array.from(paragraph).length, 1);
     return count + Math.max(Math.ceil(paragraphLength / charsPerLine), 1);
   }, 0);
+  const paragraphGap = Math.max(paragraphs.length - 1, 0) * Math.max(text.paragraphSpacing, 0);
 
-  return Math.max(text.lineHeight * Math.max(lines, 1), text.lineHeight);
+  return Math.max(text.lineHeight * Math.max(lines, 1) + paragraphGap, text.lineHeight);
 }
 
 function normalizeTextNode(node: SceneNode): SceneNode {

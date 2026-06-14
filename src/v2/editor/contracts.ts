@@ -59,6 +59,7 @@ export type TextNodeData = {
   fontWeight: number;
   lineHeight: number;
   letterSpacing: number;
+  paragraphSpacing: number;
   align: TextAlign;
   color: string;
   sizing: TextSizingMode;
