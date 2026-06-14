@@ -267,6 +267,14 @@ pub struct InstanceNodeData {
     pub shape_overrides: Vec<InstanceShapeOverride>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceOverrideKind {
+    All,
+    Text,
+    Shape,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceTextOverride {
@@ -417,6 +425,12 @@ pub enum EditorCommand {
     DetachInstance {
         #[serde(rename = "nodeId")]
         node_id: String,
+    },
+    ClearInstanceOverrides {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        #[serde(default, rename = "overrideKind", skip_serializing_if = "Option::is_none")]
+        override_kind: Option<InstanceOverrideKind>,
     },
     SetNodeAutoLayout {
         #[serde(rename = "nodeId")]

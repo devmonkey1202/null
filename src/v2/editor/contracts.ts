@@ -120,6 +120,8 @@ export type InstanceNodeData = {
   shapeOverrides?: InstanceShapeOverride[];
 };
 
+export type InstanceOverrideKind = "all" | "text" | "shape";
+
 export type SceneGuide = {
   id: string;
   axis: "x" | "y";
@@ -199,6 +201,7 @@ export type EditorCommand =
     }
   | { kind: "refresh_instance"; nodeId: string }
   | { kind: "detach_instance"; nodeId: string }
+  | { kind: "clear_instance_overrides"; nodeId: string; overrideKind?: InstanceOverrideKind }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | {
       kind: "set_node_constraints";

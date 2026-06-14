@@ -20,6 +20,7 @@ import {
   type SceneNode,
   type ScenePage,
   type InstanceNodeData,
+  type InstanceOverrideKind,
   type InstanceShapeOverride,
   type InstanceTextOverride,
   type SelectionSetMode,
@@ -1065,6 +1066,21 @@ function detachInstanceNode(node: SceneNode): SceneNode {
   };
 }
 
+function clearInstanceOverridesNode(node: SceneNode, overrideKind: InstanceOverrideKind): SceneNode {
+  if (node.kind !== "instance" || !node.instance) {
+    throw new Error(`Node '${node.id}' is not an instance.`);
+  }
+
+  return {
+    ...node,
+    instance: {
+      ...node.instance,
+      ...(overrideKind === "all" || overrideKind === "text" ? { textOverrides: [] } : {}),
+      ...(overrideKind === "all" || overrideKind === "shape" ? { shapeOverrides: [] } : {}),
+    } satisfies InstanceNodeData,
+  };
+}
+
 function estimateTextAutoHeight(width: number, text: TextNodeData) {
   const availableWidth = Math.max(width, text.fontSize);
   const averageCharWidth = Math.max(text.fontSize * 0.56 + Math.max(text.letterSpacing, 0), 1);
@@ -1907,6 +1923,18 @@ export class NoopEditorBridge implements EditorBridge {
           this.document = normalizeDocument({
             ...this.document,
             pages: updateNode(this.document.pages, command.nodeId, (node) => detachInstanceNode(node)),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "clear_instance_overrides":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) =>
+              clearInstanceOverridesNode(node, command.overrideKind ?? "all"),
+            ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           });
           this.version += 1;

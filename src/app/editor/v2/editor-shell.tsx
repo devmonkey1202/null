@@ -1476,6 +1476,20 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function clearActiveInstanceOverrides(overrideKind: "all" | "text" | "shape") {
+    if (!activeNode || activeNode.kind !== "instance") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "clear_instance_overrides",
+        nodeId: activeNode.id,
+        overrideKind,
+      },
+    ]);
+  }
+
   async function updateTextContent(content: string) {
     if (!activeNode || activeNode.kind !== "text") {
       return;
@@ -3538,7 +3552,7 @@ export function V2EditorShell() {
                               Shape overrides: {activeNode.instance?.shapeOverrides?.length ?? 0}
                             </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2">
                               <button
                                 type="button"
                                 onClick={() => void refreshActiveInstance()}
@@ -3552,6 +3566,27 @@ export function V2EditorShell() {
                                 className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
                               >
                                 Detach
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void clearActiveInstanceOverrides("text")}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Clear text
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void clearActiveInstanceOverrides("shape")}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Clear shape
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void clearActiveInstanceOverrides("all")}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Clear all
                               </button>
                             </div>
                           </div>
