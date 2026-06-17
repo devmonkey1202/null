@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runBooleanMultiple } from "@/advanced/geom/boolean";
 import { anchorsToPathData, ellipseToPath, pathDataToAnchors, pathDataToBounds, pathDataToPolygon, rectToPath, type PathAnchor } from "@/advanced/geom/pathData";
+import { DEFAULT_AUTO_LAYOUT, resolveAutoLayout } from "@/v2/editor/auto-layout";
 import { normalizeTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "@/v2/editor/rich-text-model";
 import type {
   AutoLayoutAlign,
@@ -1378,6 +1379,10 @@ export function V2EditorShell() {
       preview: activeNode.text.content.slice(start, end).replace(/\s+/g, " ").trim(),
     };
   }, [activeNode, inspectorTextSelection]);
+  const activeAutoLayout = useMemo(
+    () => resolveAutoLayout(activeNode?.layout ?? null),
+    [activeNode?.layout],
+  );
   const selectedShapeNodes = useMemo(
     () =>
       (snapshot?.selection ?? [])
@@ -1596,14 +1601,7 @@ export function V2EditorShell() {
       return;
     }
 
-    const current: AutoLayoutData = activeNode.layout ?? {
-      direction: "vertical",
-      gap: 16,
-      paddingX: 24,
-      paddingY: 24,
-      align: "start",
-      justify: "start",
-    };
+    const current: AutoLayoutData = resolveAutoLayout(activeNode.layout) ?? DEFAULT_AUTO_LAYOUT;
 
     await applyAndSync([
       {
@@ -3676,13 +3674,13 @@ export function V2EditorShell() {
                             {activeNode.layout ? "Enabled" : "Disabled"}
                           </button>
                         </div>
-                        {activeNode.layout ? (
+                        {activeAutoLayout ? (
                           <div className="grid grid-cols-2 gap-3">
                             <label className="block">
                               <div className="text-slate-400">Direction</div>
                               <select
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeNode.layout.direction}
+                                value={activeAutoLayout.direction}
                                 onChange={(event) =>
                                   void updateAutoLayout({
                                     direction: event.target.value as AutoLayoutDirection,
@@ -3700,7 +3698,7 @@ export function V2EditorShell() {
                               <div className="text-slate-400">Align</div>
                               <select
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeNode.layout.align}
+                                value={activeAutoLayout.align}
                                 onChange={(event) =>
                                   void updateAutoLayout({
                                     align: event.target.value as AutoLayoutAlign,
@@ -3718,7 +3716,7 @@ export function V2EditorShell() {
                               <div className="text-slate-400">Justify</div>
                               <select
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeNode.layout.justify}
+                                value={activeAutoLayout.justify}
                                 onChange={(event) =>
                                   void updateAutoLayout({
                                     justify: event.target.value as AutoLayoutJustify,
@@ -3737,7 +3735,7 @@ export function V2EditorShell() {
                               <input
                                 type="number"
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeNode.layout.gap}
+                                value={activeAutoLayout.gap}
                                 onChange={(event) =>
                                   void updateAutoLayout({
                                     gap: Number(event.target.value) || 0,
@@ -3750,7 +3748,7 @@ export function V2EditorShell() {
                               <input
                                 type="number"
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeNode.layout.paddingX}
+                                value={activeAutoLayout.paddingX}
                                 onChange={(event) =>
                                   void updateAutoLayout({
                                     paddingX: Number(event.target.value) || 0,
@@ -3763,13 +3761,39 @@ export function V2EditorShell() {
                               <input
                                 type="number"
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeNode.layout.paddingY}
+                                value={activeAutoLayout.paddingY}
                                 onChange={(event) =>
                                   void updateAutoLayout({
                                     paddingY: Number(event.target.value) || 0,
                                   })
                                 }
                               />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Wrap gap</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.wrapGap}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    wrapGap: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="col-span-2 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={activeAutoLayout.wrap}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    wrap: event.target.checked,
+                                    wrapGap: activeAutoLayout.wrapGap,
+                                  })
+                                }
+                              />
+                              Wrap children to the next row / column
                             </label>
                           </div>
                         ) : null}

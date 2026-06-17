@@ -46,6 +46,8 @@ export type AutoLayoutData = {
   paddingY: number;
   align: AutoLayoutAlign;
   justify: AutoLayoutJustify;
+  wrap?: boolean;
+  wrapGap?: number;
 };
 
 export type TextAlign = "left" | "center" | "right" | "justify";

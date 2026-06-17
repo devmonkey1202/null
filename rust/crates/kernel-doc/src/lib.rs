@@ -147,6 +147,10 @@ pub struct AutoLayoutData {
     pub padding_y: f32,
     pub align: AutoLayoutAlign,
     pub justify: AutoLayoutJustify,
+    #[serde(default)]
+    pub wrap: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap_gap: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

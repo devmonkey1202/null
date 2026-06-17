@@ -1843,104 +1843,168 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
             .enumerate()
             .map(|(index, node)| (node.id.clone(), index))
             .collect::<std::collections::HashMap<_, _>>();
-
-        let mut primary_cursor = match layout.direction {
+        let primary_start = match layout.direction {
             AutoLayoutDirection::Horizontal => parent_frame.x + layout.padding_x,
             AutoLayoutDirection::Vertical => parent_frame.y + layout.padding_y,
+        };
+        let cross_start = match layout.direction {
+            AutoLayoutDirection::Horizontal => parent_frame.y + layout.padding_y,
+            AutoLayoutDirection::Vertical => parent_frame.x + layout.padding_x,
         };
         let available_primary = match layout.direction {
             AutoLayoutDirection::Horizontal => (parent_frame.w - layout.padding_x * 2.0).max(1.0),
             AutoLayoutDirection::Vertical => (parent_frame.h - layout.padding_y * 2.0).max(1.0),
         };
-        let fixed_primary_sum: f32 = child_ids
-            .iter()
-            .filter_map(|child_id| index_map.get(child_id).copied())
-            .map(|child_index| match layout.direction {
-                AutoLayoutDirection::Horizontal => page.nodes[child_index].frame.w,
-                AutoLayoutDirection::Vertical => page.nodes[child_index].frame.h,
-            })
-            .sum();
-        let gap_count = child_ids.len().saturating_sub(1) as f32;
-        let mut actual_gap = layout.gap;
-        let content_primary = fixed_primary_sum + layout.gap * gap_count;
-        match layout.justify {
-            AutoLayoutJustify::Start => {}
-            AutoLayoutJustify::Center => {
-                primary_cursor += (available_primary - content_primary) / 2.0;
-            }
-            AutoLayoutJustify::End => {
-                primary_cursor += available_primary - content_primary;
-            }
-            AutoLayoutJustify::SpaceBetween => {
-                if child_ids.len() > 1 && available_primary > fixed_primary_sum {
-                    actual_gap = (available_primary - fixed_primary_sum) / gap_count.max(1.0);
-                }
-            }
-        }
-
-        let cross_start = match layout.direction {
-            AutoLayoutDirection::Horizontal => parent_frame.y + layout.padding_y,
-            AutoLayoutDirection::Vertical => parent_frame.x + layout.padding_x,
-        };
-
-        let cross_size = match layout.direction {
+        let available_cross = match layout.direction {
             AutoLayoutDirection::Horizontal => (parent_frame.h - layout.padding_y * 2.0).max(1.0),
             AutoLayoutDirection::Vertical => (parent_frame.w - layout.padding_x * 2.0).max(1.0),
         };
 
+        let mut lines = Vec::<AutoLayoutLine>::new();
+        let mut current_line = AutoLayoutLine::default();
         for child_id in &child_ids {
             let Some(child_index) = index_map.get(child_id).copied() else {
                 continue;
             };
+            let child = &page.nodes[child_index];
+            let child_primary = child_primary_size(child, &layout.direction);
+            let child_cross = child_cross_size(child, &layout.direction);
+            let next_main = if current_line.child_ids.is_empty() {
+                child_primary
+            } else {
+                current_line.main + layout.gap + child_primary
+            };
 
-            let child = &mut page.nodes[child_index];
-            match layout.direction {
-                AutoLayoutDirection::Horizontal => {
-                    child.frame.x = primary_cursor;
-                    match layout.align {
-                        AutoLayoutAlign::Start => {
-                            child.frame.y = cross_start;
-                        }
-                        AutoLayoutAlign::Center => {
-                            child.frame.y = cross_start + (cross_size - child.frame.h) / 2.0;
-                        }
-                        AutoLayoutAlign::End => {
-                            child.frame.y = cross_start + cross_size - child.frame.h;
-                        }
-                        AutoLayoutAlign::Stretch => {
-                            child.frame.y = cross_start;
-                            child.frame.h = cross_size.max(1.0);
-                        }
-                    }
-                    normalize_text_frame(child);
-                    primary_cursor += child.frame.w + actual_gap;
+            if layout.wrap && !current_line.child_ids.is_empty() && next_main > available_primary {
+                lines.push(current_line);
+                current_line = AutoLayoutLine::default();
+            }
+
+            current_line.main = if current_line.child_ids.is_empty() {
+                child_primary
+            } else {
+                current_line.main + layout.gap + child_primary
+            };
+            current_line.cross = current_line.cross.max(child_cross);
+            current_line.child_ids.push(child_id.clone());
+        }
+
+        if !current_line.child_ids.is_empty() {
+            lines.push(current_line);
+        }
+
+        let mut cross_cursor = cross_start;
+        let wrap_gap = resolved_wrap_gap(&layout);
+        for line in &lines {
+            let gap_count = line.child_ids.len().saturating_sub(1) as f32;
+            let mut primary_cursor = primary_start;
+            let fixed_primary_sum: f32 = line
+                .child_ids
+                .iter()
+                .filter_map(|child_id| index_map.get(child_id).copied())
+                .map(|child_index| child_primary_size(&page.nodes[child_index], &layout.direction))
+                .sum();
+            let mut actual_gap = layout.gap;
+            match layout.justify {
+                AutoLayoutJustify::Start => {}
+                AutoLayoutJustify::Center => {
+                    primary_cursor += (available_primary - line.main) / 2.0;
                 }
-                AutoLayoutDirection::Vertical => {
-                    child.frame.y = primary_cursor;
-                    match layout.align {
-                        AutoLayoutAlign::Start => {
-                            child.frame.x = cross_start;
-                        }
-                        AutoLayoutAlign::Center => {
-                            child.frame.x = cross_start + (cross_size - child.frame.w) / 2.0;
-                        }
-                        AutoLayoutAlign::End => {
-                            child.frame.x = cross_start + cross_size - child.frame.w;
-                        }
-                        AutoLayoutAlign::Stretch => {
-                            child.frame.x = cross_start;
-                            child.frame.w = cross_size.max(1.0);
-                        }
+                AutoLayoutJustify::End => {
+                    primary_cursor += available_primary - line.main;
+                }
+                AutoLayoutJustify::SpaceBetween => {
+                    if line.child_ids.len() > 1 && available_primary > fixed_primary_sum {
+                        actual_gap = (available_primary - fixed_primary_sum) / gap_count.max(1.0);
                     }
-                    normalize_text_frame(child);
-                    primary_cursor += child.frame.h + actual_gap;
                 }
             }
+
+            let line_cross = if layout.wrap {
+                line.cross.max(1.0)
+            } else {
+                available_cross
+            };
+
+            for child_id in &line.child_ids {
+                let Some(child_index) = index_map.get(child_id).copied() else {
+                    continue;
+                };
+
+                let child = &mut page.nodes[child_index];
+                match layout.direction {
+                    AutoLayoutDirection::Horizontal => {
+                        child.frame.x = primary_cursor;
+                        let (cross_position, cross_size) =
+                            align_cross_axis(child.frame.h, cross_cursor, line_cross, &layout.align);
+                        child.frame.y = cross_position;
+                        child.frame.h = cross_size.max(1.0);
+                        normalize_text_frame(child);
+                        primary_cursor += child.frame.w + actual_gap;
+                    }
+                    AutoLayoutDirection::Vertical => {
+                        child.frame.y = primary_cursor;
+                        let (cross_position, cross_size) =
+                            align_cross_axis(child.frame.w, cross_cursor, line_cross, &layout.align);
+                        child.frame.x = cross_position;
+                        child.frame.w = cross_size.max(1.0);
+                        normalize_text_frame(child);
+                        primary_cursor += child.frame.h + actual_gap;
+                    }
+                }
+            }
+
+            cross_cursor += line_cross + if layout.wrap { wrap_gap } else { 0.0 };
         }
     }
 
     for child_id in child_ids {
         apply_auto_layout_recursive(page, &child_id);
+    }
+}
+
+#[derive(Default)]
+struct AutoLayoutLine {
+    child_ids: Vec<String>,
+    main: f32,
+    cross: f32,
+}
+
+fn child_primary_size(node: &kernel_doc::SceneNode, direction: &AutoLayoutDirection) -> f32 {
+    match direction {
+        AutoLayoutDirection::Horizontal => node.frame.w,
+        AutoLayoutDirection::Vertical => node.frame.h,
+    }
+}
+
+fn child_cross_size(node: &kernel_doc::SceneNode, direction: &AutoLayoutDirection) -> f32 {
+    match direction {
+        AutoLayoutDirection::Horizontal => node.frame.h,
+        AutoLayoutDirection::Vertical => node.frame.w,
+    }
+}
+
+fn resolved_wrap_gap(layout: &kernel_doc::AutoLayoutData) -> f32 {
+    layout.wrap_gap.unwrap_or(layout.gap)
+}
+
+fn align_cross_axis(
+    current_size: f32,
+    cross_start: f32,
+    cross_size: f32,
+    align: &AutoLayoutAlign,
+) -> (f32, f32) {
+    match align {
+        AutoLayoutAlign::Center => (
+            cross_start + (cross_size - current_size) / 2.0,
+            current_size,
+        ),
+        AutoLayoutAlign::End => (
+            cross_start + cross_size - current_size,
+            current_size,
+        ),
+        AutoLayoutAlign::Stretch => (cross_start, cross_size),
+        AutoLayoutAlign::Start => (cross_start, current_size),
     }
 }
 
@@ -3177,6 +3241,8 @@ mod tests {
                     padding_y: 20.0,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
+                    wrap: false,
+                    wrap_gap: None,
                 }),
             }],
         )
@@ -3205,6 +3271,8 @@ mod tests {
                     padding_y: 10.0,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Center,
+                    wrap: false,
+                    wrap_gap: None,
                 }),
             }],
         )
@@ -3212,6 +3280,120 @@ mod tests {
 
         let title = query_node(&state.doc, "title").expect("title exists");
         assert_eq!(title.frame.x, 30.0);
+    }
+
+    #[test]
+    fn set_node_auto_layout_wrap_moves_overflow_children_to_next_line() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes[0].children = Some(vec![
+            "title".to_string(),
+            "chip-2".to_string(),
+            "chip-3".to_string(),
+        ]);
+        doc.pages[0].nodes[0].frame.w = 120.0;
+        doc.pages[0].nodes.push(SceneNode {
+            id: "chip-2".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Chip 2".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            text: Some(TextNodeData {
+                content: "Chip 2".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 600,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        doc.pages[0].nodes.push(SceneNode {
+            id: "chip-3".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Chip 3".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            text: Some(TextNodeData {
+                content: "Chip 3".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 600,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Horizontal,
+                    gap: 10.0,
+                    padding_x: 10.0,
+                    padding_y: 10.0,
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Start,
+                    wrap: true,
+                    wrap_gap: Some(14.0),
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let title = query_node(&state.doc, "title").expect("title exists");
+        let chip_2 = query_node(&state.doc, "chip-2").expect("chip-2 exists");
+        let chip_3 = query_node(&state.doc, "chip-3").expect("chip-3 exists");
+
+        assert_eq!(title.frame.x, 10.0);
+        assert_eq!(chip_2.frame.x, 60.0);
+        assert_eq!(chip_2.frame.y, 10.0);
+        assert_eq!(chip_3.frame.x, 10.0);
+        assert_eq!(chip_3.frame.y, 72.0);
     }
 
     #[test]
