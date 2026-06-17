@@ -50,6 +50,17 @@ export type AutoLayoutData = {
   wrapGap?: number;
 };
 
+export type LayoutSizing = "fixed" | "fill" | "hug";
+
+export type LayoutSizingAxis = {
+  width: LayoutSizing;
+  height: LayoutSizing;
+  minWidth?: number;
+  minHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+};
+
 export type TextAlign = "left" | "center" | "right" | "justify";
 
 export type TextSizingMode = "fixed" | "auto_height";
@@ -155,6 +166,7 @@ export type SceneNode = {
   frame: EditorRect;
   constraints?: NodeConstraints;
   layout?: AutoLayoutData;
+  layoutSizing?: LayoutSizingAxis;
   text?: TextNodeData;
   shape?: ShapeNodeData;
   component?: ComponentNodeData;
@@ -220,6 +232,7 @@ export type EditorCommand =
   | { kind: "detach_instance"; nodeId: string }
   | { kind: "clear_instance_overrides"; nodeId: string; overrideKind?: InstanceOverrideKind }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
+  | { kind: "set_node_layout_sizing"; nodeId: string; layoutSizing: LayoutSizingAxis | null }
   | {
       kind: "set_node_constraints";
       nodeId: string;

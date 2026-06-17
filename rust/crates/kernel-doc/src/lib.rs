@@ -61,6 +61,8 @@ pub struct SceneNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<AutoLayoutData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_sizing: Option<LayoutSizingAxis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextNodeData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<ShapeNodeData>,
@@ -136,6 +138,31 @@ pub enum AutoLayoutJustify {
     Center,
     End,
     SpaceBetween,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutSizing {
+    Fixed,
+    Fill,
+    Hug,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutSizingAxis {
+    #[serde(default)]
+    pub width: Option<LayoutSizing>,
+    #[serde(default)]
+    pub height: Option<LayoutSizing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_height: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -484,6 +511,12 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         layout: Option<AutoLayoutData>,
+    },
+    SetNodeLayoutSizing {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        #[serde(rename = "layoutSizing")]
+        layout_sizing: Option<LayoutSizingAxis>,
     },
     SetNodeConstraints {
         #[serde(rename = "nodeId")]
@@ -1076,6 +1109,7 @@ mod tests {
                         },
                         constraints: None,
                         layout: None,
+                        layout_sizing: None,
                         text: None,
                         shape: None,
                         component: None,
@@ -1100,6 +1134,7 @@ mod tests {
                             vertical: VerticalConstraint::Min,
                         }),
                         layout: None,
+                        layout_sizing: None,
                         text: Some(TextNodeData {
                             content: "Hello world".to_string(),
                             font_family: "Inter".to_string(),
@@ -1179,6 +1214,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: None,
             shape: Some(ShapeNodeData {
                 primitive: ShapePrimitive::Path,
@@ -1210,3 +1246,4 @@ mod tests {
             .any(|issue| issue.code == "scene_shape.path.points.invalid"));
     }
 }
+

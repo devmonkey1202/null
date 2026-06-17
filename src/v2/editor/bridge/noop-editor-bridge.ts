@@ -13,6 +13,7 @@ import {
   type HorizontalConstraint,
   type MoveSnapPreview,
   type NodeConstraints,
+  type LayoutSizingAxis,
   type ResizeSnapPreview,
   type RuntimeGraph,
   type SceneDoc,
@@ -36,7 +37,7 @@ import {
   type VerticalConstraint,
   V2_EDITOR_SCHEMA_VERSION,
 } from "@/v2/editor/contracts";
-import { resolveAutoLayout } from "@/v2/editor/auto-layout";
+import { DEFAULT_LAYOUT_SIZING, resolveAutoLayout, resolveLayoutSizing } from "@/v2/editor/auto-layout";
 
 const DEFAULT_VIEWPORT: EditorViewport = { zoom: 1, x: 0, y: 0 };
 
@@ -1200,6 +1201,29 @@ function orderedChildIds(page: SceneDoc["pages"][number], parent: SceneNode) {
     .map((node) => node.id);
 }
 
+function clampSize(value: number, min?: number, max?: number) {
+  let next = Math.max(value, 1);
+  if (typeof min === "number" && Number.isFinite(min)) {
+    next = Math.max(next, min);
+  }
+  if (typeof max === "number" && Number.isFinite(max)) {
+    next = Math.min(next, max);
+  }
+  return next;
+}
+
+function resolveNodeLayoutSizing(node: SceneNode) {
+  return resolveLayoutSizing(node.layoutSizing ?? DEFAULT_LAYOUT_SIZING);
+}
+
+function mainLayoutMode(sizing: LayoutSizingAxis, isHorizontal: boolean) {
+  return isHorizontal ? sizing.width : sizing.height;
+}
+
+function crossLayoutMode(sizing: LayoutSizingAxis, isHorizontal: boolean) {
+  return isHorizontal ? sizing.height : sizing.width;
+}
+
 function normalizeAutoLayoutNodes(document: SceneDoc): SceneDoc {
   const nextDocument = structuredClone(document);
 
@@ -1254,6 +1278,7 @@ function buildAutoLayoutFrames(
   }
 
   const isHorizontal = resolvedLayout.direction === "horizontal";
+  const parentSizing = resolveNodeLayoutSizing(parent);
   const primaryStart = isHorizontal
     ? parent.frame.x + resolvedLayout.paddingX
     : parent.frame.y + resolvedLayout.paddingY;
@@ -1266,6 +1291,9 @@ function buildAutoLayoutFrames(
   const availableCross = isHorizontal
     ? Math.max(parent.frame.h - resolvedLayout.paddingY * 2, 1)
     : Math.max(parent.frame.w - resolvedLayout.paddingX * 2, 1);
+  const hugMain = mainLayoutMode(parentSizing, isHorizontal) === "hug";
+  const hugCross = crossLayoutMode(parentSizing, isHorizontal) === "hug";
+  const lineLimitPrimary = resolvedLayout.wrap && !hugMain ? availablePrimary : Number.POSITIVE_INFINITY;
   const lines: Array<{ ids: string[]; main: number; cross: number }> = [];
   let currentLine: { ids: string[]; main: number; cross: number } = { ids: [], main: 0, cross: 0 };
 
@@ -1275,13 +1303,18 @@ function buildAutoLayoutFrames(
       continue;
     }
 
-    const childMain = isHorizontal ? child.frame.w : child.frame.h;
-    const childCross = isHorizontal ? child.frame.h : child.frame.w;
+    const childSizing = resolveNodeLayoutSizing(child);
+    const childMain = isHorizontal
+      ? clampSize(child.frame.w, childSizing.minWidth, childSizing.maxWidth)
+      : clampSize(child.frame.h, childSizing.minHeight, childSizing.maxHeight);
+    const childCross = isHorizontal
+      ? clampSize(child.frame.h, childSizing.minHeight, childSizing.maxHeight)
+      : clampSize(child.frame.w, childSizing.minWidth, childSizing.maxWidth);
     const nextMain = currentLine.ids.length
       ? currentLine.main + resolvedLayout.gap + childMain
       : childMain;
 
-    if (resolvedLayout.wrap && currentLine.ids.length > 0 && nextMain > availablePrimary) {
+    if (resolvedLayout.wrap && currentLine.ids.length > 0 && nextMain > lineLimitPrimary) {
       lines.push(currentLine);
       currentLine = { ids: [], main: 0, cross: 0 };
     }
@@ -1296,60 +1329,143 @@ function buildAutoLayoutFrames(
   }
 
   let crossCursor = crossStart;
+  let measuredMain = 0;
+  let measuredCross = 0;
   for (const line of lines) {
     const gapCount = Math.max(line.ids.length - 1, 0);
     let actualGap = resolvedLayout.gap;
-    let primaryCursor = primaryStart;
-
-    switch (resolvedLayout.justify) {
-      case "center":
-        primaryCursor += (availablePrimary - line.main) / 2;
-        break;
-      case "end":
-        primaryCursor += availablePrimary - line.main;
-        break;
-      case "space_between":
-        if (line.ids.length > 1) {
-          const childMainSum = line.ids.reduce((sum, childId) => {
-            const child = page.nodes.find((node) => node.id === childId);
-            return sum + (child ? (isHorizontal ? child.frame.w : child.frame.h) : 0);
-          }, 0);
-          if (availablePrimary > childMainSum) {
-            actualGap = (availablePrimary - childMainSum) / Math.max(gapCount, 1);
-          }
-        }
-        break;
-      default:
-        break;
-    }
-
-    const lineCross = resolvedLayout.wrap ? line.cross : availableCross;
-
-    for (const childId of line.ids) {
+    const lineCross = resolvedLayout.wrap || hugCross ? line.cross : availableCross;
+    const resolvedChildren = line.ids.flatMap((childId) => {
       const child = page.nodes.find((node) => node.id === childId);
       if (!child) {
-        continue;
+        return [];
       }
+      const childSizing = resolveNodeLayoutSizing(child);
+      const mainMode = mainLayoutMode(childSizing, isHorizontal);
+      const crossMode = crossLayoutMode(childSizing, isHorizontal);
+      const currentMain = isHorizontal
+        ? clampSize(child.frame.w, childSizing.minWidth, childSizing.maxWidth)
+        : clampSize(child.frame.h, childSizing.minHeight, childSizing.maxHeight);
+      const currentCross = isHorizontal
+        ? clampSize(child.frame.h, childSizing.minHeight, childSizing.maxHeight)
+        : clampSize(child.frame.w, childSizing.minWidth, childSizing.maxWidth);
+      return [{ childId, child, childSizing, mainMode, crossMode, currentMain, currentCross }];
+    });
+    const fixedMain = resolvedChildren.reduce(
+      (sum, entry) => sum + (entry.mainMode === "fill" && !hugMain ? 0 : entry.currentMain),
+      0,
+    );
+    const fillCount = resolvedChildren.filter((entry) => entry.mainMode === "fill" && !hugMain).length;
+    const totalGap = resolvedLayout.gap * gapCount;
+    const leftover = hugMain ? 0 : Math.max(availablePrimary - fixedMain - totalGap, 0);
+    const fillMain = fillCount > 0 ? leftover / fillCount : 0;
+    const layoutChildren = resolvedChildren.map((entry) => {
+      const desiredMain = entry.mainMode === "fill" && !hugMain ? fillMain : entry.currentMain;
+      const desiredCross = entry.crossMode === "fill" || resolvedLayout.align === "stretch"
+        ? lineCross
+        : entry.currentCross;
+      const width = isHorizontal
+        ? clampSize(desiredMain, entry.childSizing.minWidth, entry.childSizing.maxWidth)
+        : clampSize(desiredCross, entry.childSizing.minWidth, entry.childSizing.maxWidth);
+      const height = isHorizontal
+        ? clampSize(desiredCross, entry.childSizing.minHeight, entry.childSizing.maxHeight)
+        : clampSize(desiredMain, entry.childSizing.minHeight, entry.childSizing.maxHeight);
+      return {
+        ...entry,
+        width,
+        height,
+        actualMain: isHorizontal ? width : height,
+      };
+    });
 
-      const nextFrame = { ...child.frame };
-      if (isHorizontal) {
-        nextFrame.x = primaryCursor;
-        const aligned = alignCrossAxis(nextFrame.h, crossCursor, lineCross, resolvedLayout.align);
-        nextFrame.y = aligned.position;
-        nextFrame.h = Math.max(aligned.size, 1);
-        primaryCursor += nextFrame.w + actualGap;
-      } else {
-        nextFrame.y = primaryCursor;
-        const aligned = alignCrossAxis(nextFrame.w, crossCursor, lineCross, resolvedLayout.align);
-        nextFrame.x = aligned.position;
-        nextFrame.w = Math.max(aligned.size, 1);
-        primaryCursor += nextFrame.h + actualGap;
-      }
-
-      frames.set(childId, nextFrame);
+    if (resolvedLayout.justify === "space_between" && layoutChildren.length > 1 && fillCount === 0 && availablePrimary > fixedMain) {
+      actualGap = (availablePrimary - fixedMain) / Math.max(gapCount, 1);
     }
 
+    const occupiedMain =
+      layoutChildren.reduce((sum, entry) => sum + entry.actualMain, 0) + actualGap * gapCount;
+    const remainingMain = hugMain ? 0 : Math.max(availablePrimary - occupiedMain, 0);
+    let primaryCursor = primaryStart;
+    if (resolvedLayout.justify === "center") {
+      primaryCursor += remainingMain / 2;
+    } else if (resolvedLayout.justify === "end") {
+      primaryCursor += remainingMain;
+    }
+
+    for (const entry of layoutChildren) {
+      const nextFrame = { ...entry.child.frame };
+      if (isHorizontal) {
+        nextFrame.x = primaryCursor;
+        if (entry.crossMode === "fill" || resolvedLayout.align === "stretch") {
+          nextFrame.y = crossCursor;
+          nextFrame.h = Math.max(lineCross, 1);
+        } else {
+          const aligned = alignCrossAxis(entry.height, crossCursor, lineCross, resolvedLayout.align);
+          nextFrame.y = aligned.position;
+          nextFrame.h = Math.max(aligned.size, 1);
+        }
+        nextFrame.w = Math.max(entry.width, 1);
+        primaryCursor += entry.actualMain + actualGap;
+      } else {
+        nextFrame.y = primaryCursor;
+        if (entry.crossMode === "fill" || resolvedLayout.align === "stretch") {
+          nextFrame.x = crossCursor;
+          nextFrame.w = Math.max(lineCross, 1);
+        } else {
+          const aligned = alignCrossAxis(entry.width, crossCursor, lineCross, resolvedLayout.align);
+          nextFrame.x = aligned.position;
+          nextFrame.w = Math.max(aligned.size, 1);
+        }
+        nextFrame.h = Math.max(entry.height, 1);
+        primaryCursor += entry.actualMain + actualGap;
+      }
+
+      frames.set(entry.childId, nextFrame);
+    }
+
+    measuredMain = Math.max(measuredMain, occupiedMain);
+    measuredCross += lineCross + (resolvedLayout.wrap ? resolvedLayout.wrapGap : 0);
     crossCursor += lineCross + (resolvedLayout.wrap ? resolvedLayout.wrapGap : 0);
+  }
+
+  if (resolvedLayout.wrap && measuredCross > 0) {
+    measuredCross -= resolvedLayout.wrapGap;
+  }
+
+  if (hugMain || hugCross) {
+    const parentFrame = { ...parent.frame };
+    if (isHorizontal) {
+      if (hugMain) {
+        parentFrame.w = clampSize(
+          resolvedLayout.paddingX * 2 + measuredMain,
+          parentSizing.minWidth,
+          parentSizing.maxWidth,
+        );
+      }
+      if (hugCross) {
+        parentFrame.h = clampSize(
+          resolvedLayout.paddingY * 2 + measuredCross,
+          parentSizing.minHeight,
+          parentSizing.maxHeight,
+        );
+      }
+    } else {
+      if (hugCross) {
+        parentFrame.w = clampSize(
+          resolvedLayout.paddingX * 2 + measuredCross,
+          parentSizing.minWidth,
+          parentSizing.maxWidth,
+        );
+      }
+      if (hugMain) {
+        parentFrame.h = clampSize(
+          resolvedLayout.paddingY * 2 + measuredMain,
+          parentSizing.minHeight,
+          parentSizing.maxHeight,
+        );
+      }
+    }
+    frames.set(parent.id, parentFrame);
   }
 
   return frames;
@@ -2108,6 +2224,19 @@ export class NoopEditorBridge implements EditorBridge {
             pages: updateNode(this.document.pages, command.nodeId, (node) => ({
               ...node,
               layout: command.layout ? { ...command.layout } : undefined,
+            })),
+            meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+          });
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_node_layout_sizing":
+          this.document = normalizeDocument({
+            ...this.document,
+            pages: updateNode(this.document.pages, command.nodeId, (node) => ({
+              ...node,
+              layoutSizing: command.layoutSizing ? { ...command.layoutSizing } : undefined,
             })),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           });

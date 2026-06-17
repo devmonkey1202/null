@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runBooleanMultiple } from "@/advanced/geom/boolean";
 import { anchorsToPathData, ellipseToPath, pathDataToAnchors, pathDataToBounds, pathDataToPolygon, rectToPath, type PathAnchor } from "@/advanced/geom/pathData";
-import { DEFAULT_AUTO_LAYOUT, resolveAutoLayout } from "@/v2/editor/auto-layout";
+import { DEFAULT_AUTO_LAYOUT, DEFAULT_LAYOUT_SIZING, resolveAutoLayout, resolveLayoutSizing } from "@/v2/editor/auto-layout";
 import { normalizeTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "@/v2/editor/rich-text-model";
 import type {
   AutoLayoutAlign,
@@ -15,6 +15,8 @@ import type {
   EditorRect,
   EditorSnapshot,
   HorizontalConstraint,
+  LayoutSizing,
+  LayoutSizingAxis,
   MoveSnapPreview,
   RuntimeGraph,
   SceneGuide,
@@ -122,6 +124,7 @@ const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretc
 const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "vertical"];
 const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", "stretch"];
 const AUTO_LAYOUT_JUSTIFY_OPTIONS: AutoLayoutJustify[] = ["start", "center", "end", "space_between"];
+const LAYOUT_SIZING_OPTIONS: LayoutSizing[] = ["fixed", "fill", "hug"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_CASE_OPTIONS: TextCase[] = ["none", "upper", "lower", "capitalize"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
@@ -1383,6 +1386,10 @@ export function V2EditorShell() {
     () => resolveAutoLayout(activeNode?.layout ?? null),
     [activeNode?.layout],
   );
+  const activeLayoutSizing = useMemo(
+    () => (activeNode ? resolveLayoutSizing(activeNode.layoutSizing ?? null) : null),
+    [activeNode],
+  );
   const selectedShapeNodes = useMemo(
     () =>
       (snapshot?.selection ?? [])
@@ -1608,6 +1615,22 @@ export function V2EditorShell() {
         kind: "set_node_auto_layout",
         nodeId: activeNode.id,
         layout: patch ? { ...current, ...patch } : null,
+      },
+    ]);
+  }
+
+  async function updateNodeLayoutSizing(patch: Partial<LayoutSizingAxis> | null) {
+    if (!activeNode) {
+      return;
+    }
+
+    const current: LayoutSizingAxis = activeLayoutSizing ?? DEFAULT_LAYOUT_SIZING;
+
+    await applyAndSync([
+      {
+        kind: "set_node_layout_sizing",
+        nodeId: activeNode.id,
+        layoutSizing: patch ? { ...current, ...patch } : null,
       },
     ]);
   }
@@ -3653,6 +3676,106 @@ export function V2EditorShell() {
                         </select>
                       </div>
                     </div>
+                    {activeLayoutSizing ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Layout sizing</div>
+                          <div className="text-xs text-slate-500">
+                            Control fill, hug, and fixed behavior inside auto layout parents.
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="block">
+                            <div className="text-slate-400">Width mode</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeLayoutSizing.width}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  width: event.target.value as LayoutSizing,
+                                })
+                              }
+                            >
+                              {LAYOUT_SIZING_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Height mode</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeLayoutSizing.height}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  height: event.target.value as LayoutSizing,
+                                })
+                              }
+                            >
+                              {LAYOUT_SIZING_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Min width</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.minWidth ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  minWidth: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Min height</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.minHeight ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  minHeight: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Max width</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.maxWidth ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  maxWidth: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Max height</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.maxHeight ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  maxHeight: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ) : null}
                     {supportsAutoLayout(activeNode) ? (
                       <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
                         <div className="flex items-center justify-between">

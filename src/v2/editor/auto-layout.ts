@@ -1,4 +1,4 @@
-import type { AutoLayoutData } from "./contracts";
+import type { AutoLayoutData, LayoutSizingAxis } from "./contracts";
 
 export const DEFAULT_AUTO_LAYOUT: Required<AutoLayoutData> = {
   direction: "vertical",
@@ -9,6 +9,11 @@ export const DEFAULT_AUTO_LAYOUT: Required<AutoLayoutData> = {
   justify: "start",
   wrap: false,
   wrapGap: 16,
+};
+
+export const DEFAULT_LAYOUT_SIZING: LayoutSizingAxis = {
+  width: "fixed",
+  height: "fixed",
 };
 
 export function resolveAutoLayout(layout?: AutoLayoutData | null): Required<AutoLayoutData> | null {
@@ -29,5 +34,16 @@ export function resolveAutoLayout(layout?: AutoLayoutData | null): Required<Auto
     gap,
     wrap: Boolean(layout.wrap),
     wrapGap,
+  };
+}
+
+export function resolveLayoutSizing(sizing?: LayoutSizingAxis | null): LayoutSizingAxis {
+  if (!sizing) {
+    return { ...DEFAULT_LAYOUT_SIZING };
+  }
+
+  return {
+    ...DEFAULT_LAYOUT_SIZING,
+    ...sizing,
   };
 }

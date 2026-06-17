@@ -109,6 +109,7 @@ mod tests {
                         },
                         constraints: None,
                         layout: None,
+                        layout_sizing: None,
                         text: None,
                         shape: None,
                         component: None,
@@ -130,6 +131,7 @@ mod tests {
                         },
                         constraints: None,
                         layout: None,
+                        layout_sizing: None,
                         text: None,
                         shape: None,
                         component: None,
@@ -151,6 +153,7 @@ mod tests {
                         },
                         constraints: None,
                         layout: None,
+                        layout_sizing: None,
                         text: Some(kernel_doc::TextNodeData {
                             content: "Title".to_string(),
                             font_family: "Inter".to_string(),
@@ -192,3 +195,4 @@ mod tests {
         assert_eq!(plan.ancestor_node_ids, vec!["group".to_string(), "root".to_string()]);
     }
 }
+

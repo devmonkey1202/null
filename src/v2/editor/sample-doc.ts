@@ -95,6 +95,7 @@ export const sampleSceneDoc: SceneDoc = {
           parentId: "hero-frame",
           frame: { x: 320, y: 160, w: 540, h: 72, rotation: 0 },
           constraints: { horizontal: "stretch", vertical: "min" },
+          layoutSizing: { width: "fill", height: "fixed" },
           text: {
             content: "Design faster. Ship clearer.",
             fontFamily: "Inter",
@@ -137,6 +138,7 @@ export const sampleSceneDoc: SceneDoc = {
           parentId: "hero-frame",
           frame: { x: 320, y: 248, w: 520, h: 88, rotation: 0 },
           constraints: { horizontal: "stretch", vertical: "min" },
+          layoutSizing: { width: "fill", height: "fixed" },
           text: {
             content:
               "NULL v2 editor rebuild is moving to a Rust/WASM kernel with faster selection, cleaner layout decisions, and tighter runtime handoff.",
@@ -163,6 +165,7 @@ export const sampleSceneDoc: SceneDoc = {
           children: ["wrap-chip-1", "wrap-chip-2", "wrap-chip-3", "wrap-chip-4", "wrap-chip-5"],
           frame: { x: 280, y: 500, w: 420, h: 180, rotation: 0 },
           constraints: { horizontal: "min", vertical: "min" },
+          layoutSizing: { width: "fixed", height: "hug" },
           layout: {
             direction: "horizontal",
             gap: 12,

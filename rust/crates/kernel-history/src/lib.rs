@@ -137,6 +137,7 @@ mod tests {
                         },
                         constraints: None,
                         layout: None,
+                        layout_sizing: None,
                         text: None,
                         shape: None,
                         component: None,
@@ -183,3 +184,4 @@ mod tests {
         assert_eq!(store.current().expect("current").version, 4);
     }
 }
+

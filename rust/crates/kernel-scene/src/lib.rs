@@ -3,7 +3,7 @@ use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, AutoLayoutJustify, ComponentNodeData,
     EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis,
     HorizontalConstraint, InstanceNodeData, InstanceOverrideKind, InstanceShapeOverride,
-    InstanceTextOverride, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
+    InstanceTextOverride, LayoutSizing, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
     ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch,
     TransformHandleKind, ValidationReport, VerticalConstraint,
 };
@@ -318,6 +318,20 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_node_auto_layout".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetNodeLayoutSizing {
+                node_id,
+                layout_sizing,
+            } => {
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    node.layout_sizing = layout_sizing;
+                }
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_node_layout_sizing".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetNodeConstraints {
@@ -1843,6 +1857,7 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
             .enumerate()
             .map(|(index, node)| (node.id.clone(), index))
             .collect::<std::collections::HashMap<_, _>>();
+        let parent_layout_sizing = resolved_layout_sizing(&page.nodes[parent_index]);
         let primary_start = match layout.direction {
             AutoLayoutDirection::Horizontal => parent_frame.x + layout.padding_x,
             AutoLayoutDirection::Vertical => parent_frame.y + layout.padding_y,
@@ -1859,6 +1874,19 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
             AutoLayoutDirection::Horizontal => (parent_frame.h - layout.padding_y * 2.0).max(1.0),
             AutoLayoutDirection::Vertical => (parent_frame.w - layout.padding_x * 2.0).max(1.0),
         };
+        let hug_main = matches!(
+            main_layout_mode(&parent_layout_sizing, &layout.direction),
+            LayoutSizing::Hug
+        );
+        let hug_cross = matches!(
+            cross_layout_mode(&parent_layout_sizing, &layout.direction),
+            LayoutSizing::Hug
+        );
+        let line_limit_primary = if layout.wrap && !hug_main {
+            available_primary
+        } else {
+            f32::INFINITY
+        };
 
         let mut lines = Vec::<AutoLayoutLine>::new();
         let mut current_line = AutoLayoutLine::default();
@@ -1867,15 +1895,16 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                 continue;
             };
             let child = &page.nodes[child_index];
-            let child_primary = child_primary_size(child, &layout.direction);
-            let child_cross = child_cross_size(child, &layout.direction);
+            let child_sizing = resolved_layout_sizing(child);
+            let child_primary = clamped_child_main_size(child, &child_sizing, &layout.direction);
+            let child_cross = clamped_child_cross_size(child, &child_sizing, &layout.direction);
             let next_main = if current_line.child_ids.is_empty() {
                 child_primary
             } else {
                 current_line.main + layout.gap + child_primary
             };
 
-            if layout.wrap && !current_line.child_ids.is_empty() && next_main > available_primary {
+            if layout.wrap && !current_line.child_ids.is_empty() && next_main > line_limit_primary {
                 lines.push(current_line);
                 current_line = AutoLayoutLine::default();
             }
@@ -1895,38 +1924,127 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
 
         let mut cross_cursor = cross_start;
         let wrap_gap = resolved_wrap_gap(&layout);
+        let mut measured_main = 0.0_f32;
+        let mut measured_cross = 0.0_f32;
         for line in &lines {
             let gap_count = line.child_ids.len().saturating_sub(1) as f32;
-            let mut primary_cursor = primary_start;
             let fixed_primary_sum: f32 = line
                 .child_ids
                 .iter()
                 .filter_map(|child_id| index_map.get(child_id).copied())
-                .map(|child_index| child_primary_size(&page.nodes[child_index], &layout.direction))
-                .sum();
-            let mut actual_gap = layout.gap;
-            match layout.justify {
-                AutoLayoutJustify::Start => {}
-                AutoLayoutJustify::Center => {
-                    primary_cursor += (available_primary - line.main) / 2.0;
-                }
-                AutoLayoutJustify::End => {
-                    primary_cursor += available_primary - line.main;
-                }
-                AutoLayoutJustify::SpaceBetween => {
-                    if line.child_ids.len() > 1 && available_primary > fixed_primary_sum {
-                        actual_gap = (available_primary - fixed_primary_sum) / gap_count.max(1.0);
+                .map(|child_index| {
+                    let child = &page.nodes[child_index];
+                    let sizing = resolved_layout_sizing(child);
+                    let main_mode = main_layout_mode(&sizing, &layout.direction);
+                    if matches!(main_mode, LayoutSizing::Fill) && !hug_main {
+                        0.0
+                    } else {
+                        clamped_child_main_size(child, &sizing, &layout.direction)
                     }
-                }
-            }
-
-            let line_cross = if layout.wrap {
+                })
+                .sum();
+            let fill_count = line
+                .child_ids
+                .iter()
+                .filter_map(|child_id| index_map.get(child_id).copied())
+                .filter(|child_index| {
+                    let child = &page.nodes[*child_index];
+                    let sizing = resolved_layout_sizing(child);
+                    matches!(main_layout_mode(&sizing, &layout.direction), LayoutSizing::Fill) && !hug_main
+                })
+                .count() as f32;
+            let total_gap = layout.gap * gap_count;
+            let leftover = if hug_main {
+                0.0
+            } else {
+                (available_primary - fixed_primary_sum - total_gap).max(0.0)
+            };
+            let fill_main = if fill_count > 0.0 {
+                leftover / fill_count
+            } else {
+                0.0
+            };
+            let mut actual_gap = layout.gap;
+            let line_cross = if layout.wrap || hug_cross {
                 line.cross.max(1.0)
             } else {
                 available_cross
             };
+            let resolved_children = line
+                .child_ids
+                .iter()
+                .filter_map(|child_id| {
+                    let child_index = index_map.get(child_id).copied()?;
+                    let child = &page.nodes[child_index];
+                    let sizing = resolved_layout_sizing(child);
+                    let main_mode = main_layout_mode(&sizing, &layout.direction);
+                    let cross_mode = cross_layout_mode(&sizing, &layout.direction);
+                    let current_main = clamped_child_main_size(child, &sizing, &layout.direction);
+                    let current_cross = clamped_child_cross_size(child, &sizing, &layout.direction);
+                    let desired_main = if matches!(main_mode, LayoutSizing::Fill) && !hug_main {
+                        fill_main
+                    } else {
+                        current_main
+                    };
+                    let desired_cross = if matches!(cross_mode, LayoutSizing::Fill)
+                        || matches!(layout.align, AutoLayoutAlign::Stretch)
+                    {
+                        line_cross
+                    } else {
+                        current_cross
+                    };
+                    let (width, height) = match layout.direction {
+                        AutoLayoutDirection::Horizontal => (
+                            clamp_size(desired_main, sizing.min_width, sizing.max_width),
+                            clamp_size(desired_cross, sizing.min_height, sizing.max_height),
+                        ),
+                        AutoLayoutDirection::Vertical => (
+                            clamp_size(desired_cross, sizing.min_width, sizing.max_width),
+                            clamp_size(desired_main, sizing.min_height, sizing.max_height),
+                        ),
+                    };
 
-            for child_id in &line.child_ids {
+                    Some((
+                        child_id.clone(),
+                        ResolvedAutoLayoutChild {
+                            cross_mode,
+                            width,
+                            height,
+                            actual_main: match layout.direction {
+                                AutoLayoutDirection::Horizontal => width,
+                                AutoLayoutDirection::Vertical => height,
+                            },
+                        },
+                    ))
+                })
+                .collect::<Vec<_>>();
+            match layout.justify {
+                AutoLayoutJustify::Start => {}
+                AutoLayoutJustify::SpaceBetween => {
+                    if resolved_children.len() > 1 && fill_count == 0.0 && available_primary > fixed_primary_sum {
+                        actual_gap = (available_primary - fixed_primary_sum) / gap_count.max(1.0);
+                    }
+                }
+                AutoLayoutJustify::Center | AutoLayoutJustify::End => {}
+            }
+            let occupied_main = resolved_children
+                .iter()
+                .map(|(_, child)| child.actual_main)
+                .sum::<f32>()
+                + actual_gap * gap_count;
+            let remaining_main = if hug_main {
+                0.0
+            } else {
+                (available_primary - occupied_main).max(0.0)
+            };
+            let mut primary_cursor = primary_start
+                + match layout.justify {
+                    AutoLayoutJustify::Center => remaining_main / 2.0,
+                    AutoLayoutJustify::End => remaining_main,
+                    _ => 0.0,
+                };
+
+            for (child_id, resolved_child) in &resolved_children {
                 let Some(child_index) = index_map.get(child_id).copied() else {
                     continue;
                 };
@@ -1935,26 +2053,103 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                 match layout.direction {
                     AutoLayoutDirection::Horizontal => {
                         child.frame.x = primary_cursor;
-                        let (cross_position, cross_size) =
-                            align_cross_axis(child.frame.h, cross_cursor, line_cross, &layout.align);
-                        child.frame.y = cross_position;
-                        child.frame.h = cross_size.max(1.0);
+                        if matches!(resolved_child.cross_mode, LayoutSizing::Fill)
+                            || matches!(layout.align, AutoLayoutAlign::Stretch)
+                        {
+                            child.frame.y = cross_cursor;
+                            child.frame.h = line_cross.max(1.0);
+                        } else {
+                            let (cross_position, cross_size) = align_cross_axis(
+                                resolved_child.height,
+                                cross_cursor,
+                                line_cross,
+                                &layout.align,
+                            );
+                            child.frame.y = cross_position;
+                            child.frame.h = cross_size.max(1.0);
+                        }
+                        child.frame.w = resolved_child.width.max(1.0);
                         normalize_text_frame(child);
-                        primary_cursor += child.frame.w + actual_gap;
+                        primary_cursor += resolved_child.actual_main + actual_gap;
                     }
                     AutoLayoutDirection::Vertical => {
                         child.frame.y = primary_cursor;
-                        let (cross_position, cross_size) =
-                            align_cross_axis(child.frame.w, cross_cursor, line_cross, &layout.align);
-                        child.frame.x = cross_position;
-                        child.frame.w = cross_size.max(1.0);
+                        if matches!(resolved_child.cross_mode, LayoutSizing::Fill)
+                            || matches!(layout.align, AutoLayoutAlign::Stretch)
+                        {
+                            child.frame.x = cross_cursor;
+                            child.frame.w = line_cross.max(1.0);
+                        } else {
+                            let (cross_position, cross_size) = align_cross_axis(
+                                resolved_child.width,
+                                cross_cursor,
+                                line_cross,
+                                &layout.align,
+                            );
+                            child.frame.x = cross_position;
+                            child.frame.w = cross_size.max(1.0);
+                        }
+                        child.frame.h = resolved_child.height.max(1.0);
                         normalize_text_frame(child);
-                        primary_cursor += child.frame.h + actual_gap;
+                        primary_cursor += resolved_child.actual_main + actual_gap;
                     }
                 }
             }
 
+            measured_main = measured_main.max(
+                resolved_children
+                    .iter()
+                    .map(|(_, child)| child.actual_main)
+                    .sum::<f32>()
+                    + actual_gap * gap_count,
+            );
+            measured_cross += line_cross;
+            if layout.wrap {
+                measured_cross += wrap_gap;
+            }
             cross_cursor += line_cross + if layout.wrap { wrap_gap } else { 0.0 };
+        }
+
+        if layout.wrap && measured_cross > 0.0 {
+            measured_cross -= wrap_gap;
+        }
+
+        if hug_main || hug_cross {
+            let parent = &mut page.nodes[parent_index];
+            match layout.direction {
+                AutoLayoutDirection::Horizontal => {
+                    if hug_main {
+                        parent.frame.w = clamp_size(
+                            layout.padding_x * 2.0 + measured_main,
+                            parent_layout_sizing.min_width,
+                            parent_layout_sizing.max_width,
+                        );
+                    }
+                    if hug_cross {
+                        parent.frame.h = clamp_size(
+                            layout.padding_y * 2.0 + measured_cross,
+                            parent_layout_sizing.min_height,
+                            parent_layout_sizing.max_height,
+                        );
+                    }
+                }
+                AutoLayoutDirection::Vertical => {
+                    if hug_cross {
+                        parent.frame.w = clamp_size(
+                            layout.padding_x * 2.0 + measured_cross,
+                            parent_layout_sizing.min_width,
+                            parent_layout_sizing.max_width,
+                        );
+                    }
+                    if hug_main {
+                        parent.frame.h = clamp_size(
+                            layout.padding_y * 2.0 + measured_main,
+                            parent_layout_sizing.min_height,
+                            parent_layout_sizing.max_height,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1970,17 +2165,84 @@ struct AutoLayoutLine {
     cross: f32,
 }
 
-fn child_primary_size(node: &kernel_doc::SceneNode, direction: &AutoLayoutDirection) -> f32 {
-    match direction {
-        AutoLayoutDirection::Horizontal => node.frame.w,
-        AutoLayoutDirection::Vertical => node.frame.h,
+#[derive(Clone)]
+struct ResolvedLayoutSizing {
+    width: LayoutSizing,
+    height: LayoutSizing,
+    min_width: Option<f32>,
+    min_height: Option<f32>,
+    max_width: Option<f32>,
+    max_height: Option<f32>,
+}
+
+#[derive(Clone)]
+struct ResolvedAutoLayoutChild {
+    cross_mode: LayoutSizing,
+    width: f32,
+    height: f32,
+    actual_main: f32,
+}
+
+fn resolved_layout_sizing(node: &kernel_doc::SceneNode) -> ResolvedLayoutSizing {
+    let sizing = node.layout_sizing.as_ref();
+    ResolvedLayoutSizing {
+        width: sizing
+            .and_then(|value| value.width.clone())
+            .unwrap_or(LayoutSizing::Fixed),
+        height: sizing
+            .and_then(|value| value.height.clone())
+            .unwrap_or(LayoutSizing::Fixed),
+        min_width: sizing.and_then(|value| value.min_width),
+        min_height: sizing.and_then(|value| value.min_height),
+        max_width: sizing.and_then(|value| value.max_width),
+        max_height: sizing.and_then(|value| value.max_height),
     }
 }
 
-fn child_cross_size(node: &kernel_doc::SceneNode, direction: &AutoLayoutDirection) -> f32 {
+fn main_layout_mode(sizing: &ResolvedLayoutSizing, direction: &AutoLayoutDirection) -> LayoutSizing {
     match direction {
-        AutoLayoutDirection::Horizontal => node.frame.h,
-        AutoLayoutDirection::Vertical => node.frame.w,
+        AutoLayoutDirection::Horizontal => sizing.width.clone(),
+        AutoLayoutDirection::Vertical => sizing.height.clone(),
+    }
+}
+
+fn cross_layout_mode(sizing: &ResolvedLayoutSizing, direction: &AutoLayoutDirection) -> LayoutSizing {
+    match direction {
+        AutoLayoutDirection::Horizontal => sizing.height.clone(),
+        AutoLayoutDirection::Vertical => sizing.width.clone(),
+    }
+}
+
+fn clamp_size(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
+    let mut next = value;
+    if let Some(min) = min {
+        next = next.max(min);
+    }
+    if let Some(max) = max {
+        next = next.min(max);
+    }
+    next.max(1.0)
+}
+
+fn clamped_child_main_size(
+    node: &kernel_doc::SceneNode,
+    sizing: &ResolvedLayoutSizing,
+    direction: &AutoLayoutDirection,
+) -> f32 {
+    match direction {
+        AutoLayoutDirection::Horizontal => clamp_size(node.frame.w, sizing.min_width, sizing.max_width),
+        AutoLayoutDirection::Vertical => clamp_size(node.frame.h, sizing.min_height, sizing.max_height),
+    }
+}
+
+fn clamped_child_cross_size(
+    node: &kernel_doc::SceneNode,
+    sizing: &ResolvedLayoutSizing,
+    direction: &AutoLayoutDirection,
+) -> f32 {
+    match direction {
+        AutoLayoutDirection::Horizontal => clamp_size(node.frame.h, sizing.min_height, sizing.max_height),
+        AutoLayoutDirection::Vertical => clamp_size(node.frame.w, sizing.min_width, sizing.max_width),
     }
 }
 
@@ -2835,6 +3097,7 @@ mod tests {
                         },
                         constraints: None,
                         layout: None,
+                        layout_sizing: None,
                         text: None,
                         shape: None,
                         component: None,
@@ -2856,6 +3119,7 @@ mod tests {
                         },
                         constraints: None,
                         layout: None,
+                        layout_sizing: None,
                         text: Some(TextNodeData {
                             content: "Title".to_string(),
                             font_family: "Inter".to_string(),
@@ -2933,6 +3197,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: None,
             shape: Some(ShapeNodeData {
                 primitive: ShapePrimitive::Rect,
@@ -2980,6 +3245,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: None,
             shape: Some(ShapeNodeData {
                 primitive: ShapePrimitive::Rect,
@@ -3188,6 +3454,34 @@ mod tests {
     }
 
     #[test]
+    fn set_node_layout_sizing_updates_node() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeLayoutSizing {
+                node_id: "title".to_string(),
+                layout_sizing: Some(kernel_doc::LayoutSizingAxis {
+                    width: Some(kernel_doc::LayoutSizing::Fill),
+                    height: Some(kernel_doc::LayoutSizing::Hug),
+                    min_width: Some(80.0),
+                    min_height: None,
+                    max_width: Some(280.0),
+                    max_height: None,
+                }),
+            }],
+        )
+        .expect("set node layout sizing should succeed");
+
+        let node = query_node(&state.doc, "title").expect("node exists");
+        let sizing = node.layout_sizing.clone().expect("layout sizing exists");
+        assert_eq!(sizing.width, Some(kernel_doc::LayoutSizing::Fill));
+        assert_eq!(sizing.height, Some(kernel_doc::LayoutSizing::Hug));
+        assert_eq!(sizing.min_width, Some(80.0));
+        assert_eq!(sizing.max_width, Some(280.0));
+    }
+
+    #[test]
     fn set_node_auto_layout_reflows_direct_children() {
         let mut doc = sample_doc();
         doc.pages[0].nodes[0].children = Some(vec!["title".to_string(), "body".to_string()]);
@@ -3206,6 +3500,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: Some(TextNodeData {
                 content: "Body copy".to_string(),
                 font_family: "Inter".to_string(),
@@ -3283,6 +3578,155 @@ mod tests {
     }
 
     #[test]
+    fn auto_layout_fill_expands_child_on_main_axis() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes[0].frame.w = 200.0;
+        doc.pages[0].nodes.push(SceneNode {
+            id: "fill-child".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Fill Child".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 10.0,
+                y: 10.0,
+                w: 30.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: Some(kernel_doc::LayoutSizingAxis {
+                width: Some(kernel_doc::LayoutSizing::Fill),
+                height: Some(kernel_doc::LayoutSizing::Fixed),
+                min_width: None,
+                min_height: None,
+                max_width: None,
+                max_height: None,
+            }),
+            text: Some(TextNodeData {
+                content: "Fill".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 600,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        doc.pages[0].nodes[0].children = Some(vec!["title".to_string(), "fill-child".to_string()]);
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Horizontal,
+                    gap: 10.0,
+                    padding_x: 10.0,
+                    padding_y: 10.0,
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Start,
+                    wrap: false,
+                    wrap_gap: None,
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let fill_child = query_node(&state.doc, "fill-child").expect("fill child exists");
+        assert_eq!(fill_child.frame.x, 60.0);
+        assert_eq!(fill_child.frame.w, 130.0);
+    }
+
+    #[test]
+    fn auto_layout_hug_resizes_container_to_fit_children() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes.push(SceneNode {
+            id: "chip".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Chip".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 10.0,
+                y: 10.0,
+                w: 50.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: Some(TextNodeData {
+                content: "Chip".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 600,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        doc.pages[0].nodes[0].children = Some(vec!["title".to_string(), "chip".to_string()]);
+        doc.pages[0].nodes[0].layout_sizing = Some(kernel_doc::LayoutSizingAxis {
+            width: Some(kernel_doc::LayoutSizing::Hug),
+            height: Some(kernel_doc::LayoutSizing::Fixed),
+            min_width: None,
+            min_height: None,
+            max_width: None,
+            max_height: None,
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Horizontal,
+                    gap: 10.0,
+                    padding_x: 10.0,
+                    padding_y: 10.0,
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Start,
+                    wrap: false,
+                    wrap_gap: None,
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let root = query_node(&state.doc, "root").expect("root exists");
+        assert_eq!(root.frame.w, 120.0);
+    }
+
+    #[test]
     fn set_node_auto_layout_wrap_moves_overflow_children_to_next_line() {
         let mut doc = sample_doc();
         doc.pages[0].nodes[0].children = Some(vec![
@@ -3306,6 +3750,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: Some(TextNodeData {
                 content: "Chip 2".to_string(),
                 font_family: "Inter".to_string(),
@@ -3343,6 +3788,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: Some(TextNodeData {
                 content: "Chip 3".to_string(),
                 font_family: "Inter".to_string(),
@@ -3555,6 +4001,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: None,
             shape: Some(ShapeNodeData {
                 primitive: ShapePrimitive::Rect,
@@ -3792,6 +4239,7 @@ mod tests {
             },
             constraints: None,
             layout: None,
+            layout_sizing: None,
             text: None,
             shape: Some(ShapeNodeData {
                 primitive: ShapePrimitive::Rect,
@@ -3946,3 +4394,4 @@ mod tests {
         );
     }
 }
+
