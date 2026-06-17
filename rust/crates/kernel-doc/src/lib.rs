@@ -166,6 +166,16 @@ pub enum TextSizingMode {
     AutoHeight,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextCase {
+    #[default]
+    None,
+    Upper,
+    Lower,
+    Capitalize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TextNodeData {
@@ -179,6 +189,14 @@ pub struct TextNodeData {
     pub paragraph_spacing: f32,
     pub align: TextAlign,
     pub color: String,
+    #[serde(default)]
+    pub text_case: TextCase,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub underline: bool,
+    #[serde(default)]
+    pub line_through: bool,
     #[serde(default)]
     pub sizing: TextSizingMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -204,6 +222,14 @@ pub struct TextStylePatch {
     pub align: Option<TextAlign>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_case: Option<TextCase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub italic: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_through: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1080,6 +1106,10 @@ mod tests {
                             paragraph_spacing: 0.0,
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
+                            text_case: TextCase::None,
+                            italic: false,
+                            underline: false,
+                            line_through: false,
                             sizing: TextSizingMode::AutoHeight,
                             ranges: vec![],
                         }),

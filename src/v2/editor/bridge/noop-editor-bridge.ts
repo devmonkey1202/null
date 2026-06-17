@@ -601,6 +601,10 @@ function applyTextStylePatch(text: TextNodeData, style: TextStylePatch): TextNod
     ...(style.paragraphSpacing !== undefined ? { paragraphSpacing: Math.max(style.paragraphSpacing, 0) } : {}),
     ...(style.align ? { align: style.align } : {}),
     ...(style.color ? { color: style.color } : {}),
+    ...(style.textCase !== undefined ? { textCase: style.textCase } : {}),
+    ...(style.italic !== undefined ? { italic: style.italic } : {}),
+    ...(style.underline !== undefined ? { underline: style.underline } : {}),
+    ...(style.lineThrough !== undefined ? { lineThrough: style.lineThrough } : {}),
   };
 }
 
@@ -714,6 +718,10 @@ function mergeTextStylePatch(
     ...(next.paragraphSpacing !== undefined ? { paragraphSpacing: next.paragraphSpacing } : {}),
     ...(next.align !== undefined ? { align: next.align } : {}),
     ...(next.color !== undefined ? { color: next.color } : {}),
+    ...(next.textCase !== undefined ? { textCase: next.textCase } : {}),
+    ...(next.italic !== undefined ? { italic: next.italic } : {}),
+    ...(next.underline !== undefined ? { underline: next.underline } : {}),
+    ...(next.lineThrough !== undefined ? { lineThrough: next.lineThrough } : {}),
   };
 }
 

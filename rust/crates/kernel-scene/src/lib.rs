@@ -1580,6 +1580,18 @@ fn merge_text_style_patch(current: Option<TextStylePatch>, next: TextStylePatch)
     if next.color.is_some() {
         merged.color = next.color;
     }
+    if next.text_case.is_some() {
+        merged.text_case = next.text_case;
+    }
+    if next.italic.is_some() {
+        merged.italic = next.italic;
+    }
+    if next.underline.is_some() {
+        merged.underline = next.underline;
+    }
+    if next.line_through.is_some() {
+        merged.line_through = next.line_through;
+    }
     merged
 }
 
@@ -1710,6 +1722,18 @@ fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStyleP
     }
     if let Some(color) = style.color {
         text.color = color;
+    }
+    if let Some(text_case) = style.text_case {
+        text.text_case = text_case;
+    }
+    if let Some(italic) = style.italic {
+        text.italic = italic;
+    }
+    if let Some(underline) = style.underline {
+        text.underline = underline;
+    }
+    if let Some(line_through) = style.line_through {
+        text.line_through = line_through;
     }
 }
 
@@ -2718,7 +2742,7 @@ mod tests {
     use super::*;
     use kernel_doc::{
         HorizontalConstraint, SceneDocMeta, SceneNodeKind, ScenePage, ShapeNodeData,
-        ShapePrimitive, TextAlign, TextNodeData, VerticalConstraint,
+        ShapePrimitive, TextAlign, TextCase, TextNodeData, VerticalConstraint,
     };
 
     fn sample_doc() -> SceneDoc {
@@ -2778,6 +2802,10 @@ mod tests {
                             paragraph_spacing: 0.0,
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
+                            text_case: TextCase::None,
+                            italic: false,
+                            underline: false,
+                            line_through: false,
                             sizing: TextSizingMode::AutoHeight,
                             ranges: vec![],
                         }),
@@ -3124,6 +3152,10 @@ mod tests {
                 paragraph_spacing: 0.0,
                 align: TextAlign::Left,
                 color: "#475569".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
                 sizing: TextSizingMode::AutoHeight,
                 ranges: vec![],
             }),
@@ -3199,6 +3231,10 @@ mod tests {
                         font_size: Some(28.0),
                         line_height: Some(34.0),
                         color: Some("#2859ff".to_string()),
+                        text_case: Some(TextCase::Upper),
+                        italic: Some(true),
+                        underline: Some(true),
+                        line_through: Some(false),
                         ..TextStylePatch::default()
                     },
                 },
@@ -3212,6 +3248,10 @@ mod tests {
         assert_eq!(text.font_size, 28.0);
         assert_eq!(text.line_height, 34.0);
         assert_eq!(text.color, "#2859ff");
+        assert_eq!(text.text_case, TextCase::Upper);
+        assert!(text.italic);
+        assert!(text.underline);
+        assert!(!text.line_through);
         assert!(node.frame.h >= 34.0);
     }
 

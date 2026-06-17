@@ -21,6 +21,7 @@ import type {
   ResizeSnapPreview,
   SnapGuide,
   TextAlign,
+  TextCase,
   TextSizingMode,
   TextRange,
   TextStylePatch,
@@ -121,6 +122,7 @@ const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "ver
 const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", "stretch"];
 const AUTO_LAYOUT_JUSTIFY_OPTIONS: AutoLayoutJustify[] = ["start", "center", "end", "space_between"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
+const TEXT_CASE_OPTIONS: TextCase[] = ["none", "upper", "lower", "capitalize"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
 const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line", "path"];
 const EMPTY_MOVE_SNAP_PREVIEW: MoveSnapPreview = { deltaX: 0, deltaY: 0, guides: [] };
@@ -130,6 +132,30 @@ const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
   deltaY: 0,
   guides: [],
 };
+
+function textDecorationValue(style: { underline?: boolean; lineThrough?: boolean }) {
+  const values: string[] = [];
+  if (style.underline) {
+    values.push("underline");
+  }
+  if (style.lineThrough) {
+    values.push("line-through");
+  }
+  return values.length ? values.join(" ") : "none";
+}
+
+function textTransformValue(textCase: TextCase) {
+  switch (textCase) {
+    case "upper":
+      return "uppercase";
+    case "lower":
+      return "lowercase";
+    case "capitalize":
+      return "capitalize";
+    default:
+      return "none";
+  }
+}
 
 function addTextRange(text: NonNullable<SceneNode["text"]>): TextRange[] {
   const length = text.content.length;
@@ -3067,9 +3093,12 @@ export function V2EditorShell() {
                                       fontFamily: run.style.fontFamily,
                                       fontSize: run.style.fontSize,
                                       fontWeight: run.style.fontWeight,
+                                      fontStyle: run.style.italic ? "italic" : "normal",
                                       lineHeight: `${run.style.lineHeight}px`,
                                       letterSpacing: run.style.letterSpacing,
                                       color: run.style.color,
+                                      textDecoration: textDecorationValue(run.style),
+                                      textTransform: textTransformValue(run.style.textCase),
                                     }}
                                   >
                                     {run.text}
@@ -3081,9 +3110,12 @@ export function V2EditorShell() {
                                     fontFamily: textData.fontFamily,
                                     fontSize: textData.fontSize,
                                     fontWeight: textData.fontWeight,
+                                    fontStyle: textData.italic ? "italic" : "normal",
                                     lineHeight: `${textData.lineHeight}px`,
                                     letterSpacing: textData.letterSpacing,
                                     color: textData.color,
+                                    textDecoration: textDecorationValue(textData),
+                                    textTransform: textTransformValue(textData.textCase),
                                   }}
                                 >
                                   {" "}
@@ -3297,10 +3329,13 @@ export function V2EditorShell() {
                       fontFamily: editingTextNode.text.fontFamily,
                       fontSize: editingTextNode.text.fontSize,
                       fontWeight: editingTextNode.text.fontWeight,
+                      fontStyle: editingTextNode.text.italic ? "italic" : "normal",
                       lineHeight: `${editingTextNode.text.lineHeight}px`,
                       letterSpacing: editingTextNode.text.letterSpacing,
                       color: editingTextNode.text.color,
                       textAlign: editingTextNode.text.align,
+                      textDecoration: textDecorationValue(editingTextNode.text),
+                      textTransform: textTransformValue(editingTextNode.text.textCase),
                     }}
                     className="absolute z-20 resize-none overflow-hidden rounded-md border border-[#2859ff] bg-white px-1 py-1 outline-none ring-2 ring-[#2859ff]/15"
                   />
@@ -3957,6 +3992,48 @@ export function V2EditorShell() {
                               onChange={(event) => void updateTextStyle({ color: event.target.value })}
                             />
                           </label>
+                          <label className="block">
+                            <div className="text-slate-400">Text case</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.textCase}
+                              onChange={(event) =>
+                                void updateTextStyle({ textCase: event.target.value as TextCase })
+                              }
+                            >
+                              {TEXT_CASE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={activeNode.text.italic}
+                              onChange={(event) => void updateTextStyle({ italic: event.target.checked })}
+                            />
+                            Italic
+                          </label>
+                          <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={activeNode.text.underline}
+                              onChange={(event) => void updateTextStyle({ underline: event.target.checked })}
+                            />
+                            Underline
+                          </label>
+                          <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={activeNode.text.lineThrough}
+                              onChange={(event) => void updateTextStyle({ lineThrough: event.target.checked })}
+                            />
+                            Strike
+                          </label>
                         </div>
                         <div className="rounded-2xl border border-slate-200 bg-white px-3 py-3">
                           <div className="flex items-center justify-between">
@@ -4190,6 +4267,26 @@ export function V2EditorShell() {
                                       />
                                     </label>
                                     <label className="block">
+                                      <div className="text-slate-400">Text case</div>
+                                      <select
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.textCase ?? activeNode.text!.textCase}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              textCase: event.target.value as TextCase,
+                                            }),
+                                          )
+                                        }
+                                      >
+                                        {TEXT_CASE_OPTIONS.map((option) => (
+                                          <option key={option} value={option}>
+                                            {option}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                    <label className="block">
                                       <div className="text-slate-400">Letter spacing</div>
                                       <input
                                         type="number"
@@ -4227,6 +4324,50 @@ export function V2EditorShell() {
                                           )
                                         }
                                       />
+                                    </label>
+                                  </div>
+                                  <div className="mt-3 grid grid-cols-3 gap-2">
+                                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={range.style?.italic ?? activeNode.text!.italic}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              italic: event.target.checked,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                      Italic
+                                    </label>
+                                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={range.style?.underline ?? activeNode.text!.underline}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              underline: event.target.checked,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                      Underline
+                                    </label>
+                                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={range.style?.lineThrough ?? activeNode.text!.lineThrough}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              lineThrough: event.target.checked,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                      Strike
                                     </label>
                                   </div>
                                 </div>

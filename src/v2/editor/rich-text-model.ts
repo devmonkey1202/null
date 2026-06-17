@@ -39,6 +39,10 @@ function mergeTextStyle(base: ResolvedTextStyle, patch: TextStylePatch | undefin
       : {}),
     ...(patch.align !== undefined ? { align: patch.align } : {}),
     ...(patch.color !== undefined ? { color: patch.color } : {}),
+    ...(patch.textCase !== undefined ? { textCase: patch.textCase } : {}),
+    ...(patch.italic !== undefined ? { italic: patch.italic } : {}),
+    ...(patch.underline !== undefined ? { underline: patch.underline } : {}),
+    ...(patch.lineThrough !== undefined ? { lineThrough: patch.lineThrough } : {}),
   };
 }
 

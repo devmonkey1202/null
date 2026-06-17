@@ -52,6 +52,8 @@ export type TextAlign = "left" | "center" | "right" | "justify";
 
 export type TextSizingMode = "fixed" | "auto_height";
 
+export type TextCase = "none" | "upper" | "lower" | "capitalize";
+
 export type TextNodeData = {
   content: string;
   fontFamily: string;
@@ -62,6 +64,10 @@ export type TextNodeData = {
   paragraphSpacing: number;
   align: TextAlign;
   color: string;
+  textCase: TextCase;
+  italic: boolean;
+  underline: boolean;
+  lineThrough: boolean;
   sizing: TextSizingMode;
   ranges?: TextRange[];
 };
