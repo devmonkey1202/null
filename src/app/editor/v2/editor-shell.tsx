@@ -179,6 +179,46 @@ function buildParagraphTextRanges(text: NonNullable<SceneNode["text"]>): TextRan
   return normalizeTextRanges(text.content, ranges) ?? [];
 }
 
+function buildWordTextRanges(text: NonNullable<SceneNode["text"]>): TextRange[] {
+  const matches = Array.from(text.content.matchAll(/\S+/gu));
+  if (!matches.length) {
+    return text.ranges ?? [];
+  }
+
+  return normalizeTextRanges(
+    text.content,
+    matches.map((match, index) => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      style: {
+        fontWeight: index % 2 === 0 ? 700 : 600,
+        ...(index % 2 === 1 ? { color: "#2859ff" } : {}),
+      },
+    })),
+  ) ?? [];
+}
+
+function createTextRangeFromSelection(
+  text: NonNullable<SceneNode["text"]>,
+  start: number,
+  end: number,
+): TextRange[] {
+  if (end <= start) {
+    return normalizeTextRanges(text.content, text.ranges) ?? [];
+  }
+
+  return normalizeTextRanges(text.content, [
+    ...(normalizeTextRanges(text.content, text.ranges) ?? []),
+    {
+      start,
+      end,
+      style: {
+        fontWeight: 700,
+      },
+    },
+  ]) ?? [];
+}
+
 function updateTextRange(
   text: NonNullable<SceneNode["text"]>,
   index: number,
@@ -1208,11 +1248,13 @@ export function V2EditorShell() {
   const [editingTextNodeId, setEditingTextNodeId] = useState<string | null>(null);
   const [editingTextDraft, setEditingTextDraft] = useState("");
   const [editingTextComposing, setEditingTextComposing] = useState(false);
+  const [inspectorTextSelection, setInspectorTextSelection] = useState<{ start: number; end: number } | null>(null);
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
   const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const bridgeRef = useRef<EditorBridge | null>(null);
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const inspectorTextRef = useRef<HTMLTextAreaElement | null>(null);
   const snapQuerySeqRef = useRef(0);
 
   const syncBridgeState = useCallback(async () => {
@@ -1292,6 +1334,24 @@ export function V2EditorShell() {
         : [],
     [activeNode],
   );
+  const activeInspectorTextSelection = useMemo(() => {
+    if (activeNode?.kind !== "text" || !activeNode.text || !inspectorTextSelection) {
+      return null;
+    }
+
+    const length = activeNode.text.content.length;
+    const start = Math.max(0, Math.min(length, inspectorTextSelection.start));
+    const end = Math.max(0, Math.min(length, inspectorTextSelection.end));
+    if (end <= start) {
+      return null;
+    }
+
+    return {
+      start,
+      end,
+      preview: activeNode.text.content.slice(start, end).replace(/\s+/g, " ").trim(),
+    };
+  }, [activeNode, inspectorTextSelection]);
   const selectedShapeNodes = useMemo(
     () =>
       (snapshot?.selection ?? [])
@@ -1467,6 +1527,10 @@ export function V2EditorShell() {
 
     return () => cancelAnimationFrame(frame);
   }, [editingTextNodeId]);
+
+  useEffect(() => {
+    setInspectorTextSelection(null);
+  }, [activeNode?.id]);
 
   async function applyAndSync(commands: EditorCommand[]) {
     const bridge = bridgeRef.current;
@@ -1689,6 +1753,18 @@ export function V2EditorShell() {
         ranges,
       },
     ]);
+  }
+
+  function syncInspectorTextSelection() {
+    const target = inspectorTextRef.current;
+    if (!target) {
+      setInspectorTextSelection(null);
+      return;
+    }
+
+    const start = Math.min(target.selectionStart ?? 0, target.selectionEnd ?? 0);
+    const end = Math.max(target.selectionStart ?? 0, target.selectionEnd ?? 0);
+    setInspectorTextSelection(end > start ? { start, end } : null);
   }
 
   async function updateTextSizing(sizing: TextSizingMode) {
@@ -3768,9 +3844,13 @@ export function V2EditorShell() {
                         <div>
                           <div className="text-slate-400">Content</div>
                           <textarea
+                            ref={inspectorTextRef}
                             className="mt-1 h-28 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
                             value={activeNode.text.content}
                             onChange={(event) => void updateTextContent(event.target.value)}
+                            onSelect={syncInspectorTextSelection}
+                            onKeyUp={syncInspectorTextSelection}
+                            onMouseUp={syncInspectorTextSelection}
                           />
                         </div>
                         <div className="grid grid-cols-2 gap-3">
@@ -3898,6 +3978,31 @@ export function V2EditorShell() {
                             </button>
                             <button
                               type="button"
+                              onClick={() =>
+                                activeInspectorTextSelection
+                                  ? void updateTextRanges(
+                                      createTextRangeFromSelection(
+                                        activeNode.text!,
+                                        activeInspectorTextSelection.start,
+                                        activeInspectorTextSelection.end,
+                                      ),
+                                    )
+                                  : undefined
+                              }
+                              disabled={!activeInspectorTextSelection}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              From selection
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void updateTextRanges(buildWordTextRanges(activeNode.text!))}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Word split
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => void updateTextRanges(buildParagraphTextRanges(activeNode.text!))}
                               className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
                             >
@@ -3912,6 +4017,18 @@ export function V2EditorShell() {
                               Clear all
                             </button>
                           </div>
+                          {activeInspectorTextSelection ? (
+                            <div className="mt-3 rounded-xl border border-[#2859ff]/15 bg-[#2859ff]/5 px-3 py-2 text-xs text-slate-600">
+                              Selection: {activeInspectorTextSelection.start} - {activeInspectorTextSelection.end}
+                              {activeInspectorTextSelection.preview
+                                ? `  /  ${activeInspectorTextSelection.preview}`
+                                : ""}
+                            </div>
+                          ) : (
+                            <div className="mt-3 rounded-xl border border-dashed border-slate-200 px-3 py-2 text-xs text-slate-500">
+                              Select text in the content box to create a range from the current selection.
+                            </div>
+                          )}
                           {activeTextRanges.length ? (
                             <div className="mt-4 space-y-3">
                               {activeTextRanges.map((range, index) => (
@@ -3985,6 +4102,21 @@ export function V2EditorShell() {
                                       />
                                     </label>
                                     <label className="block">
+                                      <div className="text-slate-400">Font family</div>
+                                      <input
+                                        type="text"
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.fontFamily ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              fontFamily: event.target.value || undefined,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
                                       <div className="text-slate-400">Font size</div>
                                       <input
                                         type="number"
@@ -3995,6 +4127,25 @@ export function V2EditorShell() {
                                           void updateTextRanges(
                                             updateTextRangeStyle(activeNode.text!, index, {
                                               fontSize:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 1,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Line height</div>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.lineHeight ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              lineHeight:
                                                 event.target.value === ""
                                                   ? undefined
                                                   : Number(event.target.value) || 1,
@@ -4049,6 +4200,26 @@ export function V2EditorShell() {
                                           void updateTextRanges(
                                             updateTextRangeStyle(activeNode.text!, index, {
                                               letterSpacing:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Paragraph spacing</div>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step={1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.paragraphSpacing ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              paragraphSpacing:
                                                 event.target.value === ""
                                                   ? undefined
                                                   : Number(event.target.value) || 0,
