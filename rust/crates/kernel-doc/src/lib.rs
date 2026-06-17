@@ -181,6 +181,8 @@ pub struct TextNodeData {
     pub color: String,
     #[serde(default)]
     pub sizing: TextSizingMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<TextRange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -202,6 +204,15 @@ pub struct TextStylePatch {
     pub align: Option<TextAlign>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextRange {
+    pub start: usize,
+    pub end: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<TextStylePatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -283,6 +294,8 @@ pub struct InstanceTextOverride {
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<TextStylePatch>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<TextRange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -375,6 +388,11 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
         style: TextStylePatch,
+    },
+    SetTextRanges {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        ranges: Vec<TextRange>,
     },
     SetTextSizing {
         #[serde(rename = "nodeId")]
@@ -707,6 +725,35 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
                                 Some(node.id.clone()),
                             ));
                         }
+                        let content_len = text.content.chars().count();
+                        for (range_index, range) in text.ranges.iter().enumerate() {
+                            if range.end <= range.start {
+                                issues.push(issue(
+                                    format!("text-range-empty-{}-{}", node.id, range_index),
+                                    ValidationSeverity::Error,
+                                    "scene_text.range.empty",
+                                    "Text range end must be greater than start.",
+                                    Some(node.id.clone()),
+                                ));
+                            }
+                            if range.end > content_len {
+                                issues.push(issue(
+                                    format!("text-range-out-of-bounds-{}-{}", node.id, range_index),
+                                    ValidationSeverity::Error,
+                                    "scene_text.range.out_of_bounds",
+                                    "Text range end exceeds content length.",
+                                    Some(node.id.clone()),
+                                ));
+                            }
+                            if let Some(style) = &range.style {
+                                validate_text_style_patch(
+                                    &mut issues,
+                                    &node.id,
+                                    style,
+                                    Some(range_index),
+                                );
+                            }
+                        }
                     }
                     None => {
                         issues.push(issue(
@@ -914,6 +961,41 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
     }
 }
 
+fn validate_text_style_patch(
+    issues: &mut Vec<ValidationIssue>,
+    node_id: &str,
+    style: &TextStylePatch,
+    range_index: Option<usize>,
+) {
+    if matches!(style.font_size, Some(value) if value <= 0.0)
+        || matches!(style.line_height, Some(value) if value <= 0.0)
+    {
+        issues.push(issue(
+            match range_index {
+                Some(index) => format!("text-range-metrics-invalid-{}-{}", node_id, index),
+                None => format!("text-style-metrics-invalid-{}", node_id),
+            },
+            ValidationSeverity::Error,
+            "scene_text.style.metrics.invalid",
+            "Text style font size and line height must be greater than zero when provided.",
+            Some(node_id.to_string()),
+        ));
+    }
+
+    if matches!(style.paragraph_spacing, Some(value) if value < 0.0) {
+        issues.push(issue(
+            match range_index {
+                Some(index) => format!("text-range-paragraph-spacing-invalid-{}-{}", node_id, index),
+                None => format!("text-style-paragraph-spacing-invalid-{}", node_id),
+            },
+            ValidationSeverity::Error,
+            "scene_text.style.paragraph_spacing.invalid",
+            "Text style paragraph spacing must be zero or greater when provided.",
+            Some(node_id.to_string()),
+        ));
+    }
+}
+
 pub fn document_stable_id(doc: &SceneDoc) -> StableId {
     StableId::new(doc.document_id.clone())
 }
@@ -999,6 +1081,7 @@ mod tests {
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
                             sizing: TextSizingMode::AutoHeight,
+                            ranges: vec![],
                         }),
                         shape: None,
                         component: None,

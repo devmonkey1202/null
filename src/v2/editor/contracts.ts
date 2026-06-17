@@ -63,9 +63,16 @@ export type TextNodeData = {
   align: TextAlign;
   color: string;
   sizing: TextSizingMode;
+  ranges?: TextRange[];
 };
 
-export type TextStylePatch = Partial<Omit<TextNodeData, "content" | "sizing">>;
+export type TextStylePatch = Partial<Omit<TextNodeData, "content" | "sizing" | "ranges">>;
+
+export type TextRange = {
+  start: number;
+  end: number;
+  style?: TextStylePatch;
+};
 
 export type ShapePrimitive = "rect" | "ellipse" | "line" | "path";
 
@@ -106,6 +113,7 @@ export type InstanceTextOverride = {
   sourceNodeId: string;
   content?: string;
   style?: TextStylePatch;
+  ranges?: TextRange[];
 };
 
 export type InstanceShapeOverride = {
@@ -186,6 +194,7 @@ export type EditorCommand =
   | { kind: "rename_node"; nodeId: string; name: string }
   | { kind: "set_text_content"; nodeId: string; content: string }
   | { kind: "set_text_style"; nodeId: string; style: TextStylePatch }
+  | { kind: "set_text_ranges"; nodeId: string; ranges: TextRange[] }
   | { kind: "set_text_sizing"; nodeId: string; sizing: TextSizingMode }
   | { kind: "set_shape_primitive"; nodeId: string; primitive: ShapePrimitive }
   | { kind: "set_shape_style"; nodeId: string; style: ShapeStylePatch }

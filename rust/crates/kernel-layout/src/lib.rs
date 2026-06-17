@@ -162,6 +162,7 @@ mod tests {
                             align: kernel_doc::TextAlign::Left,
                             color: "#0f172a".to_string(),
                             sizing: kernel_doc::TextSizingMode::AutoHeight,
+                            ranges: vec![],
                         }),
                         shape: None,
                         component: None,

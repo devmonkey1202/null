@@ -29,6 +29,7 @@ import {
   type ShapePathData,
   type ShapeStylePatch,
   type TextNodeData,
+  type TextRange,
   type TextStylePatch,
   type TransformHandle,
   type ValidationReport,
@@ -603,6 +604,64 @@ function applyTextStylePatch(text: TextNodeData, style: TextStylePatch): TextNod
   };
 }
 
+function normalizeTextRanges(content: string, ranges: TextRange[] | undefined): TextRange[] | undefined {
+  if (!ranges?.length) {
+    return undefined;
+  }
+
+  const length = content.length;
+  const normalized = ranges
+    .map((range) => ({
+      start: Math.max(0, Math.min(length, Math.floor(range.start))),
+      end: Math.max(0, Math.min(length, Math.floor(range.end))),
+      ...(range.style ? { style: { ...range.style } } : {}),
+    }))
+    .filter((range) => range.end > range.start)
+    .sort((left, right) => (left.start === right.start ? left.end - right.end : left.start - right.start));
+
+  return normalized.length ? normalized : undefined;
+}
+
+function normalizeTextData(text: TextNodeData): TextNodeData {
+  return {
+    ...text,
+    ranges: normalizeTextRanges(text.content, text.ranges),
+  };
+}
+
+function applyTextRangeSet(text: TextNodeData, ranges: TextRange[]): TextNodeData {
+  return {
+    ...text,
+    ranges: normalizeTextRanges(text.content, ranges),
+  };
+}
+
+function applyInstanceTextOverrideToText(
+  text: TextNodeData,
+  override: {
+    content?: string;
+    style?: TextStylePatch;
+    ranges?: TextRange[];
+  },
+): TextNodeData {
+  let nextText: TextNodeData = {
+    ...text,
+    ...(override.content !== undefined ? { content: override.content } : {}),
+  };
+
+  nextText = normalizeTextData(nextText);
+
+  if (override.style) {
+    nextText = applyTextStylePatch(nextText, override.style);
+  }
+
+  if (override.ranges !== undefined) {
+    nextText = applyTextRangeSet(nextText, override.ranges);
+  }
+
+  return normalizeTextData(nextText);
+}
+
 function applyShapeStylePatch(shape: ShapeNodeData, style: ShapeStylePatch): ShapeNodeData {
   return {
     ...shape,
@@ -652,6 +711,7 @@ function mergeTextStylePatch(
     ...(next.fontWeight !== undefined ? { fontWeight: next.fontWeight } : {}),
     ...(next.lineHeight !== undefined ? { lineHeight: next.lineHeight } : {}),
     ...(next.letterSpacing !== undefined ? { letterSpacing: next.letterSpacing } : {}),
+    ...(next.paragraphSpacing !== undefined ? { paragraphSpacing: next.paragraphSpacing } : {}),
     ...(next.align !== undefined ? { align: next.align } : {}),
     ...(next.color !== undefined ? { color: next.color } : {}),
   };
@@ -663,6 +723,7 @@ function upsertInstanceTextOverride(
   patch: {
     content?: string;
     style?: TextStylePatch;
+    ranges?: TextRange[];
   },
 ) {
   const nextOverrides = structuredClone(overrides ?? []);
@@ -674,6 +735,9 @@ function upsertInstanceTextOverride(
     if (patch.style) {
       current.style = mergeTextStylePatch(current.style, patch.style);
     }
+    if (patch.ranges !== undefined) {
+      current.ranges = structuredClone(patch.ranges);
+    }
     return nextOverrides;
   }
 
@@ -681,6 +745,7 @@ function upsertInstanceTextOverride(
     sourceNodeId,
     ...(patch.content !== undefined ? { content: patch.content } : {}),
     ...(patch.style ? { style: patch.style } : {}),
+    ...(patch.ranges !== undefined ? { ranges: structuredClone(patch.ranges) } : {}),
   } satisfies InstanceTextOverride);
   return nextOverrides;
 }
@@ -775,6 +840,7 @@ function syncTextOverrideOnPages(
   patch: {
     content?: string;
     style?: TextStylePatch;
+    ranges?: TextRange[];
   },
 ) {
   const instanceRootId = findInstanceRootId(document, nodeId);
@@ -1028,11 +1094,7 @@ function refreshInstanceSubtree(document: SceneDoc, nodeId: string) {
     if (!targetNode?.text) {
       continue;
     }
-    targetNode.text = {
-      ...targetNode.text,
-      ...(override.content !== undefined ? { content: override.content } : {}),
-      ...(override.style ? applyTextStylePatch(targetNode.text, override.style) : {}),
-    };
+    targetNode.text = applyInstanceTextOverrideToText(targetNode.text, override);
   }
 
   const shapeOverrides = instanceRoot.instance.shapeOverrides ?? [];
@@ -1700,10 +1762,10 @@ export class NoopEditorBridge implements EditorBridge {
               ({
                 ...node,
                 text: node.text
-                  ? {
+                  ? normalizeTextData({
                       ...node.text,
                       content: command.content,
-                    }
+                    })
                   : node.text,
               }),
             );
@@ -1729,7 +1791,7 @@ export class NoopEditorBridge implements EditorBridge {
             const nextPages = updateNode(this.document.pages, command.nodeId, (node) =>
               ({
                 ...node,
-                text: node.text ? applyTextStylePatch(node.text, command.style) : node.text,
+                text: node.text ? normalizeTextData(applyTextStylePatch(node.text, command.style)) : node.text,
               }),
             );
             this.document = normalizeDocument({
@@ -1741,6 +1803,31 @@ export class NoopEditorBridge implements EditorBridge {
                 },
                 command.nodeId,
                 { style: command.style },
+              ),
+              meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
+            });
+          }
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "set_text_ranges":
+          {
+            const nextPages = updateNode(this.document.pages, command.nodeId, (node) =>
+              ({
+                ...node,
+                text: node.text ? applyTextRangeSet(node.text, command.ranges) : node.text,
+              }),
+            );
+            this.document = normalizeDocument({
+              ...this.document,
+              pages: syncTextOverrideOnPages(
+                {
+                  ...this.document,
+                  pages: nextPages,
+                },
+                command.nodeId,
+                { ranges: command.ranges },
               ),
               meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
             });

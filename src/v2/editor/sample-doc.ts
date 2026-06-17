@@ -105,6 +105,24 @@ export const sampleSceneDoc: SceneDoc = {
             align: "left",
             color: "#0f172a",
             sizing: "auto_height",
+            ranges: [
+              {
+                start: 0,
+                end: 6,
+                style: {
+                  color: "#2859ff",
+                  fontWeight: 800,
+                },
+              },
+              {
+                start: 15,
+                end: 28,
+                style: {
+                  color: "#0f172a",
+                  fontWeight: 800,
+                },
+              },
+            ],
           },
         },
         {

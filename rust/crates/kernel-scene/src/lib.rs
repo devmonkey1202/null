@@ -4,8 +4,8 @@ use kernel_doc::{
     EditorCommand, EditorRect, EditorSnapshot, EditorViewport, FramePatch, GuideAxis,
     HorizontalConstraint, InstanceNodeData, InstanceOverrideKind, InstanceShapeOverride,
     InstanceTextOverride, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
-    ShapePathData, ShapeStylePatch, TextSizingMode, TextStylePatch, TransformHandleKind,
-    ValidationReport, VerticalConstraint,
+    ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch,
+    TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
@@ -138,6 +138,7 @@ pub fn dispatch_commands(
                     ensure_text_node(node)?;
                     if let Some(text) = &mut node.text {
                         text.content = content;
+                        text.ranges = normalize_text_ranges(&text.content, text.ranges.clone());
                     }
                 }
                 capture_text_content_override(&mut state.doc, &node_id)?;
@@ -160,6 +161,21 @@ pub fn dispatch_commands(
                 state.version += 1;
                 touch_doc(&mut state.doc);
                 applied_commands.push("set_text_style".to_string());
+                dirty_node_ids.push(node_id);
+            }
+            EditorCommand::SetTextRanges { node_id, ranges } => {
+                {
+                    let node = find_node_mut(&mut state.doc, &node_id)?;
+                    ensure_text_node(node)?;
+                    if let Some(text) = &mut node.text {
+                        text.ranges = normalize_text_ranges(&text.content, ranges);
+                    }
+                }
+                capture_text_ranges_override(&mut state.doc, &node_id)?;
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("set_text_ranges".to_string());
                 dirty_node_ids.push(node_id);
             }
             EditorCommand::SetTextSizing { node_id, sizing } => {
@@ -1369,7 +1385,44 @@ fn capture_text_content_override(doc: &mut SceneDoc, node_id: &str) -> Result<()
             format!("Instance '{}' is missing metadata.", instance_root_id),
         )
     })?;
-    upsert_text_override(&mut instance.text_overrides, &source_node_id, Some(content), None);
+    upsert_text_override(
+        &mut instance.text_overrides,
+        &source_node_id,
+        Some(content),
+        None,
+        None,
+    );
+    Ok(())
+}
+
+fn capture_text_ranges_override(doc: &mut SceneDoc, node_id: &str) -> Result<(), CoreError> {
+    let Some(instance_root_id) = find_instance_root_id(doc, node_id) else {
+        return Ok(());
+    };
+    let source_node_id = query_node(doc, node_id)
+        .and_then(|node| node.instance_source_node_id.clone())
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.instance.override_source_missing",
+                format!("Node '{}' is missing instance source metadata.", node_id),
+            )
+        })?;
+    let ranges = query_node(doc, node_id)
+        .and_then(|node| node.text.as_ref().map(|text| text.ranges.clone()))
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.text.invalid_target",
+                format!("Node '{}' is not a text node.", node_id),
+            )
+        })?;
+    let instance_root = find_node_mut(doc, &instance_root_id)?;
+    let instance = instance_root.instance.as_mut().ok_or_else(|| {
+        CoreError::new(
+            "scene.instance.metadata_missing",
+            format!("Instance '{}' is missing metadata.", instance_root_id),
+        )
+    })?;
+    upsert_text_override(&mut instance.text_overrides, &source_node_id, None, None, Some(ranges));
     Ok(())
 }
 
@@ -1401,6 +1454,7 @@ fn capture_text_style_override(
         &source_node_id,
         None,
         Some(style.clone()),
+        None,
     );
     Ok(())
 }
@@ -1453,6 +1507,7 @@ fn upsert_text_override(
     source_node_id: &str,
     content: Option<String>,
     style: Option<TextStylePatch>,
+    ranges: Option<Vec<TextRange>>,
 ) {
     if let Some(existing) = overrides
         .iter_mut()
@@ -1464,6 +1519,9 @@ fn upsert_text_override(
         if let Some(next_style) = style {
             existing.style = Some(merge_text_style_patch(existing.style.clone(), next_style));
         }
+        if let Some(next_ranges) = ranges {
+            existing.ranges = next_ranges;
+        }
         return;
     }
 
@@ -1471,6 +1529,7 @@ fn upsert_text_override(
         source_node_id: source_node_id.to_string(),
         content,
         style,
+        ranges: ranges.unwrap_or_default(),
     });
 }
 
@@ -1511,6 +1570,9 @@ fn merge_text_style_patch(current: Option<TextStylePatch>, next: TextStylePatch)
     }
     if next.letter_spacing.is_some() {
         merged.letter_spacing = next.letter_spacing;
+    }
+    if next.paragraph_spacing.is_some() {
+        merged.paragraph_spacing = next.paragraph_spacing;
     }
     if next.align.is_some() {
         merged.align = next.align;
@@ -1557,6 +1619,11 @@ fn apply_text_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[
         }
         if let Some(style) = &override_entry.style {
             apply_text_style_patch(text, style.clone());
+        }
+        if !override_entry.ranges.is_empty() {
+            text.ranges = normalize_text_ranges(&text.content, override_entry.ranges.clone());
+        } else if override_entry.content.is_some() {
+            text.ranges = normalize_text_ranges(&text.content, text.ranges.clone());
         }
     }
 }
@@ -1644,6 +1711,29 @@ fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStyleP
     if let Some(color) = style.color {
         text.color = color;
     }
+}
+
+fn normalize_text_ranges(content: &str, ranges: Vec<TextRange>) -> Vec<TextRange> {
+    let content_len = content.chars().count();
+    let mut normalized = ranges
+        .into_iter()
+        .map(|range| {
+            let start = range.start.min(content_len);
+            let end = range.end.min(content_len);
+            TextRange {
+                start,
+                end,
+                style: range.style,
+            }
+        })
+        .filter(|range| range.end > range.start)
+        .collect::<Vec<_>>();
+    normalized.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| left.end.cmp(&right.end))
+    });
+    normalized
 }
 
 fn apply_shape_style_patch(shape: &mut kernel_doc::ShapeNodeData, style: ShapeStylePatch) {
@@ -2689,6 +2779,7 @@ mod tests {
                             align: TextAlign::Left,
                             color: "#0f172a".to_string(),
                             sizing: TextSizingMode::AutoHeight,
+                            ranges: vec![],
                         }),
                         shape: None,
                         component: None,
@@ -3034,6 +3125,7 @@ mod tests {
                 align: TextAlign::Left,
                 color: "#475569".to_string(),
                 sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
             }),
             shape: None,
             component: None,
@@ -3121,6 +3213,56 @@ mod tests {
         assert_eq!(text.line_height, 34.0);
         assert_eq!(text.color, "#2859ff");
         assert!(node.frame.h >= 34.0);
+    }
+
+    #[test]
+    fn set_text_ranges_normalizes_segments() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SetTextContent {
+                    node_id: "title".to_string(),
+                    content: "Primary Badge".to_string(),
+                },
+                EditorCommand::SetTextRanges {
+                    node_id: "title".to_string(),
+                    ranges: vec![
+                        TextRange {
+                            start: 0,
+                            end: 7,
+                            style: Some(TextStylePatch {
+                                font_weight: Some(700),
+                                ..TextStylePatch::default()
+                            }),
+                        },
+                        TextRange {
+                            start: 8,
+                            end: 99,
+                            style: Some(TextStylePatch {
+                                color: Some("#2859ff".to_string()),
+                                ..TextStylePatch::default()
+                            }),
+                        },
+                        TextRange {
+                            start: 4,
+                            end: 4,
+                            style: None,
+                        },
+                    ],
+                },
+            ],
+        )
+        .expect("text range commands should succeed");
+
+        let node = query_node(&state.doc, "title").expect("node exists");
+        let text = node.text.as_ref().expect("text data exists");
+        assert_eq!(text.ranges.len(), 2);
+        assert_eq!(text.ranges[0].start, 0);
+        assert_eq!(text.ranges[0].end, 7);
+        assert_eq!(text.ranges[1].start, 8);
+        assert_eq!(text.ranges[1].end, text.content.chars().count());
     }
 
     #[test]
@@ -3508,5 +3650,77 @@ mod tests {
         let instance = instance_root.instance.as_ref().expect("instance metadata exists");
         assert!(instance.text_overrides.is_empty());
         assert!(instance.shape_overrides.is_empty());
+    }
+
+    #[test]
+    fn refresh_instance_preserves_text_range_overrides() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::PromoteToComponent {
+                    node_id: "root".to_string(),
+                    component_key: Some("hero-card".to_string()),
+                },
+                EditorCommand::CreateInstanceFromComponent {
+                    page_id: "page-1".to_string(),
+                    source_node_id: "root".to_string(),
+                    offset_x: Some(120.0),
+                    offset_y: Some(0.0),
+                },
+            ],
+        )
+        .expect("component + instance should succeed");
+
+        let instance_id = state.selection.first().cloned().expect("instance root selected");
+        let instance_child_id = query_node(&state.doc, &instance_id)
+            .and_then(|root| root.children.as_ref().and_then(|children| children.first()).cloned())
+            .expect("instance child exists");
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetTextRanges {
+                node_id: instance_child_id,
+                ranges: vec![TextRange {
+                    start: 0,
+                    end: 5,
+                    style: Some(TextStylePatch {
+                        color: Some("#2859ff".to_string()),
+                        font_weight: Some(700),
+                        ..TextStylePatch::default()
+                    }),
+                }],
+            }],
+        )
+        .expect("instance text range override should succeed");
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::RefreshInstance {
+                node_id: instance_id.clone(),
+            }],
+        )
+        .expect("refresh should succeed");
+
+        let instance_root = query_node(&state.doc, &instance_id).expect("instance root exists");
+        let refreshed_child_id = instance_root
+            .children
+            .as_ref()
+            .and_then(|children| children.first())
+            .cloned()
+            .expect("refreshed child exists");
+        let refreshed_child = query_node(&state.doc, &refreshed_child_id).expect("child exists");
+        let text = refreshed_child.text.as_ref().expect("text exists");
+        assert_eq!(text.ranges.len(), 1);
+        assert_eq!(text.ranges[0].start, 0);
+        assert_eq!(text.ranges[0].end, 5);
+        assert_eq!(
+            text.ranges[0]
+                .style
+                .as_ref()
+                .and_then(|style| style.color.as_deref()),
+            Some("#2859ff")
+        );
     }
 }

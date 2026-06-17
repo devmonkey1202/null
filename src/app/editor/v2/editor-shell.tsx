@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runBooleanMultiple } from "@/advanced/geom/boolean";
 import { anchorsToPathData, ellipseToPath, pathDataToAnchors, pathDataToBounds, pathDataToPolygon, rectToPath, type PathAnchor } from "@/advanced/geom/pathData";
+import { normalizeTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "@/v2/editor/rich-text-model";
 import type {
   AutoLayoutAlign,
   AutoLayoutData,
@@ -21,6 +22,7 @@ import type {
   SnapGuide,
   TextAlign,
   TextSizingMode,
+  TextRange,
   TextStylePatch,
   ShapePrimitive,
   ShapePathHandle,
@@ -128,6 +130,119 @@ const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
   deltaY: 0,
   guides: [],
 };
+
+function addTextRange(text: NonNullable<SceneNode["text"]>): TextRange[] {
+  const length = text.content.length;
+  if (length <= 0) {
+    return text.ranges ?? [];
+  }
+
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  const lastRange = ranges[ranges.length - 1];
+  const start = lastRange ? Math.min(Math.max(lastRange.end, 0), Math.max(length - 1, 0)) : 0;
+  const end = Math.min(length, Math.max(start + 1, length));
+
+  return normalizeTextRanges(text.content, [
+    ...ranges,
+    {
+      start,
+      end,
+      style: { fontWeight: 700 },
+    },
+  ]) ?? [];
+}
+
+function buildParagraphTextRanges(text: NonNullable<SceneNode["text"]>): TextRange[] {
+  if (!text.content.length) {
+    return text.ranges ?? [];
+  }
+
+  const segments = text.content.split("\n");
+  const ranges: TextRange[] = [];
+  let cursor = 0;
+  segments.forEach((segment, index) => {
+    const start = cursor;
+    const end = cursor + segment.length;
+    if (end > start) {
+      ranges.push({
+        start,
+        end,
+        style: {
+          fontWeight: index === 0 ? 700 : 500,
+          ...(index % 2 === 1 ? { color: "#2859ff" } : {}),
+        },
+      });
+    }
+    cursor = end + 1;
+  });
+
+  return normalizeTextRanges(text.content, ranges) ?? [];
+}
+
+function updateTextRange(
+  text: NonNullable<SceneNode["text"]>,
+  index: number,
+  patch: Partial<TextRange>,
+): TextRange[] {
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  if (!ranges[index]) {
+    return ranges;
+  }
+
+  return normalizeTextRanges(
+    text.content,
+    ranges.map((range, rangeIndex) =>
+      rangeIndex === index
+        ? {
+            start: patch.start ?? range.start,
+            end: patch.end ?? range.end,
+            style: patch.style ?? range.style,
+          }
+        : range,
+    ),
+  ) ?? [];
+}
+
+function updateTextRangeStyle(
+  text: NonNullable<SceneNode["text"]>,
+  index: number,
+  style: TextStylePatch,
+): TextRange[] {
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  const current = ranges[index];
+  if (!current) {
+    return ranges;
+  }
+
+  return updateTextRange(text, index, {
+    style: {
+      ...(current.style ?? {}),
+      ...style,
+    },
+  });
+}
+
+function removeTextRange(text: NonNullable<SceneNode["text"]>, index: number): TextRange[] {
+  return (normalizeTextRanges(text.content, text.ranges) ?? []).filter(
+    (_range, rangeIndex) => rangeIndex !== index,
+  );
+}
+
+function clearTextRangeStyle(text: NonNullable<SceneNode["text"]>, index: number): TextRange[] {
+  return updateTextRange(text, index, { style: undefined });
+}
+
+function getTextRangePreview(text: NonNullable<SceneNode["text"]>, index: number, maxLength = 20) {
+  const range = (normalizeTextRanges(text.content, text.ranges) ?? [])[index];
+  if (!range) {
+    return "";
+  }
+  const preview = text.content.slice(range.start, range.end).replace(/\s+/g, " ").trim();
+  if (preview.length <= maxLength) {
+    return preview;
+  }
+  return `${preview.slice(0, Math.max(maxLength - 1, 0))}…`;
+}
 
 function createDefaultShapePath(frame: EditorRect): ShapePathData {
   return {
@@ -1170,6 +1285,13 @@ export function V2EditorShell() {
     () => selectedNode(nodes, snapshot?.selection ?? []),
     [nodes, snapshot?.selection],
   );
+  const activeTextRanges = useMemo(
+    () =>
+      activeNode?.kind === "text" && activeNode.text
+        ? normalizeTextRanges(activeNode.text.content, activeNode.text.ranges) ?? []
+        : [],
+    [activeNode],
+  );
   const selectedShapeNodes = useMemo(
     () =>
       (snapshot?.selection ?? [])
@@ -1551,6 +1673,20 @@ export function V2EditorShell() {
         kind: "set_text_style",
         nodeId: activeNode.id,
         style,
+      },
+    ]);
+  }
+
+  async function updateTextRanges(ranges: TextRange[]) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_ranges",
+        nodeId: activeNode.id,
+        ranges,
       },
     ]);
   }
@@ -2796,6 +2932,8 @@ export function V2EditorShell() {
                           dragPathHandle,
                         )
                       : shapeData?.path;
+                  const richTextParagraphs =
+                    textData ? splitRichTextRunsByParagraph(resolveRichTextRuns(textData)) : null;
                   return (
                     <button
                       key={node.id}
@@ -2831,20 +2969,52 @@ export function V2EditorShell() {
                       ) : null}
                       {textData ? (
                         <div
-                          className="h-full w-full p-1"
+                          className="flex h-full w-full flex-col p-1"
                           style={{
-                            fontFamily: textData.fontFamily,
-                            fontSize: textData.fontSize,
-                            fontWeight: textData.fontWeight,
-                            lineHeight: `${textData.lineHeight}px`,
-                            letterSpacing: textData.letterSpacing,
-                            color: textData.color,
-                            textAlign: textData.align,
-                            whiteSpace: "pre-wrap",
-                            overflowWrap: "anywhere",
+                            gap: textData.paragraphSpacing,
                           }}
                         >
-                          {textData.content}
+                          {richTextParagraphs?.map((paragraph, paragraphIndex) => (
+                            <div
+                              key={`${node.id}-paragraph-${paragraphIndex}`}
+                              style={{
+                                textAlign: textData.align,
+                                whiteSpace: "pre-wrap",
+                                overflowWrap: "anywhere",
+                              }}
+                            >
+                              {paragraph.runs.length ? (
+                                paragraph.runs.map((run, runIndex) => (
+                                  <span
+                                    key={`${node.id}-run-${paragraphIndex}-${runIndex}`}
+                                    style={{
+                                      fontFamily: run.style.fontFamily,
+                                      fontSize: run.style.fontSize,
+                                      fontWeight: run.style.fontWeight,
+                                      lineHeight: `${run.style.lineHeight}px`,
+                                      letterSpacing: run.style.letterSpacing,
+                                      color: run.style.color,
+                                    }}
+                                  >
+                                    {run.text}
+                                  </span>
+                                ))
+                              ) : (
+                                <span
+                                  style={{
+                                    fontFamily: textData.fontFamily,
+                                    fontSize: textData.fontSize,
+                                    fontWeight: textData.fontWeight,
+                                    lineHeight: `${textData.lineHeight}px`,
+                                    letterSpacing: textData.letterSpacing,
+                                    color: textData.color,
+                                  }}
+                                >
+                                  {" "}
+                                </span>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       ) : shapeData ? (
                         shapeData.primitive === "line" ? (
@@ -3707,6 +3877,191 @@ export function V2EditorShell() {
                               onChange={(event) => void updateTextStyle({ color: event.target.value })}
                             />
                           </label>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white px-3 py-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="text-sm font-semibold text-slate-900">Rich text ranges</div>
+                              <div className="text-xs text-slate-500">
+                                One text layer can carry multiple local style runs.
+                              </div>
+                            </div>
+                            <div className="text-xs text-slate-400">{activeTextRanges.length} ranges</div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void updateTextRanges(addTextRange(activeNode.text!))}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Add range
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void updateTextRanges(buildParagraphTextRanges(activeNode.text!))}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Paragraph split
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void updateTextRanges([])}
+                              disabled={activeTextRanges.length === 0}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Clear all
+                            </button>
+                          </div>
+                          {activeTextRanges.length ? (
+                            <div className="mt-4 space-y-3">
+                              {activeTextRanges.map((range, index) => (
+                                <div
+                                  key={`text-range-${activeNode.id}-${index}`}
+                                  className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm font-semibold text-slate-900">
+                                        {getTextRangePreview(activeNode.text!, index) || "(empty)"}
+                                      </div>
+                                      <div className="mt-1 text-xs text-slate-500">
+                                        {range.start} - {range.end}
+                                      </div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void updateTextRanges(clearTextRangeStyle(activeNode.text!, index))
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Clear style
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void updateTextRanges(removeTextRange(activeNode.text!, index))
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="mt-3 grid grid-cols-2 gap-3">
+                                    <label className="block">
+                                      <div className="text-slate-400">Start</div>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={activeNode.text!.content.length}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.start}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRange(activeNode.text!, index, {
+                                              start: Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">End</div>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={activeNode.text!.content.length}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.end}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRange(activeNode.text!, index, {
+                                              end: Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Font size</div>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.fontSize ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              fontSize:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 1,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Weight</div>
+                                      <input
+                                        type="number"
+                                        min={100}
+                                        step={100}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.fontWeight ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              fontWeight:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 400,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Color</div>
+                                      <input
+                                        type="color"
+                                        className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                                        value={range.style?.color ?? activeNode.text!.color}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              color: event.target.value,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Letter spacing</div>
+                                      <input
+                                        type="number"
+                                        step={0.1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.letterSpacing ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              letterSpacing:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     ) : null}
