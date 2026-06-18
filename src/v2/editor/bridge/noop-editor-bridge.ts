@@ -1329,7 +1329,22 @@ function buildAutoLayoutFrames(
     lines.push(currentLine);
   }
 
-  let crossCursor = crossStart;
+  const wrapGap = resolvedLayout.wrapGap;
+  const totalCross = lines.reduce((sum, line) => sum + line.cross, 0)
+    + (resolvedLayout.wrap ? wrapGap * Math.max(lines.length - 1, 0) : 0);
+  const remainingCross = Math.max(availableCross - totalCross, 0);
+  const crossGap = resolvedLayout.wrap && resolvedLayout.wrapAlign === "space_between" && lines.length > 1
+    ? remainingCross / Math.max(lines.length - 1, 1)
+    : wrapGap;
+  let crossCursor = crossStart + (
+    resolvedLayout.wrap
+      ? resolvedLayout.wrapAlign === "center"
+        ? remainingCross / 2
+        : resolvedLayout.wrapAlign === "end"
+          ? remainingCross
+          : 0
+      : 0
+  );
   let measuredMain = 0;
   let measuredCross = 0;
   for (const line of lines) {
@@ -1392,6 +1407,10 @@ function buildAutoLayoutFrames(
     } else if (resolvedLayout.justify === "end") {
       primaryCursor += remainingMain;
     }
+    const isBaseline = resolvedLayout.align === "baseline" && isHorizontal;
+    const lineBaseline = isBaseline
+      ? Math.max(...layoutChildren.map((entry) => getBaselineOffset(entry.child)))
+      : 0;
 
     for (const entry of layoutChildren) {
       const nextFrame = { ...entry.child.frame };
@@ -1400,6 +1419,9 @@ function buildAutoLayoutFrames(
         if (entry.crossMode === "fill" || resolvedLayout.align === "stretch") {
           nextFrame.y = crossCursor;
           nextFrame.h = Math.max(lineCross, 1);
+        } else if (isBaseline) {
+          nextFrame.y = crossCursor + lineBaseline - getBaselineOffset(entry.child);
+          nextFrame.h = Math.max(entry.height, 1);
         } else {
           const aligned = alignCrossAxis(entry.height, crossCursor, lineCross, resolvedLayout.align);
           nextFrame.y = aligned.position;
@@ -1425,12 +1447,12 @@ function buildAutoLayoutFrames(
     }
 
     measuredMain = Math.max(measuredMain, occupiedMain);
-    measuredCross += lineCross + (resolvedLayout.wrap ? resolvedLayout.wrapGap : 0);
-    crossCursor += lineCross + (resolvedLayout.wrap ? resolvedLayout.wrapGap : 0);
+    measuredCross += lineCross + (resolvedLayout.wrap ? crossGap : 0);
+    crossCursor += lineCross + (resolvedLayout.wrap ? crossGap : 0);
   }
 
   if (resolvedLayout.wrap && measuredCross > 0) {
-    measuredCross -= resolvedLayout.wrapGap;
+    measuredCross -= crossGap;
   }
 
   if (hugMain || hugCross) {
@@ -1470,6 +1492,14 @@ function buildAutoLayoutFrames(
   }
 
   return frames;
+}
+
+function getBaselineOffset(node: SceneNode) {
+  if (node.text) {
+    return Math.min(Math.max(node.text.lineHeight * 0.8, 1), Math.max(node.frame.h, 1));
+  }
+
+  return Math.max(node.frame.h, 1);
 }
 
 function alignCrossAxis(currentSize: number, crossStart: number, crossSize: number, align: AutoLayoutAlign) {

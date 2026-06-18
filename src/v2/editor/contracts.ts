@@ -35,9 +35,13 @@ export type NodeConstraints = {
 
 export type AutoLayoutDirection = "horizontal" | "vertical";
 
-export type AutoLayoutAlign = "start" | "center" | "end" | "stretch";
+export type AutoLayoutAlign = "start" | "center" | "end" | "stretch" | "baseline";
+
+export type AutoLayoutGapMode = "fixed" | "space_between";
 
 export type AutoLayoutJustify = "start" | "center" | "end" | "space_between";
+
+export type AutoLayoutWrapAlign = "start" | "center" | "end" | "space_between";
 
 export type AutoLayoutData = {
   direction: AutoLayoutDirection;
@@ -46,8 +50,10 @@ export type AutoLayoutData = {
   paddingY: number;
   align: AutoLayoutAlign;
   justify: AutoLayoutJustify;
+  gapMode?: AutoLayoutGapMode;
   wrap?: boolean;
   wrapGap?: number;
+  wrapAlign?: AutoLayoutWrapAlign;
 };
 
 export type LayoutSizing = "fixed" | "fill" | "hug";

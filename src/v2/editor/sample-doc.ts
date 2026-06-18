@@ -173,8 +173,10 @@ export const sampleSceneDoc: SceneDoc = {
             paddingY: 20,
             align: "start",
             justify: "start",
+            gapMode: "fixed",
             wrap: true,
             wrapGap: 12,
+            wrapAlign: "start",
           },
         },
         {

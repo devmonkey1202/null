@@ -129,11 +129,30 @@ pub enum AutoLayoutAlign {
     Center,
     End,
     Stretch,
+    Baseline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoLayoutGapMode {
+    #[default]
+    Fixed,
+    SpaceBetween,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoLayoutJustify {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoLayoutWrapAlign {
+    #[default]
     Start,
     Center,
     End,
@@ -175,9 +194,13 @@ pub struct AutoLayoutData {
     pub align: AutoLayoutAlign,
     pub justify: AutoLayoutJustify,
     #[serde(default)]
+    pub gap_mode: AutoLayoutGapMode,
+    #[serde(default)]
     pub wrap: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap_gap: Option<f32>,
+    #[serde(default)]
+    pub wrap_align: AutoLayoutWrapAlign,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

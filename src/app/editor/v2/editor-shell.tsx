@@ -9,7 +9,9 @@ import type {
   AutoLayoutAlign,
   AutoLayoutData,
   AutoLayoutDirection,
+  AutoLayoutGapMode,
   AutoLayoutJustify,
+  AutoLayoutWrapAlign,
   EditorCommand,
   EditorBridge,
   EditorRect,
@@ -122,8 +124,13 @@ type RulerTick = {
 const HORIZONTAL_CONSTRAINT_OPTIONS: HorizontalConstraint[] = ["min", "max", "stretch", "scale"];
 const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretch", "scale"];
 const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "vertical"];
-const AUTO_LAYOUT_ALIGN_OPTIONS: AutoLayoutAlign[] = ["start", "center", "end", "stretch"];
-const AUTO_LAYOUT_JUSTIFY_OPTIONS: AutoLayoutJustify[] = ["start", "center", "end", "space_between"];
+const AUTO_LAYOUT_ALIGN_OPTIONS: Record<AutoLayoutDirection, AutoLayoutAlign[]> = {
+  horizontal: ["start", "center", "end", "stretch", "baseline"],
+  vertical: ["start", "center", "end", "stretch"],
+};
+const AUTO_LAYOUT_JUSTIFY_OPTIONS: AutoLayoutJustify[] = ["start", "center", "end"];
+const AUTO_LAYOUT_GAP_MODE_OPTIONS: AutoLayoutGapMode[] = ["fixed", "space_between"];
+const AUTO_LAYOUT_WRAP_ALIGN_OPTIONS: AutoLayoutWrapAlign[] = ["start", "center", "end", "space_between"];
 const LAYOUT_SIZING_OPTIONS: LayoutSizing[] = ["fixed", "fill", "hug"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_CASE_OPTIONS: TextCase[] = ["none", "upper", "lower", "capitalize"];
@@ -1609,12 +1616,13 @@ export function V2EditorShell() {
     }
 
     const current: AutoLayoutData = resolveAutoLayout(activeNode.layout) ?? DEFAULT_AUTO_LAYOUT;
+    const nextLayout = patch ? resolveAutoLayout({ ...current, ...patch }) : null;
 
     await applyAndSync([
       {
         kind: "set_node_auto_layout",
         nodeId: activeNode.id,
-        layout: patch ? { ...current, ...patch } : null,
+        layout: nextLayout,
       },
     ]);
   }
@@ -3828,31 +3836,55 @@ export function V2EditorShell() {
                                   })
                                 }
                               >
-                                {AUTO_LAYOUT_ALIGN_OPTIONS.map((option) => (
+                                {AUTO_LAYOUT_ALIGN_OPTIONS[activeAutoLayout.direction].map((option) => (
                                   <option key={option} value={option}>
-                                    {option}
+                                    {option.replace("_", " ")}
                                   </option>
                                 ))}
                               </select>
                             </label>
                             <label className="block">
-                              <div className="text-slate-400">Justify</div>
+                              <div className="text-slate-400">Spacing mode</div>
                               <select
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeAutoLayout.justify}
+                                value={activeAutoLayout.gapMode}
                                 onChange={(event) =>
                                   void updateAutoLayout({
-                                    justify: event.target.value as AutoLayoutJustify,
+                                    gapMode: event.target.value as AutoLayoutGapMode,
                                   })
                                 }
                               >
-                                {AUTO_LAYOUT_JUSTIFY_OPTIONS.map((option) => (
+                                {AUTO_LAYOUT_GAP_MODE_OPTIONS.map((option) => (
                                   <option key={option} value={option}>
-                                    {option}
+                                    {option.replace("_", " ")}
                                   </option>
                                 ))}
                               </select>
                             </label>
+                            {activeAutoLayout.gapMode === "fixed" ? (
+                              <label className="block">
+                                <div className="text-slate-400">Justify</div>
+                                <select
+                                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                  value={activeAutoLayout.justify}
+                                  onChange={(event) =>
+                                    void updateAutoLayout({
+                                      justify: event.target.value as AutoLayoutJustify,
+                                    })
+                                  }
+                                >
+                                  {AUTO_LAYOUT_JUSTIFY_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {option.replace("_", " ")}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            ) : (
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                                Space between distributes leftover space across direct children.
+                              </div>
+                            )}
                             <label className="block">
                               <div className="text-slate-400">Gap</div>
                               <input
@@ -3892,19 +3924,6 @@ export function V2EditorShell() {
                                 }
                               />
                             </label>
-                            <label className="block">
-                              <div className="text-slate-400">Wrap gap</div>
-                              <input
-                                type="number"
-                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeAutoLayout.wrapGap}
-                                onChange={(event) =>
-                                  void updateAutoLayout({
-                                    wrapGap: Number(event.target.value) || 0,
-                                  })
-                                }
-                              />
-                            </label>
                             <label className="col-span-2 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
                               <input
                                 type="checkbox"
@@ -3918,6 +3937,41 @@ export function V2EditorShell() {
                               />
                               Wrap children to the next row / column
                             </label>
+                            {activeAutoLayout.wrap ? (
+                              <>
+                                <label className="block">
+                                  <div className="text-slate-400">Wrap gap</div>
+                                  <input
+                                    type="number"
+                                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                    value={activeAutoLayout.wrapGap}
+                                    onChange={(event) =>
+                                      void updateAutoLayout({
+                                        wrapGap: Number(event.target.value) || 0,
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="block">
+                                  <div className="text-slate-400">Wrap align</div>
+                                  <select
+                                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                    value={activeAutoLayout.wrapAlign}
+                                    onChange={(event) =>
+                                      void updateAutoLayout({
+                                        wrapAlign: event.target.value as AutoLayoutWrapAlign,
+                                      })
+                                    }
+                                  >
+                                    {AUTO_LAYOUT_WRAP_ALIGN_OPTIONS.map((option) => (
+                                      <option key={option} value={option}>
+                                        {option.replace("_", " ")}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              </>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
