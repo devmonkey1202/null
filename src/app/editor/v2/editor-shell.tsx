@@ -2524,6 +2524,24 @@ export function V2EditorShell() {
     await replaceActiveShapePath(points, pointIndex + 1, isClosed);
   }
 
+  async function insertActiveShapePathPointAt(pointIndex: number, point: { x: number; y: number }) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (!points[pointIndex]) {
+      return;
+    }
+
+    const isClosed = activeNode.shape.path?.closed ?? false;
+    points.splice(pointIndex + 1, 0, {
+      x: Number(point.x.toFixed(3)),
+      y: Number(point.y.toFixed(3)),
+    });
+    await replaceActiveShapePath(points, pointIndex + 1, isClosed);
+  }
+
   async function reverseActiveShapePathPoints() {
     if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
       return;
@@ -3025,6 +3043,27 @@ export function V2EditorShell() {
       currentY: localPoint.y,
     });
     canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handlePathSegmentPointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+    node: SceneNode,
+    pointIndex: number,
+  ) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (event.button !== 0 || !node.shape?.path) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    const localPoint = localShapePointFromCanvas(node, point.x, point.y);
+    void insertActiveShapePathPointAt(pointIndex, localPoint);
   }
 
   function handleTopRulerDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
@@ -3834,8 +3873,45 @@ export function V2EditorShell() {
                               />
                             </svg>
                             {selected
-                              ? (previewPath?.points ?? []).map((point, pointIndex) => (
-                                  <div key={`path-point-${node.id}-${pointIndex}`}>
+                              ? (
+                                  <>
+                                    {(previewPath?.points ?? []).map((point, pointIndex, points) => {
+                                      const nextPoint =
+                                        points[pointIndex + 1] ??
+                                        (previewPath?.closed ? points[0] : undefined);
+                                      if (!nextPoint || (pointIndex === points.length - 1 && !previewPath?.closed)) {
+                                        return null;
+                                      }
+
+                                      return (
+                                        <div
+                                          key={`path-segment-${node.id}-${pointIndex}`}
+                                          onPointerDown={(event) =>
+                                            handlePathSegmentPointerDown(event, node, pointIndex)
+                                          }
+                                          className="absolute cursor-copy rounded-full"
+                                          style={{
+                                            left: point.x,
+                                            top: point.y,
+                                            width: Math.max(
+                                              Math.hypot(nextPoint.x - point.x, nextPoint.y - point.y),
+                                              1,
+                                            ),
+                                            height: 12,
+                                            transformOrigin: "left center",
+                                            transform: `translateY(-6px) rotate(${(Math.atan2(
+                                              nextPoint.y - point.y,
+                                              nextPoint.x - point.x,
+                                            ) *
+                                              180) /
+                                              Math.PI}deg)`,
+                                          }}
+                                          title="Insert point"
+                                        />
+                                      );
+                                    })}
+                                    {(previewPath?.points ?? []).map((point, pointIndex) => (
+                                      <div key={`path-point-${node.id}-${pointIndex}`}>
                                     {point.handleIn ? (
                                       <>
                                         <div
@@ -3921,7 +3997,9 @@ export function V2EditorShell() {
                                       }`}
                                     />
                                   </div>
-                                ))
+                                    ))}
+                                  </>
+                                )
                               : null}
                           </div>
                         ) : (
