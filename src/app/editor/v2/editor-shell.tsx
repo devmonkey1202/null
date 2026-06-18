@@ -135,6 +135,15 @@ const LAYOUT_SIZING_OPTIONS: LayoutSizing[] = ["fixed", "fill", "hug"];
 const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
 const TEXT_CASE_OPTIONS: TextCase[] = ["none", "upper", "lower", "capitalize"];
 const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
+const FONT_FAMILY_OPTIONS = [
+  "Inter",
+  "SF Pro Display",
+  "Pretendard",
+  "Noto Sans KR",
+  "Geist",
+  "Roboto",
+  "system-ui",
+] as const;
 const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line", "path"];
 const EMPTY_MOVE_SNAP_PREVIEW: MoveSnapPreview = { deltaX: 0, deltaY: 0, guides: [] };
 const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
@@ -402,6 +411,43 @@ function getTextRangePreview(text: NonNullable<SceneNode["text"]>, index: number
     return preview;
   }
   return `${preview.slice(0, Math.max(maxLength - 1, 0))}…`;
+}
+
+function summarizeTextStylePatch(style: TextStylePatch | undefined): string[] {
+  if (!style) {
+    return ["Inherited"];
+  }
+
+  const summary: string[] = [];
+  if (style.fontFamily) {
+    summary.push(style.fontFamily);
+  }
+  if (typeof style.fontSize === "number") {
+    summary.push(`${style.fontSize}px`);
+  }
+  if (typeof style.fontWeight === "number") {
+    summary.push(style.fontWeight >= 700 ? "Bold" : `${style.fontWeight}`);
+  }
+  if (style.color) {
+    summary.push(style.color.toUpperCase());
+  }
+  if (style.italic) {
+    summary.push("Italic");
+  }
+  if (style.underline) {
+    summary.push("Underline");
+  }
+  if (style.lineThrough) {
+    summary.push("Strike");
+  }
+  if (style.align) {
+    summary.push(style.align);
+  }
+  if (style.textCase && style.textCase !== "none") {
+    summary.push(style.textCase);
+  }
+
+  return summary.length ? summary : ["Inherited"];
 }
 
 function createDefaultShapePath(frame: EditorRect): ShapePathData {
@@ -1369,6 +1415,7 @@ export function V2EditorShell() {
   const [editingTextDraft, setEditingTextDraft] = useState("");
   const [editingTextComposing, setEditingTextComposing] = useState(false);
   const [inspectorTextSelection, setInspectorTextSelection] = useState<{ start: number; end: number } | null>(null);
+  const [activeTextRangeIndex, setActiveTextRangeIndex] = useState<number | null>(null);
   const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
   const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
@@ -1683,6 +1730,7 @@ export function V2EditorShell() {
 
   useEffect(() => {
     setInspectorTextSelection(null);
+    setActiveTextRangeIndex(null);
     setTextStyleScope("node");
   }, [activeNode?.id]);
 
@@ -1691,6 +1739,19 @@ export function V2EditorShell() {
       setTextStyleScope("node");
     }
   }, [activeInspectorTextSelection, textStyleScope]);
+
+  useEffect(() => {
+    if (!activeInspectorTextSelection) {
+      setActiveTextRangeIndex(null);
+      return;
+    }
+
+    const exactRangeIndex = activeTextRanges.findIndex(
+      (range) =>
+        range.start === activeInspectorTextSelection.start && range.end === activeInspectorTextSelection.end,
+    );
+    setActiveTextRangeIndex(exactRangeIndex >= 0 ? exactRangeIndex : null);
+  }, [activeInspectorTextSelection, activeTextRanges]);
 
   async function applyAndSync(commands: EditorCommand[]) {
     const bridge = bridgeRef.current;
@@ -1928,16 +1989,7 @@ export function V2EditorShell() {
       style,
     );
     await updateTextRanges(ranges);
-
-    requestAnimationFrame(() => {
-      const target = inspectorTextRef.current;
-      if (!target) {
-        return;
-      }
-      target.focus();
-      target.setSelectionRange(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
-      syncInspectorTextSelection();
-    });
+    focusInspectorTextSelection(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
   }
 
   async function clearActiveTextSelectionStyles() {
@@ -1956,16 +2008,7 @@ export function V2EditorShell() {
       activeInspectorTextSelection.end,
     );
     await updateTextRanges(ranges);
-
-    requestAnimationFrame(() => {
-      const target = inspectorTextRef.current;
-      if (!target) {
-        return;
-      }
-      target.focus();
-      target.setSelectionRange(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
-      syncInspectorTextSelection();
-    });
+    focusInspectorTextSelection(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
   }
 
   async function updateActiveTextStyle(style: TextStylePatch) {
@@ -1989,6 +2032,31 @@ export function V2EditorShell() {
         ranges,
       },
     ]);
+  }
+
+  function focusInspectorTextSelection(start: number, end: number) {
+    setTextStyleScope("selection");
+    setInspectorTextSelection(end > start ? { start, end } : null);
+
+    requestAnimationFrame(() => {
+      const target = inspectorTextRef.current;
+      if (!target) {
+        return;
+      }
+      target.focus();
+      target.setSelectionRange(start, end);
+      syncInspectorTextSelection();
+    });
+  }
+
+  function focusTextRange(index: number) {
+    const range = activeTextRanges[index];
+    if (!range) {
+      return;
+    }
+
+    setActiveTextRangeIndex(index);
+    focusInspectorTextSelection(range.start, range.end);
   }
 
   function syncInspectorTextSelection() {
@@ -4418,7 +4486,26 @@ export function V2EditorShell() {
                             </div>
                           </div>
                         ) : null}
+                        <datalist id="v2-editor-font-family-options">
+                          {FONT_FAMILY_OPTIONS.map((option) => (
+                            <option key={option} value={option} />
+                          ))}
+                        </datalist>
                         <div className="grid grid-cols-2 gap-3">
+                          <label className="col-span-2 block">
+                            <div className="text-slate-400">Font family</div>
+                            <input
+                              type="text"
+                              list="v2-editor-font-family-options"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.fontFamily ?? activeNode.text.fontFamily}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({
+                                  fontFamily: event.target.value || activeNode.text!.fontFamily,
+                                })
+                              }
+                            />
+                          </label>
                           <label className="block">
                             <div className="text-slate-400">Font size</div>
                             <input
@@ -4578,24 +4665,34 @@ export function V2EditorShell() {
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button
                               type="button"
-                              onClick={() => void updateTextRanges(addTextRange(activeNode.text!))}
+                              onClick={() => {
+                                const ranges = addTextRange(activeNode.text!);
+                                const nextIndex = Math.max(ranges.length - 1, 0);
+                                const nextRange = ranges[nextIndex];
+                                void updateTextRanges(ranges).then(() => {
+                                  if (nextRange) {
+                                    setActiveTextRangeIndex(nextIndex);
+                                    focusInspectorTextSelection(nextRange.start, nextRange.end);
+                                  }
+                                });
+                              }}
                               className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
                             >
                               Add range
                             </button>
                             <button
                               type="button"
-                              onClick={() =>
-                                activeInspectorTextSelection
-                                  ? void updateTextRanges(
-                                      createTextRangeFromSelection(
-                                        activeNode.text!,
-                                        activeInspectorTextSelection.start,
-                                        activeInspectorTextSelection.end,
-                                      ),
-                                    )
-                                  : undefined
-                              }
+                              onClick={() => {
+                                if (!activeInspectorTextSelection) {
+                                  return;
+                                }
+
+                                const { start, end } = activeInspectorTextSelection;
+                                const ranges = createTextRangeFromSelection(activeNode.text!, start, end);
+                                void updateTextRanges(ranges).then(() => {
+                                  focusInspectorTextSelection(start, end);
+                                });
+                              }}
                               disabled={!activeInspectorTextSelection}
                               className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -4617,7 +4714,10 @@ export function V2EditorShell() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => void updateTextRanges([])}
+                              onClick={() => {
+                                setActiveTextRangeIndex(null);
+                                void updateTextRanges([]);
+                              }}
                               disabled={activeTextRanges.length === 0}
                               className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -4641,18 +4741,43 @@ export function V2EditorShell() {
                               {activeTextRanges.map((range, index) => (
                                 <div
                                   key={`text-range-${activeNode.id}-${index}`}
-                                  className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+                                  className={`rounded-2xl px-3 py-3 transition ${
+                                    activeTextRangeIndex === index
+                                      ? "border border-[#2859ff]/30 bg-[#2859ff]/5 shadow-[0_0_0_1px_rgba(40,89,255,0.08)]"
+                                      : "border border-slate-200 bg-slate-50"
+                                  }`}
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
-                                      <div className="truncate text-sm font-semibold text-slate-900">
+                                      <button
+                                        type="button"
+                                        onClick={() => focusTextRange(index)}
+                                        className="truncate text-left text-sm font-semibold text-slate-900"
+                                      >
                                         {getTextRangePreview(activeNode.text!, index) || "(empty)"}
-                                      </div>
+                                      </button>
                                       <div className="mt-1 text-xs text-slate-500">
                                         {range.start} - {range.end}
                                       </div>
+                                      <div className="mt-2 flex flex-wrap gap-1.5">
+                                        {summarizeTextStylePatch(range.style).map((label) => (
+                                          <span
+                                            key={`${activeNode.id}-range-${index}-${label}`}
+                                            className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                                          >
+                                            {label}
+                                          </span>
+                                        ))}
+                                      </div>
                                     </div>
                                     <div className="flex gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => focusTextRange(index)}
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Select
+                                      </button>
                                       <button
                                         type="button"
                                         onClick={() =>
@@ -4712,6 +4837,7 @@ export function V2EditorShell() {
                                       <div className="text-slate-400">Font family</div>
                                       <input
                                         type="text"
+                                        list="v2-editor-font-family-options"
                                         className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
                                         value={range.style?.fontFamily ?? ""}
                                         onChange={(event) =>
