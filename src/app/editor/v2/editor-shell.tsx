@@ -153,6 +153,20 @@ const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
   guides: [],
 };
 
+function clonePathHandle(handle: ShapePathHandle | undefined) {
+  return handle ? { ...handle } : undefined;
+}
+
+function reversePathPoints(points: ShapePathData["points"]) {
+  return structuredClone(points)
+    .reverse()
+    .map((point) => ({
+      ...point,
+      handleIn: clonePathHandle(point.handleOut),
+      handleOut: clonePathHandle(point.handleIn),
+    }));
+}
+
 function textDecorationValue(style: { underline?: boolean; lineThrough?: boolean }) {
   const values: string[] = [];
   if (style.underline) {
@@ -1471,6 +1485,7 @@ export function V2EditorShell() {
   const [editingTextComposing, setEditingTextComposing] = useState(false);
   const [inspectorTextSelection, setInspectorTextSelection] = useState<{ start: number; end: number } | null>(null);
   const [activeTextRangeIndex, setActiveTextRangeIndex] = useState<number | null>(null);
+  const [activePathPointIndex, setActivePathPointIndex] = useState<number | null>(null);
   const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
   const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
@@ -1557,6 +1572,20 @@ export function V2EditorShell() {
         ? normalizeTextRanges(activeNode.text.content, activeNode.text.ranges) ?? []
         : [],
     [activeNode],
+  );
+  const activePathPoints = useMemo(
+    () =>
+      activeNode?.kind === "shape" && activeNode.shape?.primitive === "path"
+        ? activeNode.shape.path?.points ?? []
+        : [],
+    [activeNode],
+  );
+  const activePathPoint = useMemo(
+    () =>
+      activePathPointIndex != null && activePathPoints[activePathPointIndex]
+        ? activePathPoints[activePathPointIndex]
+        : null,
+    [activePathPointIndex, activePathPoints],
   );
   const activeInspectorTextSelection = useMemo(() => {
     if (activeNode?.kind !== "text" || !activeNode.text || !inspectorTextSelection) {
@@ -1816,6 +1845,7 @@ export function V2EditorShell() {
   useEffect(() => {
     setInspectorTextSelection(null);
     setActiveTextRangeIndex(null);
+    setActivePathPointIndex(null);
     setTextStyleScope("node");
   }, [activeNode?.id]);
 
@@ -1837,6 +1867,18 @@ export function V2EditorShell() {
     );
     setActiveTextRangeIndex(exactRangeIndex >= 0 ? exactRangeIndex : null);
   }, [activeInspectorTextSelection, activeTextRanges]);
+
+  useEffect(() => {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      setActivePathPointIndex(null);
+      return;
+    }
+
+    const pointsLength = activeNode.shape.path?.points.length ?? 0;
+    if (activePathPointIndex != null && activePathPointIndex >= pointsLength) {
+      setActivePathPointIndex(pointsLength > 0 ? pointsLength - 1 : null);
+    }
+  }, [activeNode, activePathPointIndex]);
 
   async function applyAndSync(commands: EditorCommand[]) {
     const bridge = bridgeRef.current;
@@ -2308,6 +2350,23 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function replaceActiveShapePath(
+    points: ShapePathData["points"],
+    nextSelectedIndex: number | null,
+    closed = activeNode?.shape?.path?.closed ?? false,
+  ) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const safePoints = structuredClone(points);
+    setActivePathPointIndex(nextSelectedIndex);
+    await updateShapePath({
+      points: safePoints,
+      closed,
+    });
+  }
+
   async function runShapeBoolean(op: ShapeBooleanOp) {
     if (!snapshot || selectedShapeNodes.length < 2) {
       return;
@@ -2398,6 +2457,143 @@ export function V2EditorShell() {
       points,
       closed: activeNode.shape.path?.closed ?? false,
     });
+  }
+
+  async function removeActiveShapePathPoint(pointIndex: number) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (points.length <= 2 || !points[pointIndex]) {
+      return;
+    }
+
+    const nextPoints = points.filter((_, index) => index !== pointIndex);
+    const nextSelectedIndex = nextPoints.length
+      ? Math.max(0, Math.min(pointIndex, nextPoints.length - 1))
+      : null;
+    await replaceActiveShapePath(nextPoints, nextSelectedIndex);
+  }
+
+  async function duplicateActiveShapePathPoint(pointIndex: number) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    const point = points[pointIndex];
+    if (!point) {
+      return;
+    }
+
+    points.splice(pointIndex + 1, 0, {
+      ...structuredClone(point),
+      x: point.x + 12,
+      y: point.y + 12,
+    });
+    await replaceActiveShapePath(points, pointIndex + 1);
+  }
+
+  async function insertActiveShapePathPointAfter(pointIndex: number) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    const current = points[pointIndex];
+    if (!current) {
+      return;
+    }
+
+    const isClosed = activeNode.shape.path?.closed ?? false;
+    const nextPoint =
+      points[pointIndex + 1] ?? (isClosed ? points[0] : undefined);
+
+    const inserted = nextPoint
+      ? {
+          x: Number(((current.x + nextPoint.x) / 2).toFixed(3)),
+          y: Number(((current.y + nextPoint.y) / 2).toFixed(3)),
+        }
+      : {
+          x: current.x + 24,
+          y: current.y + 24,
+        };
+
+    points.splice(pointIndex + 1, 0, inserted);
+    await replaceActiveShapePath(points, pointIndex + 1, isClosed);
+  }
+
+  async function reverseActiveShapePathPoints() {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (points.length < 2) {
+      return;
+    }
+
+    const nextSelectedIndex =
+      activePathPointIndex == null ? null : Math.max(points.length - 1 - activePathPointIndex, 0);
+    await replaceActiveShapePath(reversePathPoints(points), nextSelectedIndex);
+  }
+
+  async function convertAllActiveShapePathPoints(mode: "curve" | "corner") {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (!points.length) {
+      return;
+    }
+
+    const nextPoints = points.map((point, index, collection) => {
+      if (mode === "corner") {
+        return {
+          ...point,
+          handleIn: undefined,
+          handleOut: undefined,
+        };
+      }
+
+      const handles = createCurveHandles(collection, index, activeNode.shape?.path?.closed ?? false);
+      return {
+        ...point,
+        ...(handles ?? {}),
+      };
+    });
+
+    await replaceActiveShapePath(nextPoints, activePathPointIndex);
+  }
+
+  async function nudgeActivePathPoint(deltaX: number, deltaY: number) {
+    if (activePathPointIndex == null) {
+      return;
+    }
+
+    await updateShapePathPoint(activePathPointIndex, (current) => ({
+      ...current,
+      x: Number((current.x + deltaX).toFixed(3)),
+      y: Number((current.y + deltaY).toFixed(3)),
+      ...(current.handleIn
+        ? {
+            handleIn: {
+              x: Number((current.handleIn.x + deltaX).toFixed(3)),
+              y: Number((current.handleIn.y + deltaY).toFixed(3)),
+            },
+          }
+        : {}),
+      ...(current.handleOut
+        ? {
+            handleOut: {
+              x: Number((current.handleOut.x + deltaX).toFixed(3)),
+              y: Number((current.handleOut.y + deltaY).toFixed(3)),
+            },
+          }
+        : {}),
+    }));
   }
 
   async function selectNode(nodeId: string) {
@@ -2505,9 +2701,21 @@ export function V2EditorShell() {
         }
       }
 
+      if (event.key === "Escape" && activePathPointIndex != null) {
+        event.preventDefault();
+        setActivePathPointIndex(null);
+        return;
+      }
+
       const isMeta = event.metaKey || event.ctrlKey;
 
       if (event.key === "Delete" || event.key === "Backspace") {
+        if (activePathPointIndex != null && activeNode?.kind === "shape" && activeNode.shape?.primitive === "path") {
+          event.preventDefault();
+          void removeActiveShapePathPoint(activePathPointIndex);
+          return;
+        }
+
         if (selectedGuideId) {
           event.preventDefault();
           const guideId = selectedGuideId;
@@ -2529,6 +2737,27 @@ export function V2EditorShell() {
         event.key === "ArrowUp" ||
         event.key === "ArrowDown"
       ) {
+        if (activePathPointIndex != null && activeNode?.kind === "shape" && activeNode.shape?.primitive === "path") {
+          event.preventDefault();
+          const step = event.shiftKey ? 10 : 1;
+          if (event.key === "ArrowLeft") {
+            void nudgeActivePathPoint(-step, 0);
+            return;
+          }
+          if (event.key === "ArrowRight") {
+            void nudgeActivePathPoint(step, 0);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            void nudgeActivePathPoint(0, -step);
+            return;
+          }
+          if (event.key === "ArrowDown") {
+            void nudgeActivePathPoint(0, step);
+            return;
+          }
+        }
+
         if (snapshot?.selection.length) {
           event.preventDefault();
           const step = event.shiftKey ? 10 : 1;
@@ -2587,10 +2816,14 @@ export function V2EditorShell() {
       window.removeEventListener("keyup", onKeyUp);
     };
   }, [
+    activeNode,
+    activePathPointIndex,
     activeTool,
     applyAndSync,
     cancelPathDraft,
     finishPathDraft,
+    nudgeActivePathPoint,
+    removeActiveShapePathPoint,
     runDeleteSelection,
     runNudgeSelection,
     runRedo,
@@ -2749,6 +2982,7 @@ export function V2EditorShell() {
       return;
     }
 
+    setActivePathPointIndex(pointIndex);
     const localPoint = localShapePointFromCanvas(node, point.x, point.y);
     setDragPathPoint({
       nodeId: node.id,
@@ -2779,6 +3013,7 @@ export function V2EditorShell() {
       return;
     }
 
+    setActivePathPointIndex(pointIndex);
     const localPoint = localShapePointFromCanvas(node, point.x, point.y);
     setDragPathHandle({
       nodeId: node.id,
@@ -3679,7 +3914,11 @@ export function V2EditorShell() {
                                         left: point.x - 5,
                                         top: point.y - 5,
                                       }}
-                                      className="absolute h-3 w-3 rounded-full border border-white bg-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.45)]"
+                                      className={`absolute rounded-full border border-white shadow-[0_0_0_1px_rgba(40,89,255,0.45)] ${
+                                        activeNode?.id === node.id && activePathPointIndex === pointIndex
+                                          ? "h-4 w-4 bg-slate-950 ring-2 ring-[#2859ff]/35"
+                                          : "h-3 w-3 bg-[#2859ff]"
+                                      }`}
                                     />
                                   </div>
                                 ))
@@ -5504,12 +5743,113 @@ export function V2EditorShell() {
                                 }
                               />
                             </label>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Points
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activePathPoints.length}
+                                </div>
+                              </div>
+                              <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Selection
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activePathPointIndex != null ? `P${activePathPointIndex + 1}` : "None"}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={activePathPointIndex == null}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() =>
+                                  activePathPointIndex != null
+                                    ? void insertActiveShapePathPointAfter(activePathPointIndex)
+                                    : undefined
+                                }
+                              >
+                                Insert after
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPointIndex == null}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() =>
+                                  activePathPointIndex != null
+                                    ? void duplicateActiveShapePathPoint(activePathPointIndex)
+                                    : undefined
+                                }
+                              >
+                                Duplicate
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPoints.length < 2}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() => void reverseActiveShapePathPoints()}
+                              >
+                                Reverse order
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPoints.length === 0}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() => void convertAllActiveShapePathPoints("curve")}
+                              >
+                                Curve all
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPoints.length === 0}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() => void convertAllActiveShapePathPoints("corner")}
+                              >
+                                Corner all
+                              </button>
+                            </div>
+                            {activePathPoint ? (
+                              <div className="rounded-xl border border-[#2859ff]/20 bg-[#2859ff]/5 px-3 py-2 text-xs text-slate-600">
+                                Selected point {activePathPointIndex! + 1}: {Math.round(activePathPoint.x)},{" "}
+                                {Math.round(activePathPoint.y)}. Arrow keys move the point, Shift+Arrow moves by 10.
+                              </div>
+                            ) : null}
                             <div className="space-y-2">
-                              {(activeNode.shape.path?.points ?? []).map((point, index, points) => (
+                              {activePathPoints.map((point, index, points) => (
                                 <div
                                   key={`path-point-${index}`}
-                                  className="space-y-2 rounded-xl border border-slate-200 bg-white p-3"
+                                  className={`space-y-2 rounded-xl p-3 transition ${
+                                    activePathPointIndex === index
+                                      ? "border border-[#2859ff]/30 bg-white shadow-[0_0_0_1px_rgba(40,89,255,0.08)]"
+                                      : "border border-slate-200 bg-white"
+                                  }`}
                                 >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => setActivePathPointIndex(index)}
+                                      className="text-sm font-semibold text-slate-900"
+                                    >
+                                      Point {index + 1}
+                                    </button>
+                                    <div className="flex gap-2">
+                                      {activePathPointIndex === index ? (
+                                        <span className="rounded-full bg-[#2859ff] px-2 py-0.5 text-[11px] font-semibold text-white">
+                                          Selected
+                                        </span>
+                                      ) : null}
+                                      <button
+                                        type="button"
+                                        onClick={() => setActivePathPointIndex(index)}
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Select
+                                      </button>
+                                    </div>
+                                  </div>
                                   <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
                                     <input
                                       type="number"
@@ -5539,21 +5879,12 @@ export function V2EditorShell() {
                                       type="button"
                                       disabled={points.length <= 2}
                                       className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-                                      onClick={() => {
-                                        if (points.length <= 2) {
-                                          return;
-                                        }
-                                        const nextPoints = points.filter((_, pointIndex) => pointIndex !== index);
-                                        void updateShapePath({
-                                          points: nextPoints,
-                                          closed: activeNode.shape?.path?.closed ?? false,
-                                        });
-                                      }}
+                                      onClick={() => void removeActiveShapePathPoint(index)}
                                     >
                                       Remove
                                     </button>
                                   </div>
-                                  <div className="flex gap-2">
+                                  <div className="flex flex-wrap gap-2">
                                     <button
                                       type="button"
                                       className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
@@ -5586,6 +5917,20 @@ export function V2EditorShell() {
                                       }
                                     >
                                       Corner
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() => void insertActiveShapePathPointAfter(index)}
+                                    >
+                                      Insert after
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() => void duplicateActiveShapePathPoint(index)}
+                                    >
+                                      Duplicate
                                     </button>
                                   </div>
                                   {point.handleIn || point.handleOut ? (
@@ -5671,7 +6016,7 @@ export function V2EditorShell() {
                               type="button"
                               className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300"
                               onClick={() => {
-                                const points = structuredClone(activeNode.shape?.path?.points ?? []);
+                                const points = structuredClone(activePathPoints);
                                 const lastPoint = points[points.length - 1] ?? {
                                   x: Math.round(activeNode.frame.w / 2),
                                   y: Math.round(activeNode.frame.h / 2),
@@ -5680,10 +6025,7 @@ export function V2EditorShell() {
                                   x: Math.min(lastPoint.x + 24, activeNode.frame.w),
                                   y: Math.min(lastPoint.y + 24, activeNode.frame.h),
                                 });
-                                void updateShapePath({
-                                  points,
-                                  closed: activeNode.shape?.path?.closed ?? false,
-                                });
+                                void replaceActiveShapePath(points, points.length - 1);
                               }}
                             >
                               Add point
