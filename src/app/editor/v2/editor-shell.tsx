@@ -1819,6 +1819,20 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function updateNodeFrame(patch: Partial<EditorRect>) {
+    if (!activeNode) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "move_node",
+        nodeId: activeNode.id,
+        frame: patch,
+      },
+    ]);
+  }
+
   async function promoteActiveNodeToComponent(componentKey?: string) {
     if (!activeNode || !supportsComponentPromotion(activeNode)) {
       return;
@@ -3912,24 +3926,85 @@ export function V2EditorShell() {
                     <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">
                       {activeNode.kind}
                     </div>
-                    <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                      <div>
-                        <dt className="text-slate-400">X</dt>
-                        <dd className="font-medium text-slate-900">{activeNode.frame.x}</dd>
+                    <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Frame</div>
+                          <div className="text-xs text-slate-500">
+                            Edit numeric position, size, and rotation directly.
+                          </div>
+                        </div>
+                        {activeNode.frame.rotation !== 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => void updateNodeFrame({ rotation: 0 })}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                          >
+                            Reset rotation
+                          </button>
+                        ) : null}
                       </div>
-                      <div>
-                        <dt className="text-slate-400">Y</dt>
-                        <dd className="font-medium text-slate-900">{activeNode.frame.y}</dd>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <label className="block">
+                          <div className="text-slate-400">X</div>
+                          <input
+                            type="number"
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.x}
+                            onChange={(event) => void updateNodeFrame({ x: Number(event.target.value) || 0 })}
+                          />
+                        </label>
+                        <label className="block">
+                          <div className="text-slate-400">Y</div>
+                          <input
+                            type="number"
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.y}
+                            onChange={(event) => void updateNodeFrame({ y: Number(event.target.value) || 0 })}
+                          />
+                        </label>
+                        <label className="block">
+                          <div className="text-slate-400">W</div>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.w}
+                            onChange={(event) =>
+                              void updateNodeFrame({ w: Math.max(Number(event.target.value) || 1, 1) })
+                            }
+                          />
+                        </label>
+                        <label className="block">
+                          <div className="text-slate-400">H</div>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.h}
+                            onChange={(event) =>
+                              void updateNodeFrame({ h: Math.max(Number(event.target.value) || 1, 1) })
+                            }
+                          />
+                        </label>
+                        <label className="col-span-2 block">
+                          <div className="text-slate-400">Rotation</div>
+                          <input
+                            type="number"
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.rotation}
+                            onChange={(event) =>
+                              void updateNodeFrame({ rotation: Number(event.target.value) || 0 })
+                            }
+                          />
+                        </label>
                       </div>
-                      <div>
-                        <dt className="text-slate-400">W</dt>
-                        <dd className="font-medium text-slate-900">{activeNode.frame.w}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-slate-400">H</dt>
-                        <dd className="font-medium text-slate-900">{activeNode.frame.h}</dd>
-                      </div>
-                    </dl>
+                    </div>
                     <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                       <div>
                         <div className="text-slate-400">Horizontal</div>
