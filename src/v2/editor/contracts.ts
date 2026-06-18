@@ -48,6 +48,10 @@ export type AutoLayoutData = {
   gap: number;
   paddingX: number;
   paddingY: number;
+  paddingTop?: number;
+  paddingRight?: number;
+  paddingBottom?: number;
+  paddingLeft?: number;
   align: AutoLayoutAlign;
   justify: AutoLayoutJustify;
   gapMode?: AutoLayoutGapMode;

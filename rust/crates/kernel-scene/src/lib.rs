@@ -1874,21 +1874,25 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
             .map(|(index, node)| (node.id.clone(), index))
             .collect::<std::collections::HashMap<_, _>>();
         let parent_layout_sizing = resolved_layout_sizing(&page.nodes[parent_index]);
+        let padding_top = layout_padding_top(&layout);
+        let padding_right = layout_padding_right(&layout);
+        let padding_bottom = layout_padding_bottom(&layout);
+        let padding_left = layout_padding_left(&layout);
         let primary_start = match layout.direction {
-            AutoLayoutDirection::Horizontal => parent_frame.x + layout.padding_x,
-            AutoLayoutDirection::Vertical => parent_frame.y + layout.padding_y,
+            AutoLayoutDirection::Horizontal => parent_frame.x + padding_left,
+            AutoLayoutDirection::Vertical => parent_frame.y + padding_top,
         };
         let cross_start = match layout.direction {
-            AutoLayoutDirection::Horizontal => parent_frame.y + layout.padding_y,
-            AutoLayoutDirection::Vertical => parent_frame.x + layout.padding_x,
+            AutoLayoutDirection::Horizontal => parent_frame.y + padding_top,
+            AutoLayoutDirection::Vertical => parent_frame.x + padding_left,
         };
         let available_primary = match layout.direction {
-            AutoLayoutDirection::Horizontal => (parent_frame.w - layout.padding_x * 2.0).max(1.0),
-            AutoLayoutDirection::Vertical => (parent_frame.h - layout.padding_y * 2.0).max(1.0),
+            AutoLayoutDirection::Horizontal => (parent_frame.w - padding_left - padding_right).max(1.0),
+            AutoLayoutDirection::Vertical => (parent_frame.h - padding_top - padding_bottom).max(1.0),
         };
         let available_cross = match layout.direction {
-            AutoLayoutDirection::Horizontal => (parent_frame.h - layout.padding_y * 2.0).max(1.0),
-            AutoLayoutDirection::Vertical => (parent_frame.w - layout.padding_x * 2.0).max(1.0),
+            AutoLayoutDirection::Horizontal => (parent_frame.h - padding_top - padding_bottom).max(1.0),
+            AutoLayoutDirection::Vertical => (parent_frame.w - padding_left - padding_right).max(1.0),
         };
         let hug_main = matches!(
             main_layout_mode(&parent_layout_sizing, &layout.direction),
@@ -2185,14 +2189,14 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                 AutoLayoutDirection::Horizontal => {
                     if hug_main {
                         parent.frame.w = clamp_size(
-                            layout.padding_x * 2.0 + measured_main,
+                            padding_left + padding_right + measured_main,
                             parent_layout_sizing.min_width,
                             parent_layout_sizing.max_width,
                         );
                     }
                     if hug_cross {
                         parent.frame.h = clamp_size(
-                            layout.padding_y * 2.0 + measured_cross,
+                            padding_top + padding_bottom + measured_cross,
                             parent_layout_sizing.min_height,
                             parent_layout_sizing.max_height,
                         );
@@ -2201,14 +2205,14 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                 AutoLayoutDirection::Vertical => {
                     if hug_cross {
                         parent.frame.w = clamp_size(
-                            layout.padding_x * 2.0 + measured_cross,
+                            padding_left + padding_right + measured_cross,
                             parent_layout_sizing.min_width,
                             parent_layout_sizing.max_width,
                         );
                     }
                     if hug_main {
                         parent.frame.h = clamp_size(
-                            layout.padding_y * 2.0 + measured_main,
+                            padding_top + padding_bottom + measured_main,
                             parent_layout_sizing.min_height,
                             parent_layout_sizing.max_height,
                         );
@@ -2327,6 +2331,22 @@ fn clamped_child_cross_size(
 
 fn resolved_wrap_gap(layout: &kernel_doc::AutoLayoutData) -> f32 {
     layout.wrap_gap.unwrap_or(layout.gap)
+}
+
+fn layout_padding_top(layout: &kernel_doc::AutoLayoutData) -> f32 {
+    layout.padding_top.unwrap_or(layout.padding_y)
+}
+
+fn layout_padding_right(layout: &kernel_doc::AutoLayoutData) -> f32 {
+    layout.padding_right.unwrap_or(layout.padding_x)
+}
+
+fn layout_padding_bottom(layout: &kernel_doc::AutoLayoutData) -> f32 {
+    layout.padding_bottom.unwrap_or(layout.padding_y)
+}
+
+fn layout_padding_left(layout: &kernel_doc::AutoLayoutData) -> f32 {
+    layout.padding_left.unwrap_or(layout.padding_x)
 }
 
 fn baseline_offset(node: &kernel_doc::SceneNode) -> f32 {
@@ -3621,6 +3641,10 @@ mod tests {
                     gap: 12.0,
                     padding_x: 16.0,
                     padding_y: 20.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -3653,6 +3677,10 @@ mod tests {
                     gap: 0.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Center,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -3729,6 +3757,10 @@ mod tests {
                     gap: 10.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -3806,6 +3838,10 @@ mod tests {
                     gap: 10.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -3844,6 +3880,10 @@ mod tests {
                 gap: 0.0,
                 padding_x: 10.0,
                 padding_y: 10.0,
+                padding_top: None,
+                padding_right: None,
+                padding_bottom: None,
+                padding_left: None,
                 align: kernel_doc::AutoLayoutAlign::Start,
                 justify: kernel_doc::AutoLayoutJustify::Start,
                 gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -3952,6 +3992,10 @@ mod tests {
                     gap: 8.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -3992,6 +4036,10 @@ mod tests {
                 gap: 0.0,
                 padding_x: 10.0,
                 padding_y: 10.0,
+                padding_top: None,
+                padding_right: None,
+                padding_bottom: None,
+                padding_left: None,
                 align: kernel_doc::AutoLayoutAlign::Start,
                 justify: kernel_doc::AutoLayoutJustify::Start,
                 gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -4069,6 +4117,10 @@ mod tests {
                     gap: 8.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -4182,6 +4234,10 @@ mod tests {
                     gap: 10.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -4301,6 +4357,10 @@ mod tests {
                     gap: 10.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Start,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -4369,6 +4429,10 @@ mod tests {
                     gap: 10.0,
                     padding_x: 10.0,
                     padding_y: 10.0,
+                    padding_top: None,
+                    padding_right: None,
+                    padding_bottom: None,
+                    padding_left: None,
                     align: kernel_doc::AutoLayoutAlign::Baseline,
                     justify: kernel_doc::AutoLayoutJustify::Start,
                     gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
@@ -4385,6 +4449,83 @@ mod tests {
 
         assert_eq!(badge.frame.y, 10.0);
         assert_eq!(title.frame.y, 20.8);
+    }
+
+    #[test]
+    fn auto_layout_respects_asymmetric_padding_and_hug_size() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes[0].children = Some(vec!["panel-chip".to_string()]);
+        doc.pages[0].nodes[0].layout_sizing = Some(kernel_doc::LayoutSizingAxis {
+            width: Some(kernel_doc::LayoutSizing::Hug),
+            height: Some(kernel_doc::LayoutSizing::Hug),
+            min_width: None,
+            min_height: None,
+            max_width: None,
+            max_height: None,
+        });
+        doc.pages[0].nodes.push(SceneNode {
+            id: "panel-chip".to_string(),
+            kind: SceneNodeKind::Shape,
+            name: "Panel Chip".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Rect,
+                fill: "#dbeafe".to_string(),
+                stroke_color: "#93c5fd".to_string(),
+                stroke_width: 1.0,
+                corner_radius: 8.0,
+                opacity: 1.0,
+                path: None,
+            }),
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Horizontal,
+                    gap: 10.0,
+                    padding_x: 12.0,
+                    padding_y: 10.0,
+                    padding_top: Some(18.0),
+                    padding_right: Some(14.0),
+                    padding_bottom: Some(6.0),
+                    padding_left: Some(30.0),
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Start,
+                    gap_mode: kernel_doc::AutoLayoutGapMode::Fixed,
+                    wrap: false,
+                    wrap_gap: None,
+                    wrap_align: kernel_doc::AutoLayoutWrapAlign::Start,
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let root = query_node(&state.doc, "root").expect("root exists");
+        let panel_chip = query_node(&state.doc, "panel-chip").expect("panel chip exists");
+
+        assert_eq!(panel_chip.frame.x, 30.0);
+        assert_eq!(panel_chip.frame.y, 18.0);
+        assert_eq!(root.frame.w, 84.0);
+        assert_eq!(root.frame.h, 44.0);
     }
 
     #[test]

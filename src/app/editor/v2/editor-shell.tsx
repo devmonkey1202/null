@@ -3899,27 +3899,53 @@ export function V2EditorShell() {
                               />
                             </label>
                             <label className="block">
-                              <div className="text-slate-400">Padding X</div>
+                              <div className="text-slate-400">Padding top</div>
                               <input
                                 type="number"
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeAutoLayout.paddingX}
+                                value={activeAutoLayout.paddingTop}
                                 onChange={(event) =>
                                   void updateAutoLayout({
-                                    paddingX: Number(event.target.value) || 0,
+                                    paddingTop: Number(event.target.value) || 0,
                                   })
                                 }
                               />
                             </label>
                             <label className="block">
-                              <div className="text-slate-400">Padding Y</div>
+                              <div className="text-slate-400">Padding right</div>
                               <input
                                 type="number"
                                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                                value={activeAutoLayout.paddingY}
+                                value={activeAutoLayout.paddingRight}
                                 onChange={(event) =>
                                   void updateAutoLayout({
-                                    paddingY: Number(event.target.value) || 0,
+                                    paddingRight: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding bottom</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.paddingBottom}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingBottom: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding left</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.paddingLeft}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingLeft: Number(event.target.value) || 0,
                                   })
                                 }
                               />

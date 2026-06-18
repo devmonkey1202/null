@@ -1281,17 +1281,17 @@ function buildAutoLayoutFrames(
   const isHorizontal = resolvedLayout.direction === "horizontal";
   const parentSizing = resolveNodeLayoutSizing(parent);
   const primaryStart = isHorizontal
-    ? parent.frame.x + resolvedLayout.paddingX
-    : parent.frame.y + resolvedLayout.paddingY;
+    ? parent.frame.x + resolvedLayout.paddingLeft
+    : parent.frame.y + resolvedLayout.paddingTop;
   const crossStart = isHorizontal
-    ? parent.frame.y + resolvedLayout.paddingY
-    : parent.frame.x + resolvedLayout.paddingX;
+    ? parent.frame.y + resolvedLayout.paddingTop
+    : parent.frame.x + resolvedLayout.paddingLeft;
   const availablePrimary = isHorizontal
-    ? Math.max(parent.frame.w - resolvedLayout.paddingX * 2, 1)
-    : Math.max(parent.frame.h - resolvedLayout.paddingY * 2, 1);
+    ? Math.max(parent.frame.w - resolvedLayout.paddingLeft - resolvedLayout.paddingRight, 1)
+    : Math.max(parent.frame.h - resolvedLayout.paddingTop - resolvedLayout.paddingBottom, 1);
   const availableCross = isHorizontal
-    ? Math.max(parent.frame.h - resolvedLayout.paddingY * 2, 1)
-    : Math.max(parent.frame.w - resolvedLayout.paddingX * 2, 1);
+    ? Math.max(parent.frame.h - resolvedLayout.paddingTop - resolvedLayout.paddingBottom, 1)
+    : Math.max(parent.frame.w - resolvedLayout.paddingLeft - resolvedLayout.paddingRight, 1);
   const hugMain = mainLayoutMode(parentSizing, isHorizontal) === "hug";
   const hugCross = crossLayoutMode(parentSizing, isHorizontal) === "hug";
   const lineLimitPrimary = resolvedLayout.wrap && !hugMain ? availablePrimary : Number.POSITIVE_INFINITY;
@@ -1460,14 +1460,14 @@ function buildAutoLayoutFrames(
     if (isHorizontal) {
       if (hugMain) {
         parentFrame.w = clampSize(
-          resolvedLayout.paddingX * 2 + measuredMain,
+          resolvedLayout.paddingLeft + resolvedLayout.paddingRight + measuredMain,
           parentSizing.minWidth,
           parentSizing.maxWidth,
         );
       }
       if (hugCross) {
         parentFrame.h = clampSize(
-          resolvedLayout.paddingY * 2 + measuredCross,
+          resolvedLayout.paddingTop + resolvedLayout.paddingBottom + measuredCross,
           parentSizing.minHeight,
           parentSizing.maxHeight,
         );
@@ -1475,14 +1475,14 @@ function buildAutoLayoutFrames(
     } else {
       if (hugCross) {
         parentFrame.w = clampSize(
-          resolvedLayout.paddingX * 2 + measuredCross,
+          resolvedLayout.paddingLeft + resolvedLayout.paddingRight + measuredCross,
           parentSizing.minWidth,
           parentSizing.maxWidth,
         );
       }
       if (hugMain) {
         parentFrame.h = clampSize(
-          resolvedLayout.paddingY * 2 + measuredMain,
+          resolvedLayout.paddingTop + resolvedLayout.paddingBottom + measuredMain,
           parentSizing.minHeight,
           parentSizing.maxHeight,
         );

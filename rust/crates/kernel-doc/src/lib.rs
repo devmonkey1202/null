@@ -191,6 +191,14 @@ pub struct AutoLayoutData {
     pub gap: f32,
     pub padding_x: f32,
     pub padding_y: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_top: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_right: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_bottom: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_left: Option<f32>,
     pub align: AutoLayoutAlign,
     pub justify: AutoLayoutJustify,
     #[serde(default)]
