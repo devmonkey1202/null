@@ -450,6 +450,31 @@ function summarizeTextStylePatch(style: TextStylePatch | undefined): string[] {
   return summary.length ? summary : ["Inherited"];
 }
 
+function summarizeShapeStylePatch(style: ShapeStylePatch | undefined): string[] {
+  if (!style) {
+    return ["Inherited"];
+  }
+
+  const summary: string[] = [];
+  if (style.fill) {
+    summary.push(`Fill ${style.fill.toUpperCase()}`);
+  }
+  if (style.strokeColor) {
+    summary.push(`Stroke ${style.strokeColor.toUpperCase()}`);
+  }
+  if (typeof style.strokeWidth === "number") {
+    summary.push(`${style.strokeWidth}px stroke`);
+  }
+  if (typeof style.cornerRadius === "number") {
+    summary.push(`Radius ${style.cornerRadius}`);
+  }
+  if (typeof style.opacity === "number") {
+    summary.push(`${Math.round(style.opacity * 100)}% opacity`);
+  }
+
+  return summary.length ? summary : ["Inherited"];
+}
+
 function createDefaultShapePath(frame: EditorRect): ShapePathData {
   return {
     closed: true,
@@ -827,6 +852,36 @@ function selectedNode(nodes: SceneNode[], selection: string[]) {
   }
 
   return nodes.find((node) => node.id === selection[0]) ?? null;
+}
+
+function buildNodeMap(nodes: SceneNode[]) {
+  return new Map(nodes.map((node) => [node.id, node]));
+}
+
+function isNodeWithinAncestor(
+  nodeId: string,
+  ancestorId: string,
+  nodeMap: Map<string, SceneNode>,
+) {
+  let current = nodeMap.get(nodeId) ?? null;
+  while (current) {
+    if (current.id === ancestorId) {
+      return true;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return false;
+}
+
+function findNearestInstanceRoot(node: SceneNode | null, nodeMap: Map<string, SceneNode>) {
+  let current = node;
+  while (current) {
+    if (current.kind === "instance" && current.instance) {
+      return current;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return null;
 }
 
 function normalizeRect({ originX, originY, currentX, currentY }: DragMarquee): EditorRect {
@@ -1491,6 +1546,7 @@ export function V2EditorShell() {
     [snapshot?.doc.pages],
   );
   const pageGuides = currentPage?.guides ?? [];
+  const nodeMap = useMemo(() => buildNodeMap(nodes), [nodes]);
   const activeNode = useMemo(
     () => selectedNode(nodes, snapshot?.selection ?? []),
     [nodes, snapshot?.selection],
@@ -1548,6 +1604,35 @@ export function V2EditorShell() {
     () => resolveAutoLayout(activeNode?.layout ?? null),
     [activeNode?.layout],
   );
+  const activeInstanceRoot = useMemo(
+    () => findNearestInstanceRoot(activeNode, nodeMap),
+    [activeNode, nodeMap],
+  );
+  const activeInstanceTextOverrides = useMemo(
+    () => activeInstanceRoot?.instance?.textOverrides ?? [],
+    [activeInstanceRoot],
+  );
+  const activeInstanceShapeOverrides = useMemo(
+    () => activeInstanceRoot?.instance?.shapeOverrides ?? [],
+    [activeInstanceRoot],
+  );
+  const activeInstanceOverrideSourceId = activeNode?.instanceSourceNodeId ?? null;
+  const activeInstanceLocalOverride = useMemo(() => {
+    if (!activeInstanceRoot?.instance || !activeInstanceOverrideSourceId) {
+      return null;
+    }
+
+    return {
+      text:
+        activeInstanceRoot.instance.textOverrides?.find(
+          (entry) => entry.sourceNodeId === activeInstanceOverrideSourceId,
+        ) ?? null,
+      shape:
+        activeInstanceRoot.instance.shapeOverrides?.find(
+          (entry) => entry.sourceNodeId === activeInstanceOverrideSourceId,
+        ) ?? null,
+    };
+  }, [activeInstanceOverrideSourceId, activeInstanceRoot]);
   const activeLayoutSizing = useMemo(
     () => (activeNode ? resolveLayoutSizing(activeNode.layoutSizing ?? null) : null),
     [activeNode],
@@ -1831,6 +1916,31 @@ export function V2EditorShell() {
         frame: patch,
       },
     ]);
+  }
+
+  async function selectNodeIds(nodeIds: string[]) {
+    if (!nodeIds.length) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "select_nodes",
+        nodeIds,
+      },
+    ]);
+  }
+
+  function focusInstanceCloneBySourceId(instanceRootId: string, sourceNodeId: string) {
+    const target = nodes.find(
+      (node) =>
+        node.instanceSourceNodeId === sourceNodeId && isNodeWithinAncestor(node.id, instanceRootId, nodeMap),
+    );
+    if (!target) {
+      return;
+    }
+
+    void selectNodeIds([target.id]);
   }
 
   async function promoteActiveNodeToComponent(componentKey?: string) {
@@ -4405,15 +4515,27 @@ export function V2EditorShell() {
                               <div className="mt-1 font-medium text-slate-900">
                                 {activeNode.instance?.sourceComponentKey}
                               </div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              {activeNode.instance?.sourceComponentId}
+                              <div className="mt-1 text-xs text-slate-500">
+                                {activeNode.instance?.sourceComponentId}
+                              </div>
                             </div>
-                            <div className="mt-2 text-xs text-slate-500">
-                              Text overrides: {activeNode.instance?.textOverrides?.length ?? 0}
-                            </div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              Shape overrides: {activeNode.instance?.shapeOverrides?.length ?? 0}
-                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Text overrides
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activeInstanceTextOverrides.length}
+                                </div>
+                              </div>
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Shape overrides
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activeInstanceShapeOverrides.length}
+                                </div>
+                              </div>
                             </div>
                             <div className="flex flex-wrap gap-2">
                               <button
@@ -4452,8 +4574,163 @@ export function V2EditorShell() {
                                 Clear all
                               </button>
                             </div>
+                            {activeInstanceTextOverrides.length ? (
+                              <div className="space-y-2 border-t border-slate-200 pt-3">
+                                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                  Text override entries
+                                </div>
+                                {activeInstanceTextOverrides.map((override) => (
+                                  <div
+                                    key={`${activeNode.id}-text-override-${override.sourceNodeId}`}
+                                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3"
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-semibold text-slate-900">
+                                          {override.sourceNodeId}
+                                        </div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                          {override.content
+                                            ? override.content.slice(0, 48)
+                                            : "Local text style override"}
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          focusInstanceCloneBySourceId(activeNode.id, override.sourceNodeId)
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Select layer
+                                      </button>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      {summarizeTextStylePatch(override.style).map((label) => (
+                                        <span
+                                          key={`${activeNode.id}-${override.sourceNodeId}-${label}`}
+                                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                                        >
+                                          {label}
+                                        </span>
+                                      ))}
+                                      {override.ranges?.length ? (
+                                        <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                                          {override.ranges.length} ranges
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                            {activeInstanceShapeOverrides.length ? (
+                              <div className="space-y-2 border-t border-slate-200 pt-3">
+                                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                  Shape override entries
+                                </div>
+                                {activeInstanceShapeOverrides.map((override) => (
+                                  <div
+                                    key={`${activeNode.id}-shape-override-${override.sourceNodeId}`}
+                                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3"
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-semibold text-slate-900">
+                                          {override.sourceNodeId}
+                                        </div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                          Local shape style override
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          focusInstanceCloneBySourceId(activeNode.id, override.sourceNodeId)
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Select layer
+                                      </button>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      {summarizeShapeStylePatch(override.style).map((label) => (
+                                        <span
+                                          key={`${activeNode.id}-${override.sourceNodeId}-${label}`}
+                                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                                        >
+                                          {label}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
+                      </div>
+                    ) : null}
+                    {activeInstanceRoot && activeNode && activeInstanceRoot.id !== activeNode.id ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Instance override target</div>
+                          <div className="text-xs text-slate-500">
+                            This layer belongs to an instance. Edits here become local overrides on the instance root.
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm">
+                          <div className="text-slate-400">Instance root</div>
+                          <div className="mt-1 font-medium text-slate-900">{activeInstanceRoot.name}</div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {activeInstanceRoot.instance?.sourceComponentKey}
+                          </div>
+                          {activeInstanceOverrideSourceId ? (
+                            <div className="mt-3">
+                              <div className="text-slate-400">Source layer id</div>
+                              <div className="mt-1 text-xs font-medium text-slate-700">
+                                {activeInstanceOverrideSourceId}
+                              </div>
+                            </div>
+                          ) : null}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void selectNodeIds([activeInstanceRoot.id])}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Select instance root
+                            </button>
+                            {activeInstanceOverrideSourceId ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  focusInstanceCloneBySourceId(
+                                    activeInstanceRoot.id,
+                                    activeInstanceOverrideSourceId,
+                                  )
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Re-focus override layer
+                              </button>
+                            ) : null}
+                          </div>
+                          {activeInstanceLocalOverride?.text || activeInstanceLocalOverride?.shape ? (
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              {activeInstanceLocalOverride.text ? (
+                                <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                                  Text override linked
+                                </span>
+                              ) : null}
+                              {activeInstanceLocalOverride.shape ? (
+                                <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                                  Shape override linked
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     ) : null}
                     {activeNode.kind === "text" && activeNode.text ? (
