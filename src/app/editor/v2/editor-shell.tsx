@@ -309,6 +309,89 @@ function clearTextRangeStyle(text: NonNullable<SceneNode["text"]>, index: number
   return updateTextRange(text, index, { style: undefined });
 }
 
+function clearTextSelectionStyles(
+  text: NonNullable<SceneNode["text"]>,
+  start: number,
+  end: number,
+): TextRange[] {
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  if (end <= start) {
+    return ranges;
+  }
+
+  return normalizeTextRanges(
+    text.content,
+    ranges.flatMap((range) => {
+      if (range.end <= start || range.start >= end) {
+        return [range];
+      }
+
+      const next: TextRange[] = [];
+      if (range.start < start) {
+        next.push({
+          start: range.start,
+          end: start,
+          ...(range.style ? { style: { ...range.style } } : {}),
+        });
+      }
+      if (range.end > end) {
+        next.push({
+          start: end,
+          end: range.end,
+          ...(range.style ? { style: { ...range.style } } : {}),
+        });
+      }
+
+      return next;
+    }),
+  ) ?? [];
+}
+
+function applyTextStyleToSelection(
+  text: NonNullable<SceneNode["text"]>,
+  start: number,
+  end: number,
+  style: TextStylePatch,
+): TextRange[] {
+  if (end <= start) {
+    return normalizeTextRanges(text.content, text.ranges) ?? [];
+  }
+
+  return normalizeTextRanges(text.content, [
+    ...(normalizeTextRanges(text.content, text.ranges) ?? []),
+    {
+      start,
+      end,
+      style: { ...style },
+    },
+  ]) ?? [];
+}
+
+function resolveTextStyleAtIndex(
+  text: NonNullable<SceneNode["text"]>,
+  index: number,
+): TextStylePatch {
+  const base: TextStylePatch = {
+    fontFamily: text.fontFamily,
+    fontSize: text.fontSize,
+    fontWeight: text.fontWeight,
+    lineHeight: text.lineHeight,
+    letterSpacing: text.letterSpacing,
+    paragraphSpacing: text.paragraphSpacing,
+    align: text.align,
+    color: text.color,
+    textCase: text.textCase,
+    italic: text.italic,
+    underline: text.underline,
+    lineThrough: text.lineThrough,
+  };
+
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  return ranges
+    .filter((range) => range.start <= index && range.end > index)
+    .reduce<TextStylePatch>((current, range) => ({ ...current, ...(range.style ?? {}) }), base);
+}
+
 function getTextRangePreview(text: NonNullable<SceneNode["text"]>, index: number, maxLength = 20) {
   const range = (normalizeTextRanges(text.content, text.ranges) ?? [])[index];
   if (!range) {
@@ -1286,6 +1369,7 @@ export function V2EditorShell() {
   const [editingTextDraft, setEditingTextDraft] = useState("");
   const [editingTextComposing, setEditingTextComposing] = useState(false);
   const [inspectorTextSelection, setInspectorTextSelection] = useState<{ start: number; end: number } | null>(null);
+  const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
   const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -1389,6 +1473,30 @@ export function V2EditorShell() {
       preview: activeNode.text.content.slice(start, end).replace(/\s+/g, " ").trim(),
     };
   }, [activeNode, inspectorTextSelection]);
+  const activeTextStyleTarget = useMemo(() => {
+    if (activeNode?.kind !== "text" || !activeNode.text) {
+      return null;
+    }
+
+    if (textStyleScope === "selection" && activeInspectorTextSelection) {
+      return resolveTextStyleAtIndex(activeNode.text, activeInspectorTextSelection.start);
+    }
+
+    return {
+      fontFamily: activeNode.text.fontFamily,
+      fontSize: activeNode.text.fontSize,
+      fontWeight: activeNode.text.fontWeight,
+      lineHeight: activeNode.text.lineHeight,
+      letterSpacing: activeNode.text.letterSpacing,
+      paragraphSpacing: activeNode.text.paragraphSpacing,
+      align: activeNode.text.align,
+      color: activeNode.text.color,
+      textCase: activeNode.text.textCase,
+      italic: activeNode.text.italic,
+      underline: activeNode.text.underline,
+      lineThrough: activeNode.text.lineThrough,
+    } satisfies TextStylePatch;
+  }, [activeInspectorTextSelection, activeNode, textStyleScope]);
   const activeAutoLayout = useMemo(
     () => resolveAutoLayout(activeNode?.layout ?? null),
     [activeNode?.layout],
@@ -1575,7 +1683,14 @@ export function V2EditorShell() {
 
   useEffect(() => {
     setInspectorTextSelection(null);
+    setTextStyleScope("node");
   }, [activeNode?.id]);
+
+  useEffect(() => {
+    if (!activeInspectorTextSelection && textStyleScope === "selection") {
+      setTextStyleScope("node");
+    }
+  }, [activeInspectorTextSelection, textStyleScope]);
 
   async function applyAndSync(commands: EditorCommand[]) {
     const bridge = bridgeRef.current;
@@ -1796,6 +1911,72 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function applyTextSelectionStyle(style: TextStylePatch) {
+    if (
+      !activeNode ||
+      activeNode.kind !== "text" ||
+      !activeNode.text ||
+      !activeInspectorTextSelection
+    ) {
+      return;
+    }
+
+    const ranges = applyTextStyleToSelection(
+      activeNode.text,
+      activeInspectorTextSelection.start,
+      activeInspectorTextSelection.end,
+      style,
+    );
+    await updateTextRanges(ranges);
+
+    requestAnimationFrame(() => {
+      const target = inspectorTextRef.current;
+      if (!target) {
+        return;
+      }
+      target.focus();
+      target.setSelectionRange(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
+      syncInspectorTextSelection();
+    });
+  }
+
+  async function clearActiveTextSelectionStyles() {
+    if (
+      !activeNode ||
+      activeNode.kind !== "text" ||
+      !activeNode.text ||
+      !activeInspectorTextSelection
+    ) {
+      return;
+    }
+
+    const ranges = clearTextSelectionStyles(
+      activeNode.text,
+      activeInspectorTextSelection.start,
+      activeInspectorTextSelection.end,
+    );
+    await updateTextRanges(ranges);
+
+    requestAnimationFrame(() => {
+      const target = inspectorTextRef.current;
+      if (!target) {
+        return;
+      }
+      target.focus();
+      target.setSelectionRange(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
+      syncInspectorTextSelection();
+    });
+  }
+
+  async function updateActiveTextStyle(style: TextStylePatch) {
+    if (textStyleScope === "selection" && activeInspectorTextSelection) {
+      await applyTextSelectionStyle(style);
+      return;
+    }
+
+    await updateTextStyle(style);
+  }
+
   async function updateTextRanges(ranges: TextRange[]) {
     if (!activeNode || activeNode.kind !== "text") {
       return;
@@ -1820,6 +2001,37 @@ export function V2EditorShell() {
     const start = Math.min(target.selectionStart ?? 0, target.selectionEnd ?? 0);
     const end = Math.max(target.selectionStart ?? 0, target.selectionEnd ?? 0);
     setInspectorTextSelection(end > start ? { start, end } : null);
+  }
+
+  function handleInspectorTextKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (!(event.metaKey || event.ctrlKey)) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    if (key === "b") {
+      event.preventDefault();
+      void updateActiveTextStyle({
+        fontWeight:
+          (activeTextStyleTarget?.fontWeight ?? activeNode?.text?.fontWeight ?? 400) >= 700 ? 500 : 700,
+      });
+      return;
+    }
+
+    if (key === "i") {
+      event.preventDefault();
+      void updateActiveTextStyle({
+        italic: !(activeTextStyleTarget?.italic ?? activeNode?.text?.italic ?? false),
+      });
+      return;
+    }
+
+    if (key === "u") {
+      event.preventDefault();
+      void updateActiveTextStyle({
+        underline: !(activeTextStyleTarget?.underline ?? activeNode?.text?.underline ?? false),
+      });
+    }
   }
 
   async function updateTextSizing(sizing: TextSizingMode) {
@@ -4110,11 +4322,102 @@ export function V2EditorShell() {
                             className="mt-1 h-28 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
                             value={activeNode.text.content}
                             onChange={(event) => void updateTextContent(event.target.value)}
+                            onKeyDown={handleInspectorTextKeyDown}
                             onSelect={syncInspectorTextSelection}
                             onKeyUp={syncInspectorTextSelection}
                             onMouseUp={syncInspectorTextSelection}
                           />
                         </div>
+                        {activeInspectorTextSelection ? (
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-semibold text-slate-900">Text style scope</div>
+                                <div className="text-xs text-slate-500">
+                                  Apply formatting to the whole layer or only the selected text.
+                                </div>
+                              </div>
+                              <div className="inline-flex rounded-full border border-slate-200 bg-white p-1 text-xs font-semibold">
+                                <button
+                                  type="button"
+                                  onClick={() => setTextStyleScope("node")}
+                                  className={`rounded-full px-3 py-1 ${
+                                    textStyleScope === "node" ? "bg-slate-950 text-white" : "text-slate-500"
+                                  }`}
+                                >
+                                  Layer
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setTextStyleScope("selection")}
+                                  className={`rounded-full px-3 py-1 ${
+                                    textStyleScope === "selection" ? "bg-[#2859ff] text-white" : "text-slate-500"
+                                  }`}
+                                >
+                                  Selected text
+                                </button>
+                              </div>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    fontWeight:
+                                      (activeTextStyleTarget?.fontWeight ?? activeNode.text!.fontWeight) >= 700
+                                        ? 500
+                                        : 700,
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Bold
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    italic: !(activeTextStyleTarget?.italic ?? activeNode.text!.italic),
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Italic
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    underline: !(activeTextStyleTarget?.underline ?? activeNode.text!.underline),
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Underline
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    lineThrough: !(activeTextStyleTarget?.lineThrough ?? activeNode.text!.lineThrough),
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Strike
+                              </button>
+                              {textStyleScope === "selection" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void clearActiveTextSelectionStyles()}
+                                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                                >
+                                  Clear local style
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
                         <div className="grid grid-cols-2 gap-3">
                           <label className="block">
                             <div className="text-slate-400">Font size</div>
@@ -4122,9 +4425,9 @@ export function V2EditorShell() {
                               type="number"
                               min={1}
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                              value={activeNode.text.fontSize}
+                              value={activeTextStyleTarget?.fontSize ?? activeNode.text.fontSize}
                               onChange={(event) =>
-                                void updateTextStyle({ fontSize: Number(event.target.value) || 1 })
+                                void updateActiveTextStyle({ fontSize: Number(event.target.value) || 1 })
                               }
                             />
                           </label>
@@ -4134,9 +4437,9 @@ export function V2EditorShell() {
                               type="number"
                               min={1}
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                              value={activeNode.text.lineHeight}
+                              value={activeTextStyleTarget?.lineHeight ?? activeNode.text.lineHeight}
                               onChange={(event) =>
-                                void updateTextStyle({ lineHeight: Number(event.target.value) || 1 })
+                                void updateActiveTextStyle({ lineHeight: Number(event.target.value) || 1 })
                               }
                             />
                           </label>
@@ -4147,9 +4450,9 @@ export function V2EditorShell() {
                               min={100}
                               step={100}
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                              value={activeNode.text.fontWeight}
+                              value={activeTextStyleTarget?.fontWeight ?? activeNode.text.fontWeight}
                               onChange={(event) =>
-                                void updateTextStyle({ fontWeight: Number(event.target.value) || 400 })
+                                void updateActiveTextStyle({ fontWeight: Number(event.target.value) || 400 })
                               }
                             />
                           </label>
@@ -4159,9 +4462,9 @@ export function V2EditorShell() {
                               type="number"
                               step={0.1}
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                              value={activeNode.text.letterSpacing}
+                              value={activeTextStyleTarget?.letterSpacing ?? activeNode.text.letterSpacing}
                               onChange={(event) =>
-                                void updateTextStyle({ letterSpacing: Number(event.target.value) || 0 })
+                                void updateActiveTextStyle({ letterSpacing: Number(event.target.value) || 0 })
                               }
                             />
                           </label>
@@ -4172,9 +4475,9 @@ export function V2EditorShell() {
                               min={0}
                               step={1}
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                              value={activeNode.text.paragraphSpacing}
+                              value={activeTextStyleTarget?.paragraphSpacing ?? activeNode.text.paragraphSpacing}
                               onChange={(event) =>
-                                void updateTextStyle({ paragraphSpacing: Number(event.target.value) || 0 })
+                                void updateActiveTextStyle({ paragraphSpacing: Number(event.target.value) || 0 })
                               }
                             />
                           </label>
@@ -4182,9 +4485,9 @@ export function V2EditorShell() {
                             <div className="text-slate-400">Align</div>
                             <select
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                              value={activeNode.text.align}
+                              value={activeTextStyleTarget?.align ?? activeNode.text.align}
                               onChange={(event) =>
-                                void updateTextStyle({ align: event.target.value as TextAlign })
+                                void updateActiveTextStyle({ align: event.target.value as TextAlign })
                               }
                             >
                               {TEXT_ALIGN_OPTIONS.map((option) => (
@@ -4215,17 +4518,17 @@ export function V2EditorShell() {
                             <input
                               type="color"
                               className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
-                              value={activeNode.text.color}
-                              onChange={(event) => void updateTextStyle({ color: event.target.value })}
+                              value={activeTextStyleTarget?.color ?? activeNode.text.color}
+                              onChange={(event) => void updateActiveTextStyle({ color: event.target.value })}
                             />
                           </label>
                           <label className="block">
                             <div className="text-slate-400">Text case</div>
                             <select
                               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
-                              value={activeNode.text.textCase}
+                              value={activeTextStyleTarget?.textCase ?? activeNode.text.textCase}
                               onChange={(event) =>
-                                void updateTextStyle({ textCase: event.target.value as TextCase })
+                                void updateActiveTextStyle({ textCase: event.target.value as TextCase })
                               }
                             >
                               {TEXT_CASE_OPTIONS.map((option) => (
@@ -4240,24 +4543,24 @@ export function V2EditorShell() {
                           <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
                             <input
                               type="checkbox"
-                              checked={activeNode.text.italic}
-                              onChange={(event) => void updateTextStyle({ italic: event.target.checked })}
+                              checked={activeTextStyleTarget?.italic ?? activeNode.text.italic}
+                              onChange={(event) => void updateActiveTextStyle({ italic: event.target.checked })}
                             />
                             Italic
                           </label>
                           <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
                             <input
                               type="checkbox"
-                              checked={activeNode.text.underline}
-                              onChange={(event) => void updateTextStyle({ underline: event.target.checked })}
+                              checked={activeTextStyleTarget?.underline ?? activeNode.text.underline}
+                              onChange={(event) => void updateActiveTextStyle({ underline: event.target.checked })}
                             />
                             Underline
                           </label>
                           <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
                             <input
                               type="checkbox"
-                              checked={activeNode.text.lineThrough}
-                              onChange={(event) => void updateTextStyle({ lineThrough: event.target.checked })}
+                              checked={activeTextStyleTarget?.lineThrough ?? activeNode.text.lineThrough}
+                              onChange={(event) => void updateActiveTextStyle({ lineThrough: event.target.checked })}
                             />
                             Strike
                           </label>
