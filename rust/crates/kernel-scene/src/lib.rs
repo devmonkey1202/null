@@ -1822,8 +1822,16 @@ fn normalize_auto_height_nodes(doc: &mut SceneDoc) {
 }
 
 fn normalize_document(doc: &mut SceneDoc) {
-    normalize_auto_height_nodes(doc);
-    normalize_auto_layout_nodes(doc);
+    const MAX_LAYOUT_NORMALIZE_PASSES: usize = 4;
+
+    for _ in 0..MAX_LAYOUT_NORMALIZE_PASSES {
+        let before = capture_frame_signature(doc);
+        normalize_auto_height_nodes(doc);
+        normalize_auto_layout_nodes(doc);
+        if capture_frame_signature(doc) == before {
+            break;
+        }
+    }
 }
 
 fn normalize_auto_layout_nodes(doc: &mut SceneDoc) {
@@ -1842,11 +1850,18 @@ fn normalize_auto_layout_nodes(doc: &mut SceneDoc) {
 }
 
 fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str) {
-    let Some(parent_index) = page.nodes.iter().position(|node| node.id == parent_id) else {
+    let Some(initial_parent_index) = page.nodes.iter().position(|node| node.id == parent_id) else {
         return;
     };
 
-    let child_ids = ordered_child_ids(page, parent_index);
+    let child_ids = ordered_child_ids(page, initial_parent_index);
+    for child_id in &child_ids {
+        apply_auto_layout_recursive(page, child_id);
+    }
+
+    let Some(parent_index) = page.nodes.iter().position(|node| node.id == parent_id) else {
+        return;
+    };
     let layout = page.nodes[parent_index].layout.clone();
     let parent_frame = page.nodes[parent_index].frame.clone();
 
@@ -2152,10 +2167,24 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
             }
         }
     }
+}
 
-    for child_id in child_ids {
-        apply_auto_layout_recursive(page, &child_id);
+fn capture_frame_signature(doc: &SceneDoc) -> Vec<(String, String, f32, f32, f32, f32, f32)> {
+    let mut signature = Vec::new();
+    for page in &doc.pages {
+        for node in &page.nodes {
+            signature.push((
+                page.id.clone(),
+                node.id.clone(),
+                node.frame.x,
+                node.frame.y,
+                node.frame.w,
+                node.frame.h,
+                node.frame.rotation,
+            ));
+        }
     }
+    signature
 }
 
 #[derive(Default)]
@@ -3724,6 +3753,263 @@ mod tests {
 
         let root = query_node(&state.doc, "root").expect("root exists");
         assert_eq!(root.frame.w, 120.0);
+    }
+
+    #[test]
+    fn nested_auto_layout_uses_child_hug_size_before_parent_positions_siblings() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes[0].children = Some(vec!["stack".to_string(), "footer".to_string()]);
+        doc.pages[0].nodes.push(SceneNode {
+            id: "stack".to_string(),
+            kind: SceneNodeKind::Frame,
+            name: "Stack".to_string(),
+            parent_id: Some("root".to_string()),
+            children: Some(vec!["stack-text".to_string()]),
+            frame: EditorRect {
+                x: 0.0,
+                y: 0.0,
+                w: 80.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: Some(kernel_doc::AutoLayoutData {
+                direction: kernel_doc::AutoLayoutDirection::Vertical,
+                gap: 0.0,
+                padding_x: 10.0,
+                padding_y: 10.0,
+                align: kernel_doc::AutoLayoutAlign::Start,
+                justify: kernel_doc::AutoLayoutJustify::Start,
+                wrap: false,
+                wrap_gap: None,
+            }),
+            layout_sizing: Some(kernel_doc::LayoutSizingAxis {
+                width: Some(kernel_doc::LayoutSizing::Fixed),
+                height: Some(kernel_doc::LayoutSizing::Hug),
+                min_width: None,
+                min_height: None,
+                max_width: None,
+                max_height: None,
+            }),
+            text: None,
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        doc.pages[0].nodes.push(SceneNode {
+            id: "stack-text".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Stack Text".to_string(),
+            parent_id: Some("stack".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 0.0,
+                y: 0.0,
+                w: 60.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: Some(TextNodeData {
+                content: "Stack".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 600,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        doc.pages[0].nodes.push(SceneNode {
+            id: "footer".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Footer".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: Some(TextNodeData {
+                content: "Footer".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 600,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Vertical,
+                    gap: 8.0,
+                    padding_x: 10.0,
+                    padding_y: 10.0,
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Start,
+                    wrap: false,
+                    wrap_gap: None,
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let stack = query_node(&state.doc, "stack").expect("stack exists");
+        let footer = query_node(&state.doc, "footer").expect("footer exists");
+        assert_eq!(stack.frame.h, 40.0);
+        assert_eq!(footer.frame.y, 58.0);
+    }
+
+    #[test]
+    fn nested_auto_layout_reflows_grandchild_after_fill_width_changes_parent() {
+        let mut doc = sample_doc();
+        doc.pages[0].nodes[0].children = Some(vec!["panel".to_string()]);
+        doc.pages[0].nodes.push(SceneNode {
+            id: "panel".to_string(),
+            kind: SceneNodeKind::Frame,
+            name: "Panel".to_string(),
+            parent_id: Some("root".to_string()),
+            children: Some(vec!["panel-title".to_string()]),
+            frame: EditorRect {
+                x: 0.0,
+                y: 0.0,
+                w: 80.0,
+                h: 40.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: Some(kernel_doc::AutoLayoutData {
+                direction: kernel_doc::AutoLayoutDirection::Vertical,
+                gap: 0.0,
+                padding_x: 10.0,
+                padding_y: 10.0,
+                align: kernel_doc::AutoLayoutAlign::Start,
+                justify: kernel_doc::AutoLayoutJustify::Start,
+                wrap: false,
+                wrap_gap: None,
+            }),
+            layout_sizing: Some(kernel_doc::LayoutSizingAxis {
+                width: Some(kernel_doc::LayoutSizing::Fill),
+                height: Some(kernel_doc::LayoutSizing::Fixed),
+                min_width: None,
+                min_height: None,
+                max_width: None,
+                max_height: None,
+            }),
+            text: None,
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        doc.pages[0].nodes.push(SceneNode {
+            id: "panel-title".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Panel Title".to_string(),
+            parent_id: Some("panel".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 0.0,
+                y: 0.0,
+                w: 20.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: Some(kernel_doc::LayoutSizingAxis {
+                width: Some(kernel_doc::LayoutSizing::Fill),
+                height: Some(kernel_doc::LayoutSizing::Fixed),
+                min_width: None,
+                min_height: None,
+                max_width: None,
+                max_height: None,
+            }),
+            text: Some(TextNodeData {
+                content: "Panel".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 16.0,
+                font_weight: 600,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::SetNodeAutoLayout {
+                node_id: "root".to_string(),
+                layout: Some(kernel_doc::AutoLayoutData {
+                    direction: kernel_doc::AutoLayoutDirection::Vertical,
+                    gap: 8.0,
+                    padding_x: 10.0,
+                    padding_y: 10.0,
+                    align: kernel_doc::AutoLayoutAlign::Start,
+                    justify: kernel_doc::AutoLayoutJustify::Start,
+                    wrap: false,
+                    wrap_gap: None,
+                }),
+            }],
+        )
+        .expect("set auto layout should succeed");
+
+        let panel = query_node(&state.doc, "panel").expect("panel exists");
+        let panel_title = query_node(&state.doc, "panel-title").expect("panel title exists");
+        assert_eq!(panel.frame.w, 80.0);
+        assert_eq!(panel_title.frame.w, 60.0);
     }
 
     #[test]

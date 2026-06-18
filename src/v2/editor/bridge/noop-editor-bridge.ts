@@ -1244,10 +1244,15 @@ function applyAutoLayoutRecursive(page: SceneDoc["pages"][number], parentId: str
   }
 
   const childIds = orderedChildIds(page, parent);
-  if (parent.layout) {
-    const nextFrames = buildAutoLayoutFrames(page, parent, childIds, parent.layout);
-    for (const [childId, nextFrame] of nextFrames) {
-      const childIndex = page.nodes.findIndex((node) => node.id === childId);
+  for (const childId of childIds) {
+    applyAutoLayoutRecursive(page, childId);
+  }
+
+  const refreshedParent = page.nodes.find((node) => node.id === parentId);
+  if (refreshedParent?.layout) {
+    const nextFrames = buildAutoLayoutFrames(page, refreshedParent, childIds, refreshedParent.layout);
+    for (const [nodeId, nextFrame] of nextFrames) {
+      const childIndex = page.nodes.findIndex((node) => node.id === nodeId);
       if (childIndex === -1) {
         continue;
       }
@@ -1258,10 +1263,6 @@ function applyAutoLayoutRecursive(page: SceneDoc["pages"][number], parentId: str
         frame: nextFrame,
       });
     }
-  }
-
-  for (const childId of childIds) {
-    applyAutoLayoutRecursive(page, childId);
   }
 }
 
@@ -1496,8 +1497,31 @@ function alignCrossAxis(currentSize: number, crossStart: number, crossSize: numb
   }
 }
 
-function normalizeDocument(document: SceneDoc) {
+function captureFrameSignature(document: SceneDoc) {
+  return document.pages.flatMap((page) =>
+    page.nodes.map(
+      (node) =>
+        `${page.id}:${node.id}:${node.frame.x}:${node.frame.y}:${node.frame.w}:${node.frame.h}:${node.frame.rotation}`,
+    ),
+  );
+}
+
+function runNormalizationPass(document: SceneDoc) {
   return normalizeAutoLayoutNodes(normalizeAutoHeightNodes(document));
+}
+
+function normalizeDocument(document: SceneDoc) {
+  let nextDocument = document;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const before = captureFrameSignature(nextDocument);
+    nextDocument = runNormalizationPass(nextDocument);
+    const after = captureFrameSignature(nextDocument);
+    if (before.length === after.length && before.every((value, index) => value === after[index])) {
+      break;
+    }
+  }
+
+  return nextDocument;
 }
 
 function selectInRect(
