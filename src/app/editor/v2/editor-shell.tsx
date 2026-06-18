@@ -1871,6 +1871,20 @@ export function V2EditorShell() {
     ]);
   }
 
+  async function updateNodeName(name: string) {
+    if (!activeNode) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "rename_node",
+        nodeId: activeNode.id,
+        name,
+      },
+    ]);
+  }
+
   async function updateAutoLayout(patch: Partial<AutoLayoutData> | null) {
     if (!activeNode || !supportsAutoLayout(activeNode)) {
       return;
@@ -4032,8 +4046,16 @@ export function V2EditorShell() {
               <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 {activeNode ? (
                   <>
-                    <div className="text-sm font-semibold text-slate-900">{activeNode.name}</div>
-                    <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">
+                    <label className="block">
+                      <div className="text-slate-400">Layer name</div>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                        value={activeNode.name}
+                        onChange={(event) => void updateNodeName(event.target.value)}
+                      />
+                    </label>
+                    <div className="mt-2 text-xs uppercase tracking-[0.14em] text-slate-500">
                       {activeNode.kind}
                     </div>
                     <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
