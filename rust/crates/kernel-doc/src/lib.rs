@@ -374,6 +374,15 @@ pub enum InstanceOverrideKind {
     Shape,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReorderNodePosition {
+    Back,
+    Backward,
+    Forward,
+    Front,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceTextOverride {
@@ -539,6 +548,11 @@ pub enum EditorCommand {
         override_kind: Option<InstanceOverrideKind>,
         #[serde(default, rename = "sourceNodeId", skip_serializing_if = "Option::is_none")]
         source_node_id: Option<String>,
+    },
+    ReorderNode {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        position: ReorderNodePosition,
     },
     SetNodeAutoLayout {
         #[serde(rename = "nodeId")]

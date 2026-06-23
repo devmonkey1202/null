@@ -20,6 +20,7 @@ import type {
   LayoutSizing,
   LayoutSizingAxis,
   MoveSnapPreview,
+  ReorderNodePosition,
   RuntimeGraph,
   SceneGuide,
   SceneNode,
@@ -2671,6 +2672,23 @@ export function V2EditorShell() {
     [snapshot?.selection, syncBridgeState],
   );
 
+  const runReorderSelection = useCallback(
+    async (position: ReorderNodePosition) => {
+      if (!activeNode || !activeNode.parentId) {
+        return;
+      }
+
+      await applyAndSync([
+        {
+          kind: "reorder_node",
+          nodeId: activeNode.id,
+          position,
+        },
+      ]);
+    },
+    [activeNode, syncBridgeState],
+  );
+
   const finishPathDraft = useCallback(async () => {
     if (!pathDraft) {
       return;
@@ -2814,6 +2832,22 @@ export function V2EditorShell() {
       }
 
       const key = event.key.toLowerCase();
+      if (event.altKey && (event.code === "BracketLeft" || event.code === "BracketRight")) {
+        if (activeNode?.parentId) {
+          event.preventDefault();
+          const position =
+            event.code === "BracketLeft"
+              ? event.shiftKey
+                ? "back"
+                : "backward"
+              : event.shiftKey
+                ? "front"
+                : "forward";
+          void runReorderSelection(position);
+          return;
+        }
+      }
+
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
         void runUndo();
@@ -2853,10 +2887,11 @@ export function V2EditorShell() {
     finishPathDraft,
     nudgeActivePathPoint,
     removeActiveShapePathPoint,
-    runDeleteSelection,
-    runNudgeSelection,
-    runRedo,
-    runUndo,
+      runDeleteSelection,
+      runNudgeSelection,
+      runReorderSelection,
+      runRedo,
+      runUndo,
     selectedGuideId,
     snapshot?.selection.length,
   ]);
@@ -4386,6 +4421,51 @@ export function V2EditorShell() {
                     <div className="mt-2 text-xs uppercase tracking-[0.14em] text-slate-500">
                       {activeNode.kind}
                     </div>
+                    {activeNode.parentId ? (
+                      <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">Layer order</div>
+                            <div className="text-xs text-slate-500">
+                              Reorder within the current parent stack.
+                            </div>
+                          </div>
+                          <div className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-500">
+                            Alt + [ / ]
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("back")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Send to back
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("backward")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Send backward
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("forward")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Bring forward
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("front")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Bring to front
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
                       <div className="flex items-center justify-between">
                         <div>

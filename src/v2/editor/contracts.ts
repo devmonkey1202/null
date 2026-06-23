@@ -159,6 +159,8 @@ export type InstanceNodeData = {
 
 export type InstanceOverrideKind = "all" | "text" | "shape";
 
+export type ReorderNodePosition = "back" | "backward" | "forward" | "front";
+
 export type SceneGuide = {
   id: string;
   axis: "x" | "y";
@@ -246,6 +248,7 @@ export type EditorCommand =
       overrideKind?: InstanceOverrideKind;
       sourceNodeId?: string;
     }
+  | { kind: "reorder_node"; nodeId: string; position: ReorderNodePosition }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | { kind: "set_node_layout_sizing"; nodeId: string; layoutSizing: LayoutSizingAxis | null }
   | {

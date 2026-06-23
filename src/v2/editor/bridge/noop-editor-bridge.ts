@@ -24,6 +24,7 @@ import {
   type InstanceOverrideKind,
   type InstanceShapeOverride,
   type InstanceTextOverride,
+  type ReorderNodePosition,
   type SelectionSetMode,
   type SnapGuide,
   type ShapeNodeData,
@@ -1170,6 +1171,124 @@ function clearInstanceOverridesNode(
   };
 }
 
+function collectSubtreeIds(nodes: SceneNode[], rootId: string) {
+  const ordered: string[] = [];
+  const stack = [rootId];
+  const visited = new Set<string>();
+
+  while (stack.length) {
+    const currentId = stack.pop()!;
+    if (visited.has(currentId)) {
+      continue;
+    }
+    visited.add(currentId);
+    ordered.push(currentId);
+    const current = nodes.find((node) => node.id === currentId);
+    for (const childId of [...(current?.children ?? [])].reverse()) {
+      stack.push(childId);
+    }
+  }
+
+  return ordered;
+}
+
+function rebuildPageNodeOrder(page: ScenePage) {
+  const nodeMap = new Map(page.nodes.map((node) => [node.id, node] as const));
+  const ordered: SceneNode[] = [];
+  const visited = new Set<string>();
+
+  const visit = (nodeId: string) => {
+    if (visited.has(nodeId)) {
+      return;
+    }
+
+    const node = nodeMap.get(nodeId);
+    if (!node) {
+      return;
+    }
+
+    visited.add(nodeId);
+    ordered.push(node);
+
+    const childIds = node.children?.length
+      ? node.children
+      : page.nodes.filter((candidate) => candidate.parentId === node.id).map((candidate) => candidate.id);
+    childIds.forEach((childId) => visit(childId));
+  };
+
+  visit(page.rootId);
+  page.nodes.forEach((node) => visit(node.id));
+  page.nodes = ordered;
+}
+
+function reorderNode(document: SceneDoc, nodeId: string, position: ReorderNodePosition) {
+  const nextDocument = structuredClone(document);
+
+  for (const page of nextDocument.pages) {
+    const target = page.nodes.find((node) => node.id === nodeId);
+    if (!target) {
+      continue;
+    }
+
+    if (page.rootId === nodeId) {
+      throw new Error(`Root node '${nodeId}' cannot be reordered.`);
+    }
+
+    const parentId = target.parentId;
+    const parent =
+      parentId != null ? page.nodes.find((node) => node.id === parentId) ?? null : null;
+    const siblingIds = parent
+      ? [...orderedChildIds(page, parent)]
+      : page.nodes
+          .filter((node) => node.parentId == null && node.id !== page.rootId)
+          .map((node) => node.id);
+    const currentIndex = siblingIds.indexOf(nodeId);
+    if (currentIndex === -1 || siblingIds.length <= 1) {
+      return nextDocument;
+    }
+
+    let nextIndex = currentIndex;
+    switch (position) {
+      case "back":
+        nextIndex = 0;
+        break;
+      case "backward":
+        nextIndex = Math.max(0, currentIndex - 1);
+        break;
+      case "forward":
+        nextIndex = Math.min(siblingIds.length - 1, currentIndex + 1);
+        break;
+      case "front":
+        nextIndex = siblingIds.length - 1;
+        break;
+    }
+
+    if (nextIndex === currentIndex) {
+      return nextDocument;
+    }
+
+    const [movedId] = siblingIds.splice(currentIndex, 1);
+    siblingIds.splice(nextIndex, 0, movedId!);
+
+    if (parent) {
+      parent.children = siblingIds;
+    } else {
+      const subtreeOrder = siblingIds.flatMap((siblingId) => collectSubtreeIds(page.nodes, siblingId));
+      const subtreeSet = new Set(subtreeOrder);
+      const orderedNodes = subtreeOrder
+        .map((id) => page.nodes.find((node) => node.id === id))
+        .filter((node): node is SceneNode => Boolean(node));
+      const remainingNodes = page.nodes.filter((node) => !subtreeSet.has(node.id));
+      page.nodes = [...remainingNodes, ...orderedNodes];
+    }
+
+    rebuildPageNodeOrder(page);
+    return nextDocument;
+  }
+
+  throw new Error(`Node '${nodeId}' was not found.`);
+}
+
 function estimateTextAutoHeight(width: number, text: TextNodeData) {
   const availableWidth = Math.max(width, text.fontSize);
   const averageCharWidth = Math.max(text.fontSize * 0.56 + Math.max(text.letterSpacing, 0), 1);
@@ -2291,6 +2410,22 @@ export class NoopEditorBridge implements EditorBridge {
           });
           this.version += 1;
           dirtyNodeIds.push(command.nodeId);
+          this.recordHistory();
+          break;
+        case "reorder_node":
+          this.document = normalizeDocument(
+            reorderNode(this.document, command.nodeId, command.position),
+          );
+          this.version += 1;
+          dirtyNodeIds.push(command.nodeId);
+          {
+            const reorderedNode = this.document.pages
+              .flatMap((page) => page.nodes)
+              .find((node) => node.id === command.nodeId);
+            if (reorderedNode?.parentId) {
+              dirtyNodeIds.push(reorderedNode.parentId);
+            }
+          }
           this.recordHistory();
           break;
         case "set_node_auto_layout":

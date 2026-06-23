@@ -3,10 +3,10 @@ use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, AutoLayoutGapMode, AutoLayoutJustify,
     AutoLayoutWrapAlign, ComponentNodeData, EditorCommand, EditorRect, EditorSnapshot,
     EditorViewport, FramePatch, GuideAxis, HorizontalConstraint, InstanceNodeData,
-    InstanceOverrideKind, InstanceShapeOverride, InstanceTextOverride, LayoutSizing, SceneDoc,
-    SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode, ShapePathData, ShapeStylePatch,
-    TextRange, TextSizingMode, TextStylePatch, TransformHandleKind, ValidationReport,
-    VerticalConstraint,
+    InstanceOverrideKind, InstanceShapeOverride, InstanceTextOverride, LayoutSizing,
+    ReorderNodePosition, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
+    ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch,
+    TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
@@ -314,6 +314,26 @@ pub fn dispatch_commands(
                 touch_doc(&mut state.doc);
                 applied_commands.push("clear_instance_overrides".to_string());
                 dirty_node_ids.push(node_id);
+            }
+            EditorCommand::ReorderNode { node_id, position } => {
+                let parent_id = query_node(&state.doc, &node_id)
+                    .ok_or_else(|| {
+                        CoreError::new(
+                            "scene.node.not_found",
+                            format!("Node '{}' was not found.", node_id),
+                        )
+                    })?
+                    .parent_id
+                    .clone();
+                reorder_node(&mut state.doc, &node_id, position)?;
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("reorder_node".to_string());
+                dirty_node_ids.push(node_id);
+                if let Some(parent_id) = parent_id {
+                    dirty_node_ids.push(parent_id);
+                }
             }
             EditorCommand::SetNodeAutoLayout { node_id, layout } => {
                 {
@@ -937,6 +957,136 @@ fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreErr
 
         page.nodes.retain(|node| !delete_set.contains(node.id.as_str()));
         return Ok(to_delete);
+    }
+
+    Err(CoreError::new(
+        "scene.node.not_found",
+        format!("Node '{}' was not found.", node_id),
+    ))
+}
+
+fn reorder_node(
+    doc: &mut SceneDoc,
+    node_id: &str,
+    position: ReorderNodePosition,
+) -> Result<(), CoreError> {
+    for page in &mut doc.pages {
+        if page.root_id == node_id {
+            return Err(CoreError::new(
+                "scene.node.reorder_root_forbidden",
+                "Cannot reorder the root node of a page.",
+            ));
+        }
+
+        if !page.nodes.iter().any(|node| node.id == node_id) {
+            continue;
+        }
+
+        let target = page
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", node_id),
+                )
+            })?;
+
+        let sibling_ids = if let Some(parent_id) = target.parent_id.as_deref() {
+            let parent = page
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == parent_id)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.parent_missing",
+                        format!("Parent '{}' was not found.", parent_id),
+                    )
+                })?;
+            let parent_index = page
+                .nodes
+                .iter()
+                .position(|candidate| candidate.id == parent.id)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.parent_missing",
+                        format!("Parent '{}' was not found.", parent.id),
+                    )
+                })?;
+            ordered_child_ids(page, parent_index)
+        } else {
+            page.nodes
+                .iter()
+                .filter(|node| node.parent_id.is_none() && node.id != page.root_id)
+                .map(|node| node.id.clone())
+                .collect()
+        };
+
+        let current_index = sibling_ids
+            .iter()
+            .position(|candidate| candidate == node_id)
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.reorder_target_missing",
+                    format!("Node '{}' is not present in its sibling order.", node_id),
+                )
+            })?;
+
+        if sibling_ids.len() <= 1 {
+            return Ok(());
+        }
+
+        let next_index = match position {
+            ReorderNodePosition::Back => 0,
+            ReorderNodePosition::Backward => current_index.saturating_sub(1),
+            ReorderNodePosition::Forward => (current_index + 1).min(sibling_ids.len() - 1),
+            ReorderNodePosition::Front => sibling_ids.len() - 1,
+        };
+
+        if next_index == current_index {
+            return Ok(());
+        }
+
+        let mut reordered_ids = sibling_ids.clone();
+        let moved = reordered_ids.remove(current_index);
+        reordered_ids.insert(next_index, moved);
+
+        if let Some(parent_id) = target.parent_id.as_deref() {
+            let parent = page
+                .nodes
+                .iter_mut()
+                .find(|candidate| candidate.id == parent_id)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.parent_missing",
+                        format!("Parent '{}' was not found.", parent_id),
+                    )
+                })?;
+            parent.children = Some(reordered_ids);
+        } else {
+            let subtree_ids: Vec<String> = reordered_ids
+                .iter()
+                .flat_map(|sibling_id| collect_subtree_ids(page.nodes.as_slice(), sibling_id).unwrap_or_default())
+                .collect();
+            let subtree_set: HashSet<&str> = subtree_ids.iter().map(String::as_str).collect();
+            let mut ordered_nodes: Vec<SceneNode> = subtree_ids
+                .iter()
+                .filter_map(|id| page.nodes.iter().find(|node| node.id == *id).cloned())
+                .collect();
+            let mut remaining_nodes: Vec<SceneNode> = page
+                .nodes
+                .iter()
+                .filter(|node| !subtree_set.contains(node.id.as_str()))
+                .cloned()
+                .collect();
+            remaining_nodes.append(&mut ordered_nodes);
+            page.nodes = remaining_nodes;
+        }
+
+        rebuild_page_node_order(page);
+        return Ok(());
     }
 
     Err(CoreError::new(
@@ -2615,6 +2765,67 @@ fn collect_subtree_ids(nodes: &[SceneNode], root_id: &str) -> Result<Vec<String>
     }
 
     Ok(ordered)
+}
+
+fn ordered_child_ids_from_nodes(nodes: &[SceneNode], parent: &SceneNode) -> Vec<String> {
+    if let Some(children) = &parent.children {
+        if !children.is_empty() {
+            return children.clone();
+        }
+    }
+
+    nodes.iter()
+        .filter(|node| node.parent_id.as_deref() == Some(parent.id.as_str()))
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+fn rebuild_page_node_order(page: &mut kernel_doc::ScenePage) {
+    let original_nodes = page.nodes.clone();
+    let mut node_map: std::collections::HashMap<String, SceneNode> = original_nodes
+        .iter()
+        .cloned()
+        .map(|node| (node.id.clone(), node))
+        .collect();
+    let original_order: Vec<String> = original_nodes.iter().map(|node| node.id.clone()).collect();
+    let mut ordered_ids = Vec::new();
+    let mut visited = HashSet::new();
+
+    fn visit(
+        node_id: &str,
+        source_nodes: &[SceneNode],
+        ordered_ids: &mut Vec<String>,
+        visited: &mut HashSet<String>,
+    ) {
+        if !visited.insert(node_id.to_string()) {
+            return;
+        }
+
+        let Some(node) = source_nodes.iter().find(|candidate| candidate.id == node_id) else {
+            return;
+        };
+
+        ordered_ids.push(node_id.to_string());
+        let child_ids = ordered_child_ids_from_nodes(source_nodes, node);
+        for child_id in child_ids {
+            visit(&child_id, source_nodes, ordered_ids, visited);
+        }
+    }
+
+    visit(
+        &page.root_id.clone(),
+        original_nodes.as_slice(),
+        &mut ordered_ids,
+        &mut visited,
+    );
+    for node_id in original_order {
+        visit(&node_id, original_nodes.as_slice(), &mut ordered_ids, &mut visited);
+    }
+
+    page.nodes = ordered_ids
+        .into_iter()
+        .filter_map(|node_id| node_map.remove(&node_id))
+        .collect();
 }
 
 fn apply_frame_patch(frame: &mut EditorRect, patch: FramePatch) {
@@ -5147,6 +5358,121 @@ mod tests {
         assert!(instance.text_overrides.is_empty());
         assert_eq!(instance.shape_overrides.len(), 1);
         assert_eq!(instance.shape_overrides[0].source_node_id, "shape-child");
+    }
+
+    #[test]
+    fn reorder_node_updates_sibling_order_and_page_node_order() {
+        let mut doc = sample_doc();
+        let root = doc.pages[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "root")
+            .expect("root exists");
+        root.children = Some(vec![
+            "title".to_string(),
+            "body".to_string(),
+            "cta".to_string(),
+        ]);
+        doc.pages[0].nodes.push(SceneNode {
+            id: "body".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Body".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 12.0,
+                y: 40.0,
+                w: 120.0,
+                h: 24.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: Some(TextNodeData {
+                content: "Body".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 14.0,
+                font_weight: 400,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        doc.pages[0].nodes.push(SceneNode {
+            id: "cta".to_string(),
+            kind: SceneNodeKind::Shape,
+            name: "CTA".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 12.0,
+                y: 72.0,
+                w: 64.0,
+                h: 28.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Rect,
+                fill: "#2859ff".to_string(),
+                stroke_color: "#1d4ed8".to_string(),
+                stroke_width: 1.0,
+                corner_radius: 8.0,
+                opacity: 1.0,
+                path: None,
+            }),
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let mut state = EditorState::new(doc);
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::ReorderNode {
+                node_id: "title".to_string(),
+                position: ReorderNodePosition::Front,
+            }],
+        )
+        .expect("reorder node should succeed");
+
+        let root = query_node(&state.doc, "root").expect("root exists");
+        assert_eq!(
+            root.children.as_ref().expect("children"),
+            &vec!["body".to_string(), "cta".to_string(), "title".to_string()]
+        );
+
+        let ordered_ids: Vec<String> = state.doc.pages[0]
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
+        assert_eq!(
+            ordered_ids,
+            vec![
+                "root".to_string(),
+                "body".to_string(),
+                "cta".to_string(),
+                "title".to_string(),
+            ]
+        );
     }
 
     #[test]
