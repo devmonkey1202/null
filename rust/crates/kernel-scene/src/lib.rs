@@ -298,11 +298,16 @@ pub fn dispatch_commands(
                 applied_commands.push("detach_instance".to_string());
                 dirty_node_ids.push(node_id);
             }
-            EditorCommand::ClearInstanceOverrides { node_id, override_kind } => {
+            EditorCommand::ClearInstanceOverrides {
+                node_id,
+                override_kind,
+                source_node_id,
+            } => {
                 clear_instance_overrides(
                     &mut state.doc,
                     &node_id,
                     override_kind.unwrap_or(InstanceOverrideKind::All),
+                    source_node_id.as_deref(),
                 )?;
                 normalize_document(&mut state.doc);
                 state.version += 1;
@@ -1345,6 +1350,7 @@ fn clear_instance_overrides(
     doc: &mut SceneDoc,
     node_id: &str,
     override_kind: InstanceOverrideKind,
+    source_node_id: Option<&str>,
 ) -> Result<(), CoreError> {
     let node = find_node_mut(doc, node_id)?;
     if !matches!(node.kind, SceneNodeKind::Instance) {
@@ -1361,13 +1367,31 @@ fn clear_instance_overrides(
         ));
     };
 
-    match override_kind {
-        InstanceOverrideKind::All => {
+    match (override_kind, source_node_id) {
+        (InstanceOverrideKind::All, None) => {
             instance.text_overrides.clear();
             instance.shape_overrides.clear();
         }
-        InstanceOverrideKind::Text => instance.text_overrides.clear(),
-        InstanceOverrideKind::Shape => instance.shape_overrides.clear(),
+        (InstanceOverrideKind::Text, None) => instance.text_overrides.clear(),
+        (InstanceOverrideKind::Shape, None) => instance.shape_overrides.clear(),
+        (InstanceOverrideKind::All, Some(source_node_id)) => {
+            instance
+                .text_overrides
+                .retain(|entry| entry.source_node_id != source_node_id);
+            instance
+                .shape_overrides
+                .retain(|entry| entry.source_node_id != source_node_id);
+        }
+        (InstanceOverrideKind::Text, Some(source_node_id)) => {
+            instance
+                .text_overrides
+                .retain(|entry| entry.source_node_id != source_node_id);
+        }
+        (InstanceOverrideKind::Shape, Some(source_node_id)) => {
+            instance
+                .shape_overrides
+                .retain(|entry| entry.source_node_id != source_node_id);
+        }
     }
 
     Ok(())
@@ -4998,6 +5022,7 @@ mod tests {
             vec![EditorCommand::ClearInstanceOverrides {
                 node_id: instance_id.clone(),
                 override_kind: Some(kernel_doc::InstanceOverrideKind::All),
+                source_node_id: None,
             }],
         )
         .expect("clear overrides should succeed");
@@ -5006,6 +5031,122 @@ mod tests {
         let instance = instance_root.instance.as_ref().expect("instance metadata exists");
         assert!(instance.text_overrides.is_empty());
         assert!(instance.shape_overrides.is_empty());
+    }
+
+    #[test]
+    fn clear_instance_overrides_can_target_single_override_source() {
+        let mut doc = sample_doc();
+        let root = doc.pages[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "root")
+            .expect("root exists");
+        root.children = Some(
+            root.children
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .chain(["shape-child".to_string()])
+                .collect(),
+        );
+        doc.pages[0].nodes.push(SceneNode {
+            id: "shape-child".to_string(),
+            kind: SceneNodeKind::Shape,
+            name: "Shape Child".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 20.0,
+                y: 60.0,
+                w: 32.0,
+                h: 32.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Rect,
+                fill: "#93c5fd".to_string(),
+                stroke_color: "#1d4ed8".to_string(),
+                stroke_width: 2.0,
+                corner_radius: 4.0,
+                opacity: 1.0,
+                path: None,
+            }),
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let mut state = EditorState::new(doc);
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::PromoteToComponent {
+                    node_id: "root".to_string(),
+                    component_key: Some("hero-card".to_string()),
+                },
+                EditorCommand::CreateInstanceFromComponent {
+                    page_id: "page-1".to_string(),
+                    source_node_id: "root".to_string(),
+                    offset_x: Some(120.0),
+                    offset_y: Some(0.0),
+                },
+            ],
+        )
+        .expect("component + instance should succeed");
+
+        let instance_id = state.selection.first().cloned().expect("instance root selected");
+        let instance_root = query_node(&state.doc, &instance_id).expect("instance exists");
+        let instance_text_child_id = instance_root
+            .children
+            .as_ref()
+            .and_then(|children| children.first())
+            .cloned()
+            .expect("instance text child exists");
+        let instance_shape_child_id = instance_root
+            .children
+            .as_ref()
+            .and_then(|children| children.last())
+            .cloned()
+            .expect("instance shape child exists");
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SetTextContent {
+                    node_id: instance_text_child_id,
+                    content: "Override".to_string(),
+                },
+                EditorCommand::SetShapeStyle {
+                    node_id: instance_shape_child_id,
+                    style: ShapeStylePatch {
+                        opacity: Some(0.5),
+                        ..ShapeStylePatch::default()
+                    },
+                },
+            ],
+        )
+        .expect("instance overrides should succeed");
+
+        dispatch_commands(
+            &mut state,
+            vec![EditorCommand::ClearInstanceOverrides {
+                node_id: instance_id.clone(),
+                override_kind: Some(kernel_doc::InstanceOverrideKind::All),
+                source_node_id: Some("title".to_string()),
+            }],
+        )
+        .expect("targeted clear should succeed");
+
+        let instance_root = query_node(&state.doc, &instance_id).expect("instance exists");
+        let instance = instance_root.instance.as_ref().expect("instance metadata exists");
+        assert!(instance.text_overrides.is_empty());
+        assert_eq!(instance.shape_overrides.len(), 1);
+        assert_eq!(instance.shape_overrides[0].source_node_id, "shape-child");
     }
 
     #[test]

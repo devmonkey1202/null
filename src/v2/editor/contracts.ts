@@ -240,7 +240,12 @@ export type EditorCommand =
     }
   | { kind: "refresh_instance"; nodeId: string }
   | { kind: "detach_instance"; nodeId: string }
-  | { kind: "clear_instance_overrides"; nodeId: string; overrideKind?: InstanceOverrideKind }
+  | {
+      kind: "clear_instance_overrides";
+      nodeId: string;
+      overrideKind?: InstanceOverrideKind;
+      sourceNodeId?: string;
+    }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | { kind: "set_node_layout_sizing"; nodeId: string; layoutSizing: LayoutSizingAxis | null }
   | {

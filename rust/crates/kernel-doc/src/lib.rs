@@ -537,6 +537,8 @@ pub enum EditorCommand {
         node_id: String,
         #[serde(default, rename = "overrideKind", skip_serializing_if = "Option::is_none")]
         override_kind: Option<InstanceOverrideKind>,
+        #[serde(default, rename = "sourceNodeId", skip_serializing_if = "Option::is_none")]
+        source_node_id: Option<String>,
     },
     SetNodeAutoLayout {
         #[serde(rename = "nodeId")]

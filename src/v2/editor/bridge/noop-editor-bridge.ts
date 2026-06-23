@@ -1138,17 +1138,34 @@ function detachInstanceNode(node: SceneNode): SceneNode {
   };
 }
 
-function clearInstanceOverridesNode(node: SceneNode, overrideKind: InstanceOverrideKind): SceneNode {
+function clearInstanceOverridesNode(
+  node: SceneNode,
+  overrideKind: InstanceOverrideKind,
+  sourceNodeId?: string,
+): SceneNode {
   if (node.kind !== "instance" || !node.instance) {
     throw new Error(`Node '${node.id}' is not an instance.`);
   }
+
+  const clearTextOverrides = () =>
+    sourceNodeId
+      ? (node.instance?.textOverrides ?? []).filter((entry) => entry.sourceNodeId !== sourceNodeId)
+      : [];
+  const clearShapeOverrides = () =>
+    sourceNodeId
+      ? (node.instance?.shapeOverrides ?? []).filter((entry) => entry.sourceNodeId !== sourceNodeId)
+      : [];
 
   return {
     ...node,
     instance: {
       ...node.instance,
-      ...(overrideKind === "all" || overrideKind === "text" ? { textOverrides: [] } : {}),
-      ...(overrideKind === "all" || overrideKind === "shape" ? { shapeOverrides: [] } : {}),
+      ...(overrideKind === "all" || overrideKind === "text"
+        ? { textOverrides: clearTextOverrides() }
+        : {}),
+      ...(overrideKind === "all" || overrideKind === "shape"
+        ? { shapeOverrides: clearShapeOverrides() }
+        : {}),
     } satisfies InstanceNodeData,
   };
 }
@@ -2264,7 +2281,11 @@ export class NoopEditorBridge implements EditorBridge {
           this.document = normalizeDocument({
             ...this.document,
             pages: updateNode(this.document.pages, command.nodeId, (node) =>
-              clearInstanceOverridesNode(node, command.overrideKind ?? "all"),
+              clearInstanceOverridesNode(
+                node,
+                command.overrideKind ?? "all",
+                command.sourceNodeId,
+              ),
             ),
             meta: { ...this.document.meta, updatedAt: new Date().toISOString() },
           });

@@ -2073,16 +2073,27 @@ export function V2EditorShell() {
     ]);
   }
 
-  async function clearActiveInstanceOverrides(overrideKind: "all" | "text" | "shape") {
-    if (!activeNode || activeNode.kind !== "instance") {
+  async function clearActiveInstanceOverrides(
+    overrideKind: "all" | "text" | "shape",
+    sourceNodeId?: string,
+    targetInstanceId?: string,
+  ) {
+    const instanceNodeId =
+      targetInstanceId ??
+      (activeNode?.kind === "instance"
+        ? activeNode.id
+        : activeInstanceRoot?.id);
+
+    if (!instanceNodeId) {
       return;
     }
 
     await applyAndSync([
       {
         kind: "clear_instance_overrides",
-        nodeId: activeNode.id,
+        nodeId: instanceNodeId,
         overrideKind,
+        ...(sourceNodeId ? { sourceNodeId } : {}),
       },
     ]);
   }
@@ -4943,6 +4954,19 @@ export function V2EditorShell() {
                                       >
                                         Select layer
                                       </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void clearActiveInstanceOverrides(
+                                            "text",
+                                            override.sourceNodeId,
+                                            activeNode.id,
+                                          )
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Clear this
+                                      </button>
                                     </div>
                                     <div className="mt-2 flex flex-wrap gap-1.5">
                                       {summarizeTextStylePatch(override.style).map((label) => (
@@ -4990,6 +5014,19 @@ export function V2EditorShell() {
                                         className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
                                       >
                                         Select layer
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void clearActiveInstanceOverrides(
+                                            "shape",
+                                            override.sourceNodeId,
+                                            activeNode.id,
+                                          )
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Clear this
                                       </button>
                                     </div>
                                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -5056,7 +5093,59 @@ export function V2EditorShell() {
                             ) : null}
                           </div>
                           {activeInstanceLocalOverride?.text || activeInstanceLocalOverride?.shape ? (
-                            <div className="mt-3 flex flex-wrap gap-1.5">
+                            <div className="mt-3 space-y-3">
+                              <div className="flex flex-wrap gap-1.5">
+                                {activeInstanceLocalOverride.text ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      activeInstanceOverrideSourceId
+                                        ? void clearActiveInstanceOverrides(
+                                            "text",
+                                            activeInstanceOverrideSourceId,
+                                            activeInstanceRoot.id,
+                                          )
+                                        : undefined
+                                    }
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                  >
+                                    Clear linked text
+                                  </button>
+                                ) : null}
+                                {activeInstanceLocalOverride.shape ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      activeInstanceOverrideSourceId
+                                        ? void clearActiveInstanceOverrides(
+                                            "shape",
+                                            activeInstanceOverrideSourceId,
+                                            activeInstanceRoot.id,
+                                          )
+                                        : undefined
+                                    }
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                  >
+                                    Clear linked shape
+                                  </button>
+                                ) : null}
+                                {activeInstanceOverrideSourceId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void clearActiveInstanceOverrides(
+                                        "all",
+                                        activeInstanceOverrideSourceId,
+                                        activeInstanceRoot.id,
+                                      )
+                                    }
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                  >
+                                    Clear linked all
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
                               {activeInstanceLocalOverride.text ? (
                                 <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
                                   Text override linked
@@ -5067,6 +5156,7 @@ export function V2EditorShell() {
                                   Shape override linked
                                 </span>
                               ) : null}
+                              </div>
                             </div>
                           ) : null}
                         </div>
