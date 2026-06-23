@@ -873,6 +873,29 @@ function buildNodeMap(nodes: SceneNode[]) {
   return new Map(nodes.map((node) => [node.id, node]));
 }
 
+function orderedLayerChildIds(
+  page: NonNullable<EditorSnapshot["doc"]["pages"][number]>,
+  parent: SceneNode,
+) {
+  if (parent.children?.length) {
+    return parent.children;
+  }
+
+  return page.nodes
+    .filter((node) => node.parentId === parent.id)
+    .map((node) => node.id);
+}
+
+function ancestorNodeIds(node: SceneNode | null, nodeMap: Map<string, SceneNode>) {
+  const ids: string[] = [];
+  let current = node?.parentId ? (nodeMap.get(node.parentId) ?? null) : null;
+  while (current) {
+    ids.push(current.id);
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return ids;
+}
+
 function isNodeWithinAncestor(
   nodeId: string,
   ancestorId: string,
@@ -1490,6 +1513,7 @@ export function V2EditorShell() {
   const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
   const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
+  const [collapsedLayerIds, setCollapsedLayerIds] = useState<string[]>([]);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const bridgeRef = useRef<EditorBridge | null>(null);
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1563,6 +1587,18 @@ export function V2EditorShell() {
   );
   const pageGuides = currentPage?.guides ?? [];
   const nodeMap = useMemo(() => buildNodeMap(nodes), [nodes]);
+  const layerRootChildIds = useMemo(() => {
+    if (!currentPage) {
+      return [];
+    }
+
+    const rootNode = nodeMap.get(currentPage.rootId);
+    if (!rootNode) {
+      return [];
+    }
+
+    return orderedLayerChildIds(currentPage, rootNode);
+  }, [currentPage, nodeMap]);
   const activeNode = useMemo(
     () => selectedNode(nodes, snapshot?.selection ?? []),
     [nodes, snapshot?.selection],
@@ -1667,6 +1703,28 @@ export function V2EditorShell() {
     () => (activeNode ? resolveLayoutSizing(activeNode.layoutSizing ?? null) : null),
     [activeNode],
   );
+  const toggleLayerCollapsed = useCallback((nodeId: string) => {
+    setCollapsedLayerIds((current) =>
+      current.includes(nodeId)
+        ? current.filter((id) => id !== nodeId)
+        : [...current, nodeId],
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!activeNode) {
+      return;
+    }
+
+    const ancestorIds = ancestorNodeIds(activeNode, nodeMap);
+    if (ancestorIds.length === 0) {
+      return;
+    }
+
+    setCollapsedLayerIds((current) =>
+      current.filter((id) => !ancestorIds.includes(id)),
+    );
+  }, [activeNode, nodeMap]);
   const selectedShapeNodes = useMemo(
     () =>
       (snapshot?.selection ?? [])
@@ -3515,6 +3573,75 @@ export function V2EditorShell() {
     await commitViewport({ ...current, zoom: nextZoom });
   }
 
+  function renderLayerNode(nodeId: string, depth = 0): React.ReactNode {
+    if (!currentPage) {
+      return null;
+    }
+
+    const node = nodeMap.get(nodeId);
+    if (!node) {
+      return null;
+    }
+
+    const childIds = orderedLayerChildIds(currentPage, node);
+    const hasChildren = childIds.length > 0;
+    const collapsed = collapsedLayerIds.includes(node.id);
+    const selected = snapshot?.selection.includes(node.id) ?? false;
+
+    return (
+      <div key={`layer-node-${node.id}`} className="space-y-1">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void selectNode(node.id)}
+            className={`flex min-w-0 flex-1 items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
+              selected
+                ? "border-slate-950 bg-slate-950 text-white"
+                : "border-transparent bg-slate-50 text-slate-700 hover:border-slate-200 hover:bg-white"
+            }`}
+            style={{ paddingLeft: 12 + depth * 14 }}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {hasChildren ? (
+                <span
+                  className={`text-[10px] transition ${selected ? "text-white/80" : "text-slate-400"} ${
+                    collapsed ? "" : "rotate-90"
+                  }`}
+                >
+                  ▶
+                </span>
+              ) : (
+                <span className="w-2" />
+              )}
+              <span className="truncate text-sm font-medium">{node.name}</span>
+            </span>
+            <span className="ml-3 text-[11px] uppercase tracking-[0.14em] opacity-70">
+              {node.kind}
+            </span>
+          </button>
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleLayerCollapsed(node.id);
+              }}
+              className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-[11px] font-semibold text-slate-500 transition hover:border-slate-300"
+              aria-label={collapsed ? "Expand layer group" : "Collapse layer group"}
+            >
+              {collapsed ? "+" : "−"}
+            </button>
+          ) : null}
+        </div>
+        {hasChildren && !collapsed ? (
+          <div className="space-y-1">
+            {childIds.map((childId) => renderLayerNode(childId, depth + 1))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4">
@@ -3687,26 +3814,13 @@ export function V2EditorShell() {
             </div>
           </div>
           <div className="space-y-1 p-3">
-            {nodes.map((node) => {
-              const selected = snapshot?.selection.includes(node.id) ?? false;
-              return (
-                <button
-                  key={node.id}
-                  type="button"
-                  onClick={() => void selectNode(node.id)}
-                  className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
-                    selected
-                      ? "border-slate-950 bg-slate-950 text-white"
-                      : "border-transparent bg-slate-50 text-slate-700 hover:border-slate-200 hover:bg-white"
-                  }`}
-                >
-                  <span className="truncate text-sm font-medium">{node.name}</span>
-                  <span className="ml-3 text-[11px] uppercase tracking-[0.14em] opacity-70">
-                    {node.kind}
-                  </span>
-                </button>
-              );
-            })}
+            {layerRootChildIds.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                No layers yet.
+              </div>
+            ) : (
+              layerRootChildIds.map((nodeId) => renderLayerNode(nodeId))
+            )}
           </div>
           <div className="border-t border-slate-200 px-4 py-3">
             <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
