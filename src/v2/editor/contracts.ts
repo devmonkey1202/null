@@ -271,6 +271,7 @@ export type EditorCommand =
   | { kind: "delete_guide"; pageId: string; guideId: string }
   | { kind: "create_node"; pageId: string; node: SceneNode }
   | { kind: "delete_node"; nodeId: string }
+  | { kind: "duplicate_selection"; offsetX?: number; offsetY?: number }
   | { kind: "undo" }
   | { kind: "redo" };
 

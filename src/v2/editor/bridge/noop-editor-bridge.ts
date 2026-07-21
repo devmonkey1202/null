@@ -1289,6 +1289,119 @@ function reorderNode(document: SceneDoc, nodeId: string, position: ReorderNodePo
   throw new Error(`Node '${nodeId}' was not found.`);
 }
 
+function duplicateSelection(
+  document: SceneDoc,
+  selection: string[],
+  offsetX = 24,
+  offsetY = 24,
+) {
+  const nextDocument = structuredClone(document);
+  const duplicatedRootIds: string[] = [];
+  const dirtyNodeIds: string[] = [];
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let cloneIndex = 0;
+
+  for (const page of nextDocument.pages) {
+    const sourceNodes = structuredClone(page.nodes);
+    const nodeMap = new Map(sourceNodes.map((node) => [node.id, node] as const));
+    const pageSelectionIds = selection.filter((nodeId) => nodeMap.has(nodeId));
+    if (!pageSelectionIds.length) {
+      continue;
+    }
+
+    const selectionSet = new Set(pageSelectionIds);
+    const selectedRootIds = sourceNodes
+      .filter(
+        (node) =>
+          selectionSet.has(node.id) &&
+          node.id !== page.rootId &&
+          !hasSelectedAncestor(node, selectionSet, nodeMap),
+      )
+      .map((node) => node.id);
+
+    if (!selectedRootIds.length) {
+      continue;
+    }
+
+    const cloneRootByOriginal = new Map<string, string>();
+    const createdNodes: SceneNode[] = [];
+
+    for (const rootId of selectedRootIds) {
+      const subtreeIds = collectSubtreeIds(sourceNodes, rootId);
+      const idMap = new Map(
+        subtreeIds.map((oldId) => [oldId, `duplicate-${rootId}-${nonce}-${cloneIndex++}`]),
+      );
+      cloneRootByOriginal.set(rootId, idMap.get(rootId)!);
+
+      for (const oldId of subtreeIds) {
+        const original = nodeMap.get(oldId);
+        if (!original) {
+          continue;
+        }
+
+        const next = structuredClone(original);
+        next.id = idMap.get(oldId)!;
+        next.parentId =
+          oldId === rootId
+            ? original.parentId
+            : original.parentId
+              ? (idMap.get(original.parentId) ?? null)
+              : null;
+        next.children = original.children?.map((childId) => idMap.get(childId)!).filter(Boolean);
+        next.frame = {
+          ...next.frame,
+          x: next.frame.x + offsetX,
+          y: next.frame.y + offsetY,
+        };
+        createdNodes.push(next);
+        dirtyNodeIds.push(next.id);
+      }
+    }
+
+    page.nodes.push(...createdNodes);
+
+    const rootsByParent = new Map<string, string[]>();
+    for (const rootId of selectedRootIds) {
+      const parentId = nodeMap.get(rootId)?.parentId;
+      if (!parentId) {
+        continue;
+      }
+      rootsByParent.set(parentId, [...(rootsByParent.get(parentId) ?? []), rootId]);
+      dirtyNodeIds.push(parentId);
+    }
+
+    for (const [parentId, rootIds] of rootsByParent) {
+      const sourceParent = sourceNodes.find((node) => node.id === parentId);
+      const parent = page.nodes.find((node) => node.id === parentId);
+      if (!sourceParent || !parent) {
+        continue;
+      }
+
+      const siblingIds = orderedChildIdsFromNodes(sourceNodes, sourceParent);
+      const cloneSiblingIds = new Map(
+        rootIds.map((rootId) => [rootId, cloneRootByOriginal.get(rootId)!] as const),
+      );
+      const nextSiblingIds: string[] = [];
+      siblingIds.forEach((siblingId) => {
+        nextSiblingIds.push(siblingId);
+        if (cloneSiblingIds.has(siblingId)) {
+          nextSiblingIds.push(cloneSiblingIds.get(siblingId)!);
+        }
+      });
+      parent.children = nextSiblingIds;
+    }
+
+    rebuildPageNodeOrder(page);
+    duplicatedRootIds.push(...selectedRootIds.map((rootId) => cloneRootByOriginal.get(rootId)!));
+  }
+
+  return {
+    document: normalizeDocument(nextDocument),
+    duplicatedRootIds,
+    dirtyNodeIds: [...new Set(dirtyNodeIds)],
+  };
+}
+
 function estimateTextAutoHeight(width: number, text: TextNodeData) {
   const availableWidth = Math.max(width, text.fontSize);
   const averageCharWidth = Math.max(text.fontSize * 0.56 + Math.max(text.letterSpacing, 0), 1);
@@ -1335,6 +1448,29 @@ function orderedChildIds(page: SceneDoc["pages"][number], parent: SceneNode) {
   return page.nodes
     .filter((node) => node.parentId === parent.id)
     .map((node) => node.id);
+}
+
+function orderedChildIdsFromNodes(nodes: SceneNode[], parent: SceneNode) {
+  if (parent.children?.length) {
+    return parent.children;
+  }
+
+  return nodes.filter((node) => node.parentId === parent.id).map((node) => node.id);
+}
+
+function hasSelectedAncestor(
+  node: SceneNode,
+  selectionSet: Set<string>,
+  nodeMap: Map<string, SceneNode>,
+) {
+  let current = node.parentId ? (nodeMap.get(node.parentId) ?? null) : null;
+  while (current) {
+    if (selectionSet.has(current.id)) {
+      return true;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return false;
 }
 
 function clampSize(value: number, min?: number, max?: number) {
@@ -2615,6 +2751,23 @@ export class NoopEditorBridge implements EditorBridge {
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
+        case "duplicate_selection": {
+          const result = duplicateSelection(
+            this.document,
+            this.selection,
+            command.offsetX ?? 24,
+            command.offsetY ?? 24,
+          );
+          if (result.duplicatedRootIds.length === 0) {
+            break;
+          }
+          this.document = result.document;
+          this.selection = result.duplicatedRootIds;
+          this.version += 1;
+          dirtyNodeIds.push(...result.dirtyNodeIds);
+          this.recordHistory();
+          break;
+        }
         case "undo": {
           const snapshot = this.historyCursor > 0 ? cloneSnapshot(this.history[this.historyCursor - 1]!) : null;
           if (snapshot) {

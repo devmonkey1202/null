@@ -2705,6 +2705,18 @@ export function V2EditorShell() {
     await applyAndSync(commands);
   }, [snapshot?.selection, syncBridgeState]);
 
+  const runDuplicateSelection = useCallback(async () => {
+    if (!snapshot?.selection.length) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "duplicate_selection",
+      },
+    ]);
+  }, [snapshot?.selection, syncBridgeState]);
+
   const runUndo = useCallback(async () => {
     await applyAndSync([{ kind: "undo" }]);
   }, [syncBridgeState]);
@@ -2906,6 +2918,12 @@ export function V2EditorShell() {
         }
       }
 
+      if (key === "d" && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        void runDuplicateSelection();
+        return;
+      }
+
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
         void runUndo();
@@ -2945,11 +2963,12 @@ export function V2EditorShell() {
     finishPathDraft,
     nudgeActivePathPoint,
     removeActiveShapePathPoint,
-      runDeleteSelection,
-      runNudgeSelection,
-      runReorderSelection,
-      runRedo,
-      runUndo,
+    runDeleteSelection,
+    runDuplicateSelection,
+    runNudgeSelection,
+    runReorderSelection,
+    runRedo,
+    runUndo,
     selectedGuideId,
     snapshot?.selection.length,
   ]);
@@ -4534,6 +4553,22 @@ export function V2EditorShell() {
                     </label>
                     <div className="mt-2 text-xs uppercase tracking-[0.14em] text-slate-500">
                       {activeNode.kind}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void runDuplicateSelection()}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                      >
+                        Duplicate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runDeleteSelection()}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                      >
+                        Delete
+                      </button>
                     </div>
                     {activeNode.parentId ? (
                       <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">

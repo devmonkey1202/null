@@ -621,6 +621,12 @@ pub enum EditorCommand {
         #[serde(rename = "nodeId")]
         node_id: String,
     },
+    DuplicateSelection {
+        #[serde(default, rename = "offsetX", skip_serializing_if = "Option::is_none")]
+        offset_x: Option<f32>,
+        #[serde(default, rename = "offsetY", skip_serializing_if = "Option::is_none")]
+        offset_y: Option<f32>,
+    },
     Undo,
     Redo,
 }

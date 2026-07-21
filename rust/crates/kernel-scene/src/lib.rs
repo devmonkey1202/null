@@ -71,6 +71,12 @@ pub struct EditorApplyResult {
     pub dirty_node_ids: Vec<String>,
 }
 
+struct DuplicateSelectionResult {
+    created_root_ids: Vec<String>,
+    created_node_ids: Vec<String>,
+    dirty_parent_ids: Vec<String>,
+}
+
 impl EditorState {
     pub fn new(mut doc: SceneDoc) -> Self {
         normalize_document(&mut doc);
@@ -487,6 +493,24 @@ pub fn dispatch_commands(
                 touch_doc(&mut state.doc);
                 applied_commands.push("delete_node".to_string());
                 dirty_node_ids.extend(deleted);
+            }
+            EditorCommand::DuplicateSelection { offset_x, offset_y } => {
+                let duplicated = duplicate_selection(
+                    &mut state.doc,
+                    &state.selection,
+                    offset_x.unwrap_or(24.0),
+                    offset_y.unwrap_or(24.0),
+                )?;
+                if duplicated.created_root_ids.is_empty() {
+                    continue;
+                }
+                state.selection = duplicated.created_root_ids.clone();
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("duplicate_selection".to_string());
+                dirty_node_ids.extend(duplicated.created_node_ids);
+                dirty_node_ids.extend(duplicated.dirty_parent_ids);
             }
             EditorCommand::Undo => {
                 return Err(CoreError::new(
@@ -963,6 +987,184 @@ fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreErr
         "scene.node.not_found",
         format!("Node '{}' was not found.", node_id),
     ))
+}
+
+fn duplicate_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+    offset_x: f32,
+    offset_y: f32,
+) -> Result<DuplicateSelectionResult, CoreError> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let mut clone_index = 0usize;
+    let mut created_root_ids = Vec::new();
+    let mut created_node_ids = Vec::new();
+    let mut dirty_parent_ids = Vec::new();
+
+    for page in &mut doc.pages {
+        let source_nodes = page.nodes.clone();
+        let node_map = source_nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect::<std::collections::HashMap<_, _>>();
+        let page_selection_ids = selection
+            .iter()
+            .filter(|node_id| node_map.contains_key(node_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if page_selection_ids.is_empty() {
+            continue;
+        }
+
+        let selection_set = page_selection_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let selected_root_ids = source_nodes
+            .iter()
+            .filter(|node| {
+                selection_set.contains(node.id.as_str())
+                    && node.id != page.root_id
+                    && !has_selected_ancestor(node, &selection_set, &node_map)
+            })
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+
+        if selected_root_ids.is_empty() {
+            continue;
+        }
+
+        let mut clone_root_by_original = std::collections::HashMap::new();
+        let mut created_nodes = Vec::new();
+
+        for root_id in &selected_root_ids {
+            let subtree_ids = collect_subtree_ids(source_nodes.as_slice(), root_id)?;
+            let id_map = subtree_ids
+                .iter()
+                .map(|old_id| {
+                    let next_id = format!("duplicate-{}-{}-{}", root_id, nonce, clone_index);
+                    clone_index += 1;
+                    (old_id.clone(), next_id)
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+
+            let duplicated_root_id = id_map.get(root_id).cloned().ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.duplicate_failed",
+                    format!("Failed to build clone id for '{}'.", root_id),
+                )
+            })?;
+            clone_root_by_original.insert(root_id.clone(), duplicated_root_id);
+
+            for old_id in &subtree_ids {
+                let original = node_map.get(old_id.as_str()).ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.not_found",
+                        format!("Node '{}' was not found.", old_id),
+                    )
+                })?;
+
+                let mut clone = (*original).clone();
+                clone.id = id_map.get(old_id).cloned().ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.duplicate_failed",
+                        format!("Missing clone id map entry for '{}'.", old_id),
+                    )
+                })?;
+                clone.parent_id = if old_id == root_id {
+                    original.parent_id.clone()
+                } else {
+                    original
+                        .parent_id
+                        .as_ref()
+                        .and_then(|parent_id| id_map.get(parent_id).cloned())
+                };
+                clone.children = original.children.as_ref().map(|children| {
+                    children
+                        .iter()
+                        .filter_map(|child_id| id_map.get(child_id).cloned())
+                        .collect::<Vec<_>>()
+                });
+                clone.frame.x += offset_x;
+                clone.frame.y += offset_y;
+                created_node_ids.push(clone.id.clone());
+                created_nodes.push(clone);
+            }
+        }
+
+        page.nodes.extend(created_nodes.into_iter());
+
+        let mut roots_by_parent = std::collections::HashMap::<String, Vec<String>>::new();
+        for root_id in &selected_root_ids {
+            if let Some(parent_id) = node_map
+                .get(root_id.as_str())
+                .and_then(|node| node.parent_id.clone())
+            {
+                roots_by_parent
+                    .entry(parent_id.clone())
+                    .or_default()
+                    .push(root_id.clone());
+                dirty_parent_ids.push(parent_id);
+            }
+        }
+
+        for (parent_id, root_ids) in roots_by_parent {
+            let source_parent_index = source_nodes
+                .iter()
+                .position(|node| node.id == parent_id)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.parent_missing",
+                        format!("Parent '{}' was not found.", parent_id),
+                    )
+                })?;
+            let parent_index = page
+                .nodes
+                .iter()
+                .position(|node| node.id == parent_id)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.parent_missing",
+                        format!("Parent '{}' was not found.", parent_id),
+                    )
+                })?;
+            let sibling_ids = ordered_child_ids(page, source_parent_index);
+            let clone_sibling_ids = root_ids
+                .iter()
+                .filter_map(|root_id| {
+                    clone_root_by_original
+                        .get(root_id)
+                        .cloned()
+                        .map(|clone_id| (root_id.clone(), clone_id))
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            let mut next_sibling_ids = Vec::new();
+            for sibling_id in sibling_ids {
+                next_sibling_ids.push(sibling_id.clone());
+                if let Some(clone_id) = clone_sibling_ids.get(&sibling_id) {
+                    next_sibling_ids.push(clone_id.clone());
+                }
+            }
+            page.nodes[parent_index].children = Some(next_sibling_ids);
+        }
+
+        rebuild_page_node_order(page);
+        created_root_ids.extend(
+            selected_root_ids
+                .iter()
+                .filter_map(|root_id| clone_root_by_original.get(root_id).cloned()),
+        );
+    }
+
+    Ok(DuplicateSelectionResult {
+        created_root_ids,
+        created_node_ids: dedupe_ids(created_node_ids),
+        dirty_parent_ids: dedupe_ids(dirty_parent_ids),
+    })
 }
 
 fn reorder_node(
@@ -2778,6 +2980,29 @@ fn ordered_child_ids_from_nodes(nodes: &[SceneNode], parent: &SceneNode) -> Vec<
         .filter(|node| node.parent_id.as_deref() == Some(parent.id.as_str()))
         .map(|node| node.id.clone())
         .collect()
+}
+
+fn has_selected_ancestor(
+    node: &SceneNode,
+    selection_set: &HashSet<&str>,
+    node_map: &std::collections::HashMap<&str, &SceneNode>,
+) -> bool {
+    let mut current = node
+        .parent_id
+        .as_deref()
+        .and_then(|parent_id| node_map.get(parent_id).copied());
+
+    while let Some(current_node) = current {
+        if selection_set.contains(current_node.id.as_str()) {
+            return true;
+        }
+        current = current_node
+            .parent_id
+            .as_deref()
+            .and_then(|parent_id| node_map.get(parent_id).copied());
+    }
+
+    false
 }
 
 fn rebuild_page_node_order(page: &mut kernel_doc::ScenePage) {
@@ -5473,6 +5698,83 @@ mod tests {
                 "title".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn duplicate_selection_clones_selected_subtree_after_source_node() {
+        let mut doc = sample_doc();
+        let root = doc.pages[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "root")
+            .expect("root exists");
+        root.children = Some(vec!["title".to_string(), "body".to_string()]);
+        doc.pages[0].nodes.push(SceneNode {
+            id: "body".to_string(),
+            kind: SceneNodeKind::Text,
+            name: "Body".to_string(),
+            parent_id: Some("root".to_string()),
+            children: None,
+            frame: EditorRect {
+                x: 12.0,
+                y: 40.0,
+                w: 120.0,
+                h: 24.0,
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: Some(TextNodeData {
+                content: "Body".to_string(),
+                font_family: "Inter".to_string(),
+                font_size: 14.0,
+                font_weight: 400,
+                line_height: 20.0,
+                letter_spacing: 0.0,
+                paragraph_spacing: 0.0,
+                align: TextAlign::Left,
+                color: "#0f172a".to_string(),
+                text_case: TextCase::None,
+                italic: false,
+                underline: false,
+                line_through: false,
+                sizing: TextSizingMode::AutoHeight,
+                ranges: vec![],
+            }),
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SelectNodes {
+                    node_ids: vec!["title".to_string()],
+                },
+                EditorCommand::DuplicateSelection {
+                    offset_x: Some(24.0),
+                    offset_y: Some(24.0),
+                },
+            ],
+        )
+        .expect("duplicate selection should succeed");
+
+        let root = query_node(&state.doc, "root").expect("root exists");
+        let children = root.children.as_ref().expect("children exist");
+        assert_eq!(children.len(), 3);
+        assert_eq!(children[0], "title");
+        assert_eq!(children[2], "body");
+        assert_ne!(children[1], "title");
+
+        let duplicated = query_node(&state.doc, &children[1]).expect("duplicated node exists");
+        assert_eq!(duplicated.parent_id.as_deref(), Some("root"));
+        assert_eq!(duplicated.frame.x, 34.0);
+        assert_eq!(duplicated.frame.y, 34.0);
+        assert_eq!(state.selection, vec![children[1].clone()]);
     }
 
     #[test]
