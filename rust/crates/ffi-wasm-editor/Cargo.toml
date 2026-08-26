@@ -1,0 +1,20 @@
+[package]
+name = "ffi-wasm-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-error = { path = "../core-error" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+kernel-doc = { path = "../kernel-doc" }
+kernel-scene = { path = "../kernel-scene" }
+kernel-layout = { path = "../kernel-layout" }
+kernel-history = { path = "../kernel-history" }
+wasm-bindgen = "0.2"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]

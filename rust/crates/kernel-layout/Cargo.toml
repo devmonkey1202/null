@@ -1,0 +1,13 @@
+[package]
+name = "kernel-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-error = { path = "../core-error" }
+kernel-doc = { path = "../kernel-doc" }
+
+[lib]
+path = "src/lib.rs"

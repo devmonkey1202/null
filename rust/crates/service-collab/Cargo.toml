@@ -1,0 +1,15 @@
+[package]
+name = "service-collab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-error = { path = "../core-error" }
+service-auth = { path = "../service-auth" }
+service-documents = { path = "../service-documents" }
+
+[lib]
+path = "src/lib.rs"
+

@@ -1,0 +1,6712 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { runBooleanMultiple } from "@/advanced/geom/boolean";
+import { anchorsToPathData, ellipseToPath, pathDataToAnchors, pathDataToBounds, pathDataToPolygon, rectToPath, type PathAnchor } from "@/advanced/geom/pathData";
+import { DEFAULT_AUTO_LAYOUT, DEFAULT_LAYOUT_SIZING, resolveAutoLayout, resolveLayoutSizing } from "@/v2/editor/auto-layout";
+import { normalizeTextRanges, resolveRichTextRuns, splitRichTextRunsByParagraph } from "@/v2/editor/rich-text-model";
+import type {
+  AutoLayoutAlign,
+  AutoLayoutData,
+  AutoLayoutDirection,
+  AutoLayoutGapMode,
+  AutoLayoutJustify,
+  AutoLayoutWrapAlign,
+  EditorCommand,
+  EditorBridge,
+  EditorRect,
+  EditorSnapshot,
+  HorizontalConstraint,
+  LayoutSizing,
+  LayoutSizingAxis,
+  MoveSnapPreview,
+  ReorderNodePosition,
+  RuntimeGraph,
+  SceneGuide,
+  SceneNode,
+  ResizeSnapPreview,
+  SnapGuide,
+  TextAlign,
+  TextCase,
+  TextSizingMode,
+  TextRange,
+  TextStylePatch,
+  ShapePrimitive,
+  ShapePathHandle,
+  ShapePathData,
+  ShapeStylePatch,
+  TransformHandle,
+  ValidationReport,
+  VerticalConstraint,
+  WasmBridgeInfo,
+} from "@/v2/editor/contracts";
+import { loadEditorBridge } from "@/v2/editor/bridge/load-editor-bridge";
+import { sampleSceneDoc } from "@/v2/editor/sample-doc";
+const CANVAS_PAGE_ID = sampleSceneDoc.pages[0]?.id ?? "page-home";
+
+type DragMarquee = {
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+  additive: boolean;
+};
+
+type DragPan = {
+  originClientX: number;
+  originClientY: number;
+  startViewportX: number;
+  startViewportY: number;
+};
+
+type DragMove = {
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+};
+
+type DragTransform = {
+  handle: TransformHandle["kind"];
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+  lockAspect: boolean;
+};
+
+type DragGuide = {
+  guideId: string;
+  axis: "x" | "y";
+  currentPosition: number;
+};
+
+type DragPathPoint = {
+  nodeId: string;
+  pointIndex: number;
+  points: ShapePathData["points"];
+  closed: boolean;
+  currentX: number;
+  currentY: number;
+};
+
+type PathHandleKey = "handleIn" | "handleOut";
+
+type DragPathHandle = {
+  nodeId: string;
+  pointIndex: number;
+  handleKey: PathHandleKey;
+  points: ShapePathData["points"];
+  closed: boolean;
+  currentX: number;
+  currentY: number;
+};
+
+type EditorTool = "select" | "path";
+
+type PathDraft = {
+  points: ShapePathData["points"];
+  closed: boolean;
+};
+
+type ShapeBooleanOp = "union" | "subtract" | "intersect" | "exclude";
+
+type CanvasSize = {
+  width: number;
+  height: number;
+};
+
+type RulerTick = {
+  value: number;
+  position: number;
+  major: boolean;
+};
+
+const HORIZONTAL_CONSTRAINT_OPTIONS: HorizontalConstraint[] = ["min", "max", "stretch", "scale"];
+const VERTICAL_CONSTRAINT_OPTIONS: VerticalConstraint[] = ["min", "max", "stretch", "scale"];
+const AUTO_LAYOUT_DIRECTION_OPTIONS: AutoLayoutDirection[] = ["horizontal", "vertical"];
+const AUTO_LAYOUT_ALIGN_OPTIONS: Record<AutoLayoutDirection, AutoLayoutAlign[]> = {
+  horizontal: ["start", "center", "end", "stretch", "baseline"],
+  vertical: ["start", "center", "end", "stretch"],
+};
+const AUTO_LAYOUT_JUSTIFY_OPTIONS: AutoLayoutJustify[] = ["start", "center", "end"];
+const AUTO_LAYOUT_GAP_MODE_OPTIONS: AutoLayoutGapMode[] = ["fixed", "space_between"];
+const AUTO_LAYOUT_WRAP_ALIGN_OPTIONS: AutoLayoutWrapAlign[] = ["start", "center", "end", "space_between"];
+const LAYOUT_SIZING_OPTIONS: LayoutSizing[] = ["fixed", "fill", "hug"];
+const TEXT_ALIGN_OPTIONS: TextAlign[] = ["left", "center", "right", "justify"];
+const TEXT_CASE_OPTIONS: TextCase[] = ["none", "upper", "lower", "capitalize"];
+const TEXT_SIZING_OPTIONS: TextSizingMode[] = ["fixed", "auto_height"];
+const FONT_FAMILY_OPTIONS = [
+  "Inter",
+  "SF Pro Display",
+  "Pretendard",
+  "Noto Sans KR",
+  "Geist",
+  "Roboto",
+  "system-ui",
+] as const;
+const SHAPE_PRIMITIVE_OPTIONS: ShapePrimitive[] = ["rect", "ellipse", "line", "path"];
+const EMPTY_MOVE_SNAP_PREVIEW: MoveSnapPreview = { deltaX: 0, deltaY: 0, guides: [] };
+const EMPTY_RESIZE_SNAP_PREVIEW: ResizeSnapPreview = {
+  bounds: null,
+  deltaX: 0,
+  deltaY: 0,
+  guides: [],
+};
+
+function clonePathHandle(handle: ShapePathHandle | undefined) {
+  return handle ? { ...handle } : undefined;
+}
+
+function reversePathPoints(points: ShapePathData["points"]) {
+  return structuredClone(points)
+    .reverse()
+    .map((point) => ({
+      ...point,
+      handleIn: clonePathHandle(point.handleOut),
+      handleOut: clonePathHandle(point.handleIn),
+    }));
+}
+
+function textDecorationValue(style: { underline?: boolean; lineThrough?: boolean }) {
+  const values: string[] = [];
+  if (style.underline) {
+    values.push("underline");
+  }
+  if (style.lineThrough) {
+    values.push("line-through");
+  }
+  return values.length ? values.join(" ") : "none";
+}
+
+function textTransformValue(textCase: TextCase) {
+  switch (textCase) {
+    case "upper":
+      return "uppercase";
+    case "lower":
+      return "lowercase";
+    case "capitalize":
+      return "capitalize";
+    default:
+      return "none";
+  }
+}
+
+function addTextRange(text: NonNullable<SceneNode["text"]>): TextRange[] {
+  const length = text.content.length;
+  if (length <= 0) {
+    return text.ranges ?? [];
+  }
+
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  const lastRange = ranges[ranges.length - 1];
+  const start = lastRange ? Math.min(Math.max(lastRange.end, 0), Math.max(length - 1, 0)) : 0;
+  const end = Math.min(length, Math.max(start + 1, length));
+
+  return normalizeTextRanges(text.content, [
+    ...ranges,
+    {
+      start,
+      end,
+      style: { fontWeight: 700 },
+    },
+  ]) ?? [];
+}
+
+function buildParagraphTextRanges(text: NonNullable<SceneNode["text"]>): TextRange[] {
+  if (!text.content.length) {
+    return text.ranges ?? [];
+  }
+
+  const segments = text.content.split("\n");
+  const ranges: TextRange[] = [];
+  let cursor = 0;
+  segments.forEach((segment, index) => {
+    const start = cursor;
+    const end = cursor + segment.length;
+    if (end > start) {
+      ranges.push({
+        start,
+        end,
+        style: {
+          fontWeight: index === 0 ? 700 : 500,
+          ...(index % 2 === 1 ? { color: "#2859ff" } : {}),
+        },
+      });
+    }
+    cursor = end + 1;
+  });
+
+  return normalizeTextRanges(text.content, ranges) ?? [];
+}
+
+function buildWordTextRanges(text: NonNullable<SceneNode["text"]>): TextRange[] {
+  const matches = Array.from(text.content.matchAll(/\S+/gu));
+  if (!matches.length) {
+    return text.ranges ?? [];
+  }
+
+  return normalizeTextRanges(
+    text.content,
+    matches.map((match, index) => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      style: {
+        fontWeight: index % 2 === 0 ? 700 : 600,
+        ...(index % 2 === 1 ? { color: "#2859ff" } : {}),
+      },
+    })),
+  ) ?? [];
+}
+
+function createTextRangeFromSelection(
+  text: NonNullable<SceneNode["text"]>,
+  start: number,
+  end: number,
+): TextRange[] {
+  if (end <= start) {
+    return normalizeTextRanges(text.content, text.ranges) ?? [];
+  }
+
+  return normalizeTextRanges(text.content, [
+    ...(normalizeTextRanges(text.content, text.ranges) ?? []),
+    {
+      start,
+      end,
+      style: {
+        fontWeight: 700,
+      },
+    },
+  ]) ?? [];
+}
+
+function updateTextRange(
+  text: NonNullable<SceneNode["text"]>,
+  index: number,
+  patch: Partial<TextRange>,
+): TextRange[] {
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  if (!ranges[index]) {
+    return ranges;
+  }
+
+  return normalizeTextRanges(
+    text.content,
+    ranges.map((range, rangeIndex) =>
+      rangeIndex === index
+        ? {
+            start: patch.start ?? range.start,
+            end: patch.end ?? range.end,
+            style: patch.style ?? range.style,
+          }
+        : range,
+    ),
+  ) ?? [];
+}
+
+function updateTextRangeStyle(
+  text: NonNullable<SceneNode["text"]>,
+  index: number,
+  style: TextStylePatch,
+): TextRange[] {
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  const current = ranges[index];
+  if (!current) {
+    return ranges;
+  }
+
+  return updateTextRange(text, index, {
+    style: {
+      ...(current.style ?? {}),
+      ...style,
+    },
+  });
+}
+
+function removeTextRange(text: NonNullable<SceneNode["text"]>, index: number): TextRange[] {
+  return (normalizeTextRanges(text.content, text.ranges) ?? []).filter(
+    (_range, rangeIndex) => rangeIndex !== index,
+  );
+}
+
+function clearTextRangeStyle(text: NonNullable<SceneNode["text"]>, index: number): TextRange[] {
+  return updateTextRange(text, index, { style: undefined });
+}
+
+function clearTextSelectionStyles(
+  text: NonNullable<SceneNode["text"]>,
+  start: number,
+  end: number,
+): TextRange[] {
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  if (end <= start) {
+    return ranges;
+  }
+
+  return normalizeTextRanges(
+    text.content,
+    ranges.flatMap((range) => {
+      if (range.end <= start || range.start >= end) {
+        return [range];
+      }
+
+      const next: TextRange[] = [];
+      if (range.start < start) {
+        next.push({
+          start: range.start,
+          end: start,
+          ...(range.style ? { style: { ...range.style } } : {}),
+        });
+      }
+      if (range.end > end) {
+        next.push({
+          start: end,
+          end: range.end,
+          ...(range.style ? { style: { ...range.style } } : {}),
+        });
+      }
+
+      return next;
+    }),
+  ) ?? [];
+}
+
+function applyTextStyleToSelection(
+  text: NonNullable<SceneNode["text"]>,
+  start: number,
+  end: number,
+  style: TextStylePatch,
+): TextRange[] {
+  if (end <= start) {
+    return normalizeTextRanges(text.content, text.ranges) ?? [];
+  }
+
+  return normalizeTextRanges(text.content, [
+    ...(normalizeTextRanges(text.content, text.ranges) ?? []),
+    {
+      start,
+      end,
+      style: { ...style },
+    },
+  ]) ?? [];
+}
+
+function resolveTextStyleAtIndex(
+  text: NonNullable<SceneNode["text"]>,
+  index: number,
+): TextStylePatch {
+  const base: TextStylePatch = {
+    fontFamily: text.fontFamily,
+    fontSize: text.fontSize,
+    fontWeight: text.fontWeight,
+    lineHeight: text.lineHeight,
+    letterSpacing: text.letterSpacing,
+    paragraphSpacing: text.paragraphSpacing,
+    align: text.align,
+    color: text.color,
+    textCase: text.textCase,
+    italic: text.italic,
+    underline: text.underline,
+    lineThrough: text.lineThrough,
+  };
+
+  const ranges = normalizeTextRanges(text.content, text.ranges) ?? [];
+  return ranges
+    .filter((range) => range.start <= index && range.end > index)
+    .reduce<TextStylePatch>((current, range) => ({ ...current, ...(range.style ?? {}) }), base);
+}
+
+function getTextRangePreview(text: NonNullable<SceneNode["text"]>, index: number, maxLength = 20) {
+  const range = (normalizeTextRanges(text.content, text.ranges) ?? [])[index];
+  if (!range) {
+    return "";
+  }
+  const preview = text.content.slice(range.start, range.end).replace(/\s+/g, " ").trim();
+  if (preview.length <= maxLength) {
+    return preview;
+  }
+  return `${preview.slice(0, Math.max(maxLength - 1, 0))}…`;
+}
+
+function summarizeTextStylePatch(style: TextStylePatch | undefined): string[] {
+  if (!style) {
+    return ["Inherited"];
+  }
+
+  const summary: string[] = [];
+  if (style.fontFamily) {
+    summary.push(style.fontFamily);
+  }
+  if (typeof style.fontSize === "number") {
+    summary.push(`${style.fontSize}px`);
+  }
+  if (typeof style.fontWeight === "number") {
+    summary.push(style.fontWeight >= 700 ? "Bold" : `${style.fontWeight}`);
+  }
+  if (style.color) {
+    summary.push(style.color.toUpperCase());
+  }
+  if (style.italic) {
+    summary.push("Italic");
+  }
+  if (style.underline) {
+    summary.push("Underline");
+  }
+  if (style.lineThrough) {
+    summary.push("Strike");
+  }
+  if (style.align) {
+    summary.push(style.align);
+  }
+  if (style.textCase && style.textCase !== "none") {
+    summary.push(style.textCase);
+  }
+
+  return summary.length ? summary : ["Inherited"];
+}
+
+function summarizeShapeStylePatch(style: ShapeStylePatch | undefined): string[] {
+  if (!style) {
+    return ["Inherited"];
+  }
+
+  const summary: string[] = [];
+  if (style.fill) {
+    summary.push(`Fill ${style.fill.toUpperCase()}`);
+  }
+  if (style.strokeColor) {
+    summary.push(`Stroke ${style.strokeColor.toUpperCase()}`);
+  }
+  if (typeof style.strokeWidth === "number") {
+    summary.push(`${style.strokeWidth}px stroke`);
+  }
+  if (typeof style.cornerRadius === "number") {
+    summary.push(`Radius ${style.cornerRadius}`);
+  }
+  if (typeof style.opacity === "number") {
+    summary.push(`${Math.round(style.opacity * 100)}% opacity`);
+  }
+
+  return summary.length ? summary : ["Inherited"];
+}
+
+function createDefaultShapePath(frame: EditorRect): ShapePathData {
+  return {
+    closed: true,
+    points: [
+      { x: 0, y: Math.max(frame.h - 16, 0) },
+      { x: Math.max(frame.w * 0.28, 1), y: 12 },
+      { x: Math.max(frame.w * 0.6, 1), y: Math.max(frame.h * 0.55, 1) },
+      { x: Math.max(frame.w - 12, 1), y: 0 },
+      { x: frame.w, y: Math.max(frame.h - 8, 1) },
+    ],
+  };
+}
+
+function shapePathToSvgD(path: ShapePathData | undefined) {
+  if (!path || path.points.length === 0) {
+    return "";
+  }
+
+  const [first, ...rest] = path.points;
+  const segments = [`M ${first.x} ${first.y}`];
+  let previous = first;
+
+  for (const point of rest) {
+    const controlOut = previous.handleOut;
+    const controlIn = point.handleIn;
+    if (controlOut || controlIn) {
+      const resolvedOut = controlOut ?? previous;
+      const resolvedIn = controlIn ?? point;
+      segments.push(
+        `C ${resolvedOut.x} ${resolvedOut.y} ${resolvedIn.x} ${resolvedIn.y} ${point.x} ${point.y}`,
+      );
+    } else {
+      segments.push(`L ${point.x} ${point.y}`);
+    }
+    previous = point;
+  }
+
+  if (path.closed) {
+    const last = path.points[path.points.length - 1];
+    if (last && last !== first) {
+      const controlOut = last.handleOut;
+      const controlIn = first.handleIn;
+      if (controlOut || controlIn) {
+        const resolvedOut = controlOut ?? last;
+        const resolvedIn = controlIn ?? first;
+        segments.push(
+          `C ${resolvedOut.x} ${resolvedOut.y} ${resolvedIn.x} ${resolvedIn.y} ${first.x} ${first.y}`,
+        );
+      }
+    }
+    segments.push("Z");
+  }
+  return segments.join(" ");
+}
+
+function roundLocalPoint(value: ShapePathHandle) {
+  return {
+    x: Number(value.x.toFixed(3)),
+    y: Number(value.y.toFixed(3)),
+  };
+}
+
+function applyDraggedPathPointToPoints(
+  points: ShapePathData["points"],
+  pointIndex: number,
+  currentX: number,
+  currentY: number,
+) {
+  const nextPoints = structuredClone(points);
+  const originalPoint = nextPoints[pointIndex];
+  if (!originalPoint) {
+    return nextPoints;
+  }
+
+  const deltaX = currentX - originalPoint.x;
+  const deltaY = currentY - originalPoint.y;
+  nextPoints[pointIndex] = {
+    ...originalPoint,
+    x: currentX,
+    y: currentY,
+    ...(originalPoint.handleIn
+      ? {
+          handleIn: roundLocalPoint({
+            x: originalPoint.handleIn.x + deltaX,
+            y: originalPoint.handleIn.y + deltaY,
+          }),
+        }
+      : {}),
+    ...(originalPoint.handleOut
+      ? {
+          handleOut: roundLocalPoint({
+            x: originalPoint.handleOut.x + deltaX,
+            y: originalPoint.handleOut.y + deltaY,
+          }),
+        }
+      : {}),
+  };
+
+  return nextPoints;
+}
+
+function applyDraggedPathHandleToPoints(
+  points: ShapePathData["points"],
+  pointIndex: number,
+  handleKey: PathHandleKey,
+  currentX: number,
+  currentY: number,
+) {
+  const nextPoints = structuredClone(points);
+  const originalPoint = nextPoints[pointIndex];
+  if (!originalPoint) {
+    return nextPoints;
+  }
+
+  nextPoints[pointIndex] = {
+    ...originalPoint,
+    [handleKey]: roundLocalPoint({
+      x: currentX,
+      y: currentY,
+    }),
+  };
+
+  return nextPoints;
+}
+
+function localShapePointFromCanvas(
+  node: SceneNode,
+  canvasX: number,
+  canvasY: number,
+  frame: EditorRect = node.frame,
+) {
+  const centerX = frame.x + frame.w / 2;
+  const centerY = frame.y + frame.h / 2;
+  const radians = (-frame.rotation * Math.PI) / 180;
+  const dx = canvasX - centerX;
+  const dy = canvasY - centerY;
+  const localX = dx * Math.cos(radians) - dy * Math.sin(radians) + frame.w / 2;
+  const localY = dx * Math.sin(radians) + dy * Math.cos(radians) + frame.h / 2;
+
+  return {
+    x: Number(localX.toFixed(3)),
+    y: Number(localY.toFixed(3)),
+  };
+}
+
+function nodeCanvasPointFromLocal(node: SceneNode, localX: number, localY: number, frame: EditorRect = node.frame) {
+  const centerX = frame.x + frame.w / 2;
+  const centerY = frame.y + frame.h / 2;
+  const radians = (frame.rotation * Math.PI) / 180;
+  const dx = localX - frame.w / 2;
+  const dy = localY - frame.h / 2;
+
+  return {
+    x: dx * Math.cos(radians) - dy * Math.sin(radians) + centerX,
+    y: dx * Math.sin(radians) + dy * Math.cos(radians) + centerY,
+  };
+}
+
+function localShapePathToAnchors(path: ShapePathData): PathAnchor[] {
+  return path.points.map((point) => ({
+    x: point.x,
+    y: point.y,
+    handle1X: point.handleIn?.x,
+    handle1Y: point.handleIn?.y,
+    handle2X: point.handleOut?.x,
+    handle2Y: point.handleOut?.y,
+  }));
+}
+
+function transformAnchorsToCanvas(node: SceneNode, anchors: PathAnchor[], frame: EditorRect = node.frame) {
+  return anchors.map((anchor) => {
+    const origin = nodeCanvasPointFromLocal(node, anchor.x, anchor.y, frame);
+    const handleIn =
+      anchor.handle1X != null && anchor.handle1Y != null
+        ? nodeCanvasPointFromLocal(node, anchor.handle1X, anchor.handle1Y, frame)
+        : null;
+    const handleOut =
+      anchor.handle2X != null && anchor.handle2Y != null
+        ? nodeCanvasPointFromLocal(node, anchor.handle2X, anchor.handle2Y, frame)
+        : null;
+
+    return {
+      x: origin.x,
+      y: origin.y,
+      ...(handleIn
+        ? {
+            handle1X: handleIn.x,
+            handle1Y: handleIn.y,
+          }
+        : {}),
+      ...(handleOut
+        ? {
+            handle2X: handleOut.x,
+            handle2Y: handleOut.y,
+          }
+        : {}),
+    } satisfies PathAnchor;
+  });
+}
+
+function nodeToAbsolutePathD(node: SceneNode, frame: EditorRect = node.frame) {
+  if (node.kind !== "shape" || !node.shape) {
+    return null;
+  }
+
+  let localPathD: string | null = null;
+  switch (node.shape.primitive) {
+    case "rect":
+      localPathD = rectToPath({ x: 0, y: 0, w: frame.w, h: frame.h });
+      break;
+    case "ellipse":
+      localPathD = ellipseToPath({ x: 0, y: 0, w: frame.w, h: frame.h });
+      break;
+    case "line":
+      return null;
+    case "path":
+      if (!node.shape.path) {
+        return null;
+      }
+      localPathD = anchorsToPathData(localShapePathToAnchors(node.shape.path), node.shape.path.closed);
+      break;
+  }
+
+  if (!localPathD) {
+    return null;
+  }
+
+  const { anchors, closed } = pathDataToAnchors(localPathD);
+  const absoluteAnchors = transformAnchorsToCanvas(node, anchors, frame);
+  return anchorsToPathData(absoluteAnchors, closed);
+}
+
+function pathDToLocalShapePath(pathD: string) {
+  const { anchors, closed } = pathDataToAnchors(pathD);
+  const bounds = pathDataToBounds(pathD);
+  const points = anchors.map((anchor) => ({
+    x: Number((anchor.x - bounds.x).toFixed(3)),
+    y: Number((anchor.y - bounds.y).toFixed(3)),
+    ...(anchor.handle1X != null && anchor.handle1Y != null
+      ? {
+          handleIn: roundLocalPoint({
+            x: anchor.handle1X - bounds.x,
+            y: anchor.handle1Y - bounds.y,
+          }),
+        }
+      : {}),
+    ...(anchor.handle2X != null && anchor.handle2Y != null
+      ? {
+          handleOut: roundLocalPoint({
+            x: anchor.handle2X - bounds.x,
+            y: anchor.handle2Y - bounds.y,
+          }),
+        }
+      : {}),
+  }));
+
+  return {
+    frame: {
+      x: Number(bounds.x.toFixed(3)),
+      y: Number(bounds.y.toFixed(3)),
+      w: Number(bounds.w.toFixed(3)),
+      h: Number(bounds.h.toFixed(3)),
+      rotation: 0,
+    } satisfies EditorRect,
+    path: {
+      points,
+      closed,
+    } satisfies ShapePathData,
+  };
+}
+
+function createCurveHandles(
+  points: ShapePathData["points"],
+  pointIndex: number,
+  closed: boolean,
+) {
+  const point = points[pointIndex];
+  if (!point) {
+    return null;
+  }
+
+  const previous =
+    points[pointIndex - 1] ?? (closed ? points[points.length - 1] : undefined) ?? point;
+  const next = points[pointIndex + 1] ?? (closed ? points[0] : undefined) ?? point;
+  const tangentX = next.x - previous.x;
+  const tangentY = next.y - previous.y;
+  const length = Math.hypot(tangentX, tangentY) || 1;
+  const distance = Math.min(40, Math.max(12, length * 0.2));
+  const unitX = tangentX / length;
+  const unitY = tangentY / length;
+
+  return {
+    handleIn: roundLocalPoint({
+      x: point.x - unitX * distance,
+      y: point.y - unitY * distance,
+    }),
+    handleOut: roundLocalPoint({
+      x: point.x + unitX * distance,
+      y: point.y + unitY * distance,
+    }),
+  };
+}
+
+function withDraggedPathPoint(
+  nodeId: string,
+  path: ShapePathData | undefined,
+  dragPathPoint: DragPathPoint | null,
+) {
+  if (!path) {
+    return path;
+  }
+
+  if (!dragPathPoint || dragPathPoint.nodeId !== nodeId) {
+    return path;
+  }
+
+  return {
+    closed: dragPathPoint.closed,
+    points: applyDraggedPathPointToPoints(
+      dragPathPoint.points,
+      dragPathPoint.pointIndex,
+      dragPathPoint.currentX,
+      dragPathPoint.currentY,
+    ),
+  };
+}
+
+function withDraggedPathHandle(
+  nodeId: string,
+  path: ShapePathData | undefined,
+  dragPathHandle: DragPathHandle | null,
+) {
+  if (!path) {
+    return path;
+  }
+
+  if (!dragPathHandle || dragPathHandle.nodeId !== nodeId) {
+    return path;
+  }
+
+  return {
+    closed: dragPathHandle.closed,
+    points: applyDraggedPathHandleToPoints(
+      dragPathHandle.points,
+      dragPathHandle.pointIndex,
+      dragPathHandle.handleKey,
+      dragPathHandle.currentX,
+      dragPathHandle.currentY,
+    ),
+  };
+}
+
+function supportsAutoLayout(node: SceneNode | null) {
+  return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
+}
+
+function supportsComponentPromotion(node: SceneNode | null) {
+  return Boolean(node && (node.kind === "frame" || node.kind === "group" || node.kind === "component"));
+}
+
+function isComponentNode(node: SceneNode | null) {
+  return Boolean(node && node.kind === "component" && node.component);
+}
+
+function isInstanceNode(node: SceneNode | null) {
+  return Boolean(node && node.kind === "instance" && node.instance);
+}
+
+function supportsShapeEditing(node: SceneNode | null) {
+  return Boolean(node && node.kind === "shape" && node.shape);
+}
+
+function flattenNodes(snapshot: EditorSnapshot | null) {
+  return snapshot?.doc.pages.flatMap((page) => page.nodes) ?? [];
+}
+
+function selectedNode(nodes: SceneNode[], selection: string[]) {
+  if (selection.length === 0) {
+    return null;
+  }
+
+  return nodes.find((node) => node.id === selection[0]) ?? null;
+}
+
+function buildNodeMap(nodes: SceneNode[]) {
+  return new Map(nodes.map((node) => [node.id, node]));
+}
+
+function normalizeRotation(value: number) {
+  const normalized = ((value % 360) + 360) % 360;
+  return normalized > 180 ? normalized - 360 : normalized;
+}
+
+function resolveAbsoluteNodeFrame(
+  nodeId: string,
+  nodeMap: Map<string, SceneNode>,
+  cache: Map<string, EditorRect>,
+  lineage = new Set<string>(),
+): EditorRect | null {
+  const cached = cache.get(nodeId);
+  if (cached) {
+    return cached;
+  }
+
+  const node = nodeMap.get(nodeId);
+  if (!node) {
+    return null;
+  }
+
+  if (lineage.has(nodeId)) {
+    return {
+      ...node.frame,
+    };
+  }
+
+  lineage.add(nodeId);
+  const parentFrame = node.parentId
+    ? resolveAbsoluteNodeFrame(node.parentId, nodeMap, cache, lineage)
+    : null;
+  lineage.delete(nodeId);
+
+  const frame = parentFrame
+    ? {
+        ...node.frame,
+        x: parentFrame.x + node.frame.x,
+        y: parentFrame.y + node.frame.y,
+        rotation: normalizeRotation(parentFrame.rotation + node.frame.rotation),
+      }
+    : {
+        ...node.frame,
+      };
+  cache.set(nodeId, frame);
+  return frame;
+}
+
+function buildAbsoluteNodeFrameMap(nodes: SceneNode[]) {
+  const nodeMap = buildNodeMap(nodes);
+  const cache = new Map<string, EditorRect>();
+  nodes.forEach((node) => {
+    resolveAbsoluteNodeFrame(node.id, nodeMap, cache);
+  });
+  return cache;
+}
+
+function nodeAffectedBySelectionMove(
+  nodeId: string,
+  selectionSet: Set<string>,
+  nodeMap: Map<string, SceneNode>,
+) {
+  let current = nodeMap.get(nodeId) ?? null;
+  while (current) {
+    if (selectionSet.has(current.id)) {
+      return true;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return false;
+}
+
+function hasSelectedAncestor(
+  node: SceneNode,
+  selectionSet: Set<string>,
+  nodeMap: Map<string, SceneNode>,
+) {
+  let current = node.parentId ? (nodeMap.get(node.parentId) ?? null) : null;
+  while (current) {
+    if (selectionSet.has(current.id)) {
+      return true;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return false;
+}
+
+function orderedLayerChildIds(
+  page: NonNullable<EditorSnapshot["doc"]["pages"][number]>,
+  parent: SceneNode,
+) {
+  if (parent.children?.length) {
+    return parent.children;
+  }
+
+  return page.nodes
+    .filter((node) => node.parentId === parent.id)
+    .map((node) => node.id);
+}
+
+function ancestorNodeIds(node: SceneNode | null, nodeMap: Map<string, SceneNode>) {
+  const ids: string[] = [];
+  let current = node?.parentId ? (nodeMap.get(node.parentId) ?? null) : null;
+  while (current) {
+    ids.push(current.id);
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return ids;
+}
+
+function isNodeWithinAncestor(
+  nodeId: string,
+  ancestorId: string,
+  nodeMap: Map<string, SceneNode>,
+) {
+  let current = nodeMap.get(nodeId) ?? null;
+  while (current) {
+    if (current.id === ancestorId) {
+      return true;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return false;
+}
+
+function findNearestInstanceRoot(node: SceneNode | null, nodeMap: Map<string, SceneNode>) {
+  let current = node;
+  while (current) {
+    if (current.kind === "instance" && current.instance) {
+      return current;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return null;
+}
+
+function normalizeRect({ originX, originY, currentX, currentY }: DragMarquee): EditorRect {
+  const x = Math.min(originX, currentX);
+  const y = Math.min(originY, currentY);
+  const w = Math.abs(currentX - originX);
+  const h = Math.abs(currentY - originY);
+
+  return { x, y, w, h, rotation: 0 };
+}
+
+function selectionSummary(selection: string[]) {
+  if (selection.length === 0) {
+    return "No selection";
+  }
+
+  if (selection.length === 1) {
+    return "1 layer selected";
+  }
+
+  return `${selection.length} layers selected`;
+}
+
+function offsetRect(rect: EditorRect, deltaX: number, deltaY: number): EditorRect {
+  return {
+    ...rect,
+    x: rect.x + deltaX,
+    y: rect.y + deltaY,
+  };
+}
+
+function resizePreviewBounds(
+  bounds: EditorRect,
+  handle: TransformHandle["kind"],
+  deltaX: number,
+  deltaY: number,
+  lockAspect: boolean,
+): EditorRect {
+  const minSize = 1;
+  let left = bounds.x;
+  let top = bounds.y;
+  let right = bounds.x + bounds.w;
+  let bottom = bounds.y + bounds.h;
+
+  switch (handle) {
+    case "n":
+      top += deltaY;
+      break;
+    case "ne":
+      top += deltaY;
+      right += deltaX;
+      break;
+    case "e":
+      right += deltaX;
+      break;
+    case "se":
+      right += deltaX;
+      bottom += deltaY;
+      break;
+    case "s":
+      bottom += deltaY;
+      break;
+    case "sw":
+      left += deltaX;
+      bottom += deltaY;
+      break;
+    case "w":
+      left += deltaX;
+      break;
+    case "nw":
+      left += deltaX;
+      top += deltaY;
+      break;
+    case "rotate":
+      break;
+  }
+
+  if (lockAspect) {
+    const aspect = bounds.h !== 0 ? bounds.w / bounds.h : 1;
+    const currentW = Math.max(right - left, minSize);
+    const currentH = Math.max(bottom - top, minSize);
+
+    if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+      const adjustedH = currentW / Math.max(aspect, 0.0001);
+      if (handle === "nw" || handle === "ne") {
+        top = bottom - adjustedH;
+      } else if (handle === "sw" || handle === "se") {
+        bottom = top + adjustedH;
+      }
+    } else {
+      const adjustedW = currentH * aspect;
+      if (handle === "nw" || handle === "sw") {
+        left = right - adjustedW;
+      } else if (handle === "ne" || handle === "se") {
+        right = left + adjustedW;
+      }
+    }
+  }
+
+  if (right - left < minSize) {
+    if (handle === "w" || handle === "nw" || handle === "sw") {
+      left = right - minSize;
+    } else {
+      right = left + minSize;
+    }
+  }
+
+  if (bottom - top < minSize) {
+    if (handle === "n" || handle === "nw" || handle === "ne") {
+      top = bottom - minSize;
+    } else {
+      bottom = top + minSize;
+    }
+  }
+
+  return {
+    ...bounds,
+    x: left,
+    y: top,
+    w: Math.max(right - left, minSize),
+    h: Math.max(bottom - top, minSize),
+  };
+}
+
+function buildTransformHandles(bounds: EditorRect | null): TransformHandle[] {
+  if (!bounds) {
+    return [];
+  }
+
+  const left = bounds.x;
+  const centerX = bounds.x + bounds.w / 2;
+  const right = bounds.x + bounds.w;
+  const top = bounds.y;
+  const centerY = bounds.y + bounds.h / 2;
+  const bottom = bounds.y + bounds.h;
+  const rotateOffset = 28;
+
+  return [
+    { kind: "nw", x: left, y: top, cursor: "nwse-resize" },
+    { kind: "n", x: centerX, y: top, cursor: "ns-resize" },
+    { kind: "ne", x: right, y: top, cursor: "nesw-resize" },
+    { kind: "e", x: right, y: centerY, cursor: "ew-resize" },
+    { kind: "se", x: right, y: bottom, cursor: "nwse-resize" },
+    { kind: "s", x: centerX, y: bottom, cursor: "ns-resize" },
+    { kind: "sw", x: left, y: bottom, cursor: "nesw-resize" },
+    { kind: "w", x: left, y: centerY, cursor: "ew-resize" },
+    { kind: "rotate", x: centerX, y: top - rotateOffset, cursor: "grab" },
+  ];
+}
+
+function angleDeltaFromBounds(
+  bounds: EditorRect,
+  originX: number,
+  originY: number,
+  currentX: number,
+  currentY: number,
+) {
+  const centerX = bounds.x + bounds.w / 2;
+  const centerY = bounds.y + bounds.h / 2;
+  const originAngle = Math.atan2(originY - centerY, originX - centerX);
+  const currentAngle = Math.atan2(currentY - centerY, currentX - centerX);
+  return ((currentAngle - originAngle) * 180) / Math.PI;
+}
+
+function rectAnchors(rect: EditorRect) {
+  return {
+    left: rect.x,
+    centerX: rect.x + rect.w / 2,
+    right: rect.x + rect.w,
+    top: rect.y,
+    centerY: rect.y + rect.h / 2,
+    bottom: rect.y + rect.h,
+  };
+}
+
+function computeMoveSnap(
+  selectionBounds: EditorRect | null,
+  delta: { x: number; y: number } | null,
+  targetRects: EditorRect[],
+  targetGuides: SceneGuide[] = [],
+  threshold = 8,
+) {
+  if (!selectionBounds || !delta) {
+    return {
+      deltaX: delta?.x ?? 0,
+      deltaY: delta?.y ?? 0,
+      guides: [] as SnapGuide[],
+    };
+  }
+
+  const movedBounds = offsetRect(selectionBounds, delta.x, delta.y);
+  const moved = rectAnchors(movedBounds);
+
+  let bestX: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+  let bestY: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+
+  for (const target of targetRects) {
+    const anchors = rectAnchors(target);
+    const xValues = [anchors.left, anchors.centerX, anchors.right];
+    const yValues = [anchors.top, anchors.centerY, anchors.bottom];
+    const movedXValues = [moved.left, moved.centerX, moved.right];
+    const movedYValues = [moved.top, moved.centerY, moved.bottom];
+
+    for (const currentX of movedXValues) {
+      for (const targetX of xValues) {
+        const adjust = targetX - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: targetX,
+            spanStart: Math.min(moved.top, anchors.top),
+            spanEnd: Math.max(moved.bottom, anchors.bottom),
+          };
+        }
+      }
+    }
+
+    for (const currentY of movedYValues) {
+      for (const targetY of yValues) {
+        const adjust = targetY - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: targetY,
+            spanStart: Math.min(moved.left, anchors.left),
+            spanEnd: Math.max(moved.right, anchors.right),
+          };
+        }
+      }
+    }
+  }
+
+  for (const guide of targetGuides) {
+    if (guide.axis === "x") {
+      for (const currentX of [moved.left, moved.centerX, moved.right]) {
+        const adjust = guide.position - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: guide.position,
+            spanStart: moved.top,
+            spanEnd: moved.bottom,
+          };
+        }
+      }
+    } else {
+      for (const currentY of [moved.top, moved.centerY, moved.bottom]) {
+        const adjust = guide.position - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: guide.position,
+            spanStart: moved.left,
+            spanEnd: moved.right,
+          };
+        }
+      }
+    }
+  }
+
+  const guides: SnapGuide[] = [];
+  if (bestX) {
+    guides.push({
+      axis: "x",
+      position: bestX.position,
+      spanStart: bestX.spanStart,
+      spanEnd: bestX.spanEnd,
+    });
+  }
+  if (bestY) {
+    guides.push({
+      axis: "y",
+      position: bestY.position,
+      spanStart: bestY.spanStart,
+      spanEnd: bestY.spanEnd,
+    });
+  }
+
+  return {
+    deltaX: delta.x + (bestX?.adjust ?? 0),
+    deltaY: delta.y + (bestY?.adjust ?? 0),
+    guides,
+  };
+}
+
+function computeResizeSnap(
+  originalBounds: EditorRect | null,
+  previewBounds: EditorRect | null,
+  handle: TransformHandle["kind"] | null,
+  targetRects: EditorRect[],
+  targetGuides: SceneGuide[] = [],
+  threshold = 8,
+) {
+  if (!originalBounds || !previewBounds || !handle || handle === "rotate") {
+    return {
+      bounds: previewBounds,
+      deltaX: 0,
+      deltaY: 0,
+      guides: [] as SnapGuide[],
+    };
+  }
+
+  const preview = rectAnchors(previewBounds);
+  let bestX: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+  let bestY: { adjust: number; position: number; spanStart: number; spanEnd: number } | null = null;
+
+  const activeXKeys =
+    handle === "e" || handle === "ne" || handle === "se"
+      ? (["right"] as const)
+      : handle === "w" || handle === "nw" || handle === "sw"
+        ? (["left"] as const)
+        : ([] as const);
+  const activeYKeys =
+    handle === "s" || handle === "se" || handle === "sw"
+      ? (["bottom"] as const)
+      : handle === "n" || handle === "ne" || handle === "nw"
+        ? (["top"] as const)
+        : ([] as const);
+
+  for (const target of targetRects) {
+    const anchors = rectAnchors(target);
+    const targetXValues = [anchors.left, anchors.centerX, anchors.right];
+    const targetYValues = [anchors.top, anchors.centerY, anchors.bottom];
+
+    for (const key of activeXKeys) {
+      const currentX = preview[key];
+      for (const targetX of targetXValues) {
+        const adjust = targetX - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: targetX,
+            spanStart: Math.min(previewBounds.y, anchors.top),
+            spanEnd: Math.max(previewBounds.y + previewBounds.h, anchors.bottom),
+          };
+        }
+      }
+    }
+
+    for (const key of activeYKeys) {
+      const currentY = preview[key];
+      for (const targetY of targetYValues) {
+        const adjust = targetY - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: targetY,
+            spanStart: Math.min(previewBounds.x, anchors.left),
+            spanEnd: Math.max(previewBounds.x + previewBounds.w, anchors.right),
+          };
+        }
+      }
+    }
+  }
+
+  for (const guide of targetGuides) {
+    if (guide.axis === "x") {
+      for (const key of activeXKeys) {
+        const currentX = preview[key];
+        const adjust = guide.position - currentX;
+        if (Math.abs(adjust) <= threshold && (!bestX || Math.abs(adjust) < Math.abs(bestX.adjust))) {
+          bestX = {
+            adjust,
+            position: guide.position,
+            spanStart: previewBounds.y,
+            spanEnd: previewBounds.y + previewBounds.h,
+          };
+        }
+      }
+    } else {
+      for (const key of activeYKeys) {
+        const currentY = preview[key];
+        const adjust = guide.position - currentY;
+        if (Math.abs(adjust) <= threshold && (!bestY || Math.abs(adjust) < Math.abs(bestY.adjust))) {
+          bestY = {
+            adjust,
+            position: guide.position,
+            spanStart: previewBounds.x,
+            spanEnd: previewBounds.x + previewBounds.w,
+          };
+        }
+      }
+    }
+  }
+
+  const bounds = { ...previewBounds };
+  if (bestX) {
+    if (handle === "e" || handle === "ne" || handle === "se") {
+      bounds.w += bestX.adjust;
+    } else if (handle === "w" || handle === "nw" || handle === "sw") {
+      bounds.x += bestX.adjust;
+      bounds.w -= bestX.adjust;
+    }
+  }
+
+  if (bestY) {
+    if (handle === "s" || handle === "se" || handle === "sw") {
+      bounds.h += bestY.adjust;
+    } else if (handle === "n" || handle === "ne" || handle === "nw") {
+      bounds.y += bestY.adjust;
+      bounds.h -= bestY.adjust;
+    }
+  }
+
+  const guides: SnapGuide[] = [];
+  if (bestX) {
+    guides.push({
+      axis: "x",
+      position: bestX.position,
+      spanStart: bestX.spanStart,
+      spanEnd: bestX.spanEnd,
+    });
+  }
+  if (bestY) {
+    guides.push({
+      axis: "y",
+      position: bestY.position,
+      spanStart: bestY.spanStart,
+      spanEnd: bestY.spanEnd,
+    });
+  }
+
+  let deltaX = 0;
+  let deltaY = 0;
+  switch (handle) {
+    case "n":
+      deltaY = bounds.y - originalBounds.y;
+      break;
+    case "ne":
+      deltaX = bounds.x + bounds.w - (originalBounds.x + originalBounds.w);
+      deltaY = bounds.y - originalBounds.y;
+      break;
+    case "e":
+      deltaX = bounds.x + bounds.w - (originalBounds.x + originalBounds.w);
+      break;
+    case "se":
+      deltaX = bounds.x + bounds.w - (originalBounds.x + originalBounds.w);
+      deltaY = bounds.y + bounds.h - (originalBounds.y + originalBounds.h);
+      break;
+    case "s":
+      deltaY = bounds.y + bounds.h - (originalBounds.y + originalBounds.h);
+      break;
+    case "sw":
+      deltaX = bounds.x - originalBounds.x;
+      deltaY = bounds.y + bounds.h - (originalBounds.y + originalBounds.h);
+      break;
+    case "w":
+      deltaX = bounds.x - originalBounds.x;
+      break;
+    case "nw":
+      deltaX = bounds.x - originalBounds.x;
+      deltaY = bounds.y - originalBounds.y;
+      break;
+  }
+
+  return {
+    bounds,
+    deltaX,
+    deltaY,
+    guides,
+  };
+}
+
+function chooseRulerStep(zoom: number) {
+  const targetPx = 96;
+  const logicalTarget = targetPx / Math.max(zoom, 0.001);
+  const exponent = Math.floor(Math.log10(Math.max(logicalTarget, 1)));
+  const base = 10 ** exponent;
+  const multipliers = [1, 2, 5, 10];
+
+  for (const multiplier of multipliers) {
+    const step = base * multiplier;
+    if (step >= logicalTarget) {
+      return step;
+    }
+  }
+
+  return base * 10;
+}
+
+function buildRulerTicks(
+  axisLength: number,
+  viewportOffset: number,
+  zoom: number,
+  majorStep: number,
+  minorDivisions = 4,
+) {
+  if (axisLength <= 0 || zoom <= 0) {
+    return [] as RulerTick[];
+  }
+
+  const ticks: RulerTick[] = [];
+  const minorStep = majorStep / minorDivisions;
+  const docStart = (-viewportOffset) / zoom;
+  const docEnd = (axisLength - viewportOffset) / zoom;
+  const startValue = Math.floor(docStart / minorStep) * minorStep;
+  const endValue = Math.ceil(docEnd / minorStep) * minorStep;
+  const tolerance = minorStep * 0.05;
+
+  for (let value = startValue; value <= endValue; value += minorStep) {
+    const position = value * zoom + viewportOffset;
+    if (position < -1 || position > axisLength + 1) {
+      continue;
+    }
+
+    const major = Math.abs(value / majorStep - Math.round(value / majorStep)) < tolerance;
+    ticks.push({
+      value: Number(value.toFixed(3)),
+      position,
+      major,
+    });
+  }
+
+  return ticks;
+}
+
+function createGuideId() {
+  return `guide-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createDraftPathNode(path: PathDraft, rootFrame: SceneNode | null): SceneNode | null {
+  if (path.points.length < 2) {
+    return null;
+  }
+
+  const minX = Math.min(...path.points.map((point) => point.x));
+  const minY = Math.min(...path.points.map((point) => point.y));
+  const maxX = Math.max(...path.points.map((point) => point.x));
+  const maxY = Math.max(...path.points.map((point) => point.y));
+  const width = Math.max(maxX - minX, 1);
+  const height = Math.max(maxY - minY, 1);
+
+  return {
+    id: `path-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: "shape",
+    name: "Path",
+    parentId: rootFrame?.id ?? null,
+    children: undefined,
+    frame: {
+      x: minX,
+      y: minY,
+      w: width,
+      h: height,
+      rotation: 0,
+    },
+    constraints: { horizontal: "min", vertical: "min" },
+    shape: {
+      primitive: "path",
+      fill: "#93c5fd",
+      strokeColor: "#1d4ed8",
+      strokeWidth: 3,
+      cornerRadius: 0,
+      opacity: 0.9,
+      path: {
+        closed: path.closed,
+        points: path.points.map((point) => ({
+          x: Number((point.x - minX).toFixed(3)),
+          y: Number((point.y - minY).toFixed(3)),
+        })),
+      },
+    },
+  };
+}
+
+export function V2EditorShell() {
+  const [bridgeInfo, setBridgeInfo] = useState<WasmBridgeInfo | null>(null);
+  const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null);
+  const [validation, setValidation] = useState<ValidationReport | null>(null);
+  const [runtimeGraph, setRuntimeGraph] = useState<RuntimeGraph | null>(null);
+  const [selectionBounds, setSelectionBounds] = useState<EditorRect | null>(null);
+  const [transformHandles, setTransformHandles] = useState<TransformHandle[]>([]);
+  const [dragMarquee, setDragMarquee] = useState<DragMarquee | null>(null);
+  const [dragPan, setDragPan] = useState<DragPan | null>(null);
+  const [dragMove, setDragMove] = useState<DragMove | null>(null);
+  const [dragTransform, setDragTransform] = useState<DragTransform | null>(null);
+  const [dragGuide, setDragGuide] = useState<DragGuide | null>(null);
+  const [dragPathPoint, setDragPathPoint] = useState<DragPathPoint | null>(null);
+  const [dragPathHandle, setDragPathHandle] = useState<DragPathHandle | null>(null);
+  const [activeTool, setActiveTool] = useState<EditorTool>("select");
+  const [pathDraft, setPathDraft] = useState<PathDraft | null>(null);
+  const [spacePressed, setSpacePressed] = useState(false);
+  const [draftViewport, setDraftViewport] = useState<EditorSnapshot["viewport"] | null>(null);
+  const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
+  const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
+  const [editingTextNodeId, setEditingTextNodeId] = useState<string | null>(null);
+  const [editingTextDraft, setEditingTextDraft] = useState("");
+  const [editingTextComposing, setEditingTextComposing] = useState(false);
+  const [inspectorTextSelection, setInspectorTextSelection] = useState<{ start: number; end: number } | null>(null);
+  const [activeTextRangeIndex, setActiveTextRangeIndex] = useState<number | null>(null);
+  const [activePathPointIndex, setActivePathPointIndex] = useState<number | null>(null);
+  const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
+  const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
+  const [resizeSnapPreview, setResizeSnapPreview] = useState<ResizeSnapPreview>(EMPTY_RESIZE_SNAP_PREVIEW);
+  const [collapsedLayerIds, setCollapsedLayerIds] = useState<string[]>([]);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const bridgeRef = useRef<EditorBridge | null>(null);
+  const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const inspectorTextRef = useRef<HTMLTextAreaElement | null>(null);
+  const snapQuerySeqRef = useRef(0);
+
+  const syncBridgeState = useCallback(async () => {
+    const bridge = bridgeRef.current;
+    if (!bridge) {
+      return;
+    }
+
+    const [nextValidation, nextRuntime, nextSelectionBounds, nextTransformHandles] =
+      await Promise.all([
+        bridge.runValidation(),
+        bridge.exportRuntimeGraph(),
+        bridge.query({ kind: "selection_bounds" }) as Promise<EditorRect | null>,
+        bridge.query({ kind: "transform_handles" }) as Promise<TransformHandle[]>,
+      ]);
+
+    setValidation(nextValidation);
+    setRuntimeGraph(nextRuntime);
+    setSelectionBounds(nextSelectionBounds);
+    setTransformHandles(nextTransformHandles);
+  }, []);
+
+  useEffect(() => {
+    async function load() {
+      const bridge = await loadEditorBridge();
+      bridgeRef.current = bridge;
+      const [info, initialSnapshot] = await Promise.all([
+        bridge.info(),
+        bridge.loadDocument(sampleSceneDoc),
+      ]);
+
+      setBridgeInfo(info);
+      setSnapshot(initialSnapshot);
+      await syncBridgeState();
+    }
+
+    void load();
+  }, [syncBridgeState]);
+
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element) {
+      return;
+    }
+
+    const measure = () => {
+      setCanvasSize({
+        width: element.clientWidth,
+        height: element.clientHeight,
+      });
+    };
+
+    measure();
+
+    const observer = new ResizeObserver(() => {
+      measure();
+    });
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const nodes = useMemo(() => flattenNodes(snapshot), [snapshot]);
+  const currentPage = useMemo(
+    () => snapshot?.doc.pages.find((page) => page.id === CANVAS_PAGE_ID) ?? null,
+    [snapshot?.doc.pages],
+  );
+  const pageGuides = currentPage?.guides ?? [];
+  const nodeMap = useMemo(() => buildNodeMap(nodes), [nodes]);
+  const absoluteNodeFrameMap = useMemo(() => buildAbsoluteNodeFrameMap(nodes), [nodes]);
+  const layerRootChildIds = useMemo(() => {
+    if (!currentPage) {
+      return [];
+    }
+
+    const rootNode = nodeMap.get(currentPage.rootId);
+    if (!rootNode) {
+      return [];
+    }
+
+    return orderedLayerChildIds(currentPage, rootNode);
+  }, [currentPage, nodeMap]);
+  const activeNode = useMemo(
+    () => selectedNode(nodes, snapshot?.selection ?? []),
+    [nodes, snapshot?.selection],
+  );
+  const activeTextRanges = useMemo(
+    () =>
+      activeNode?.kind === "text" && activeNode.text
+        ? normalizeTextRanges(activeNode.text.content, activeNode.text.ranges) ?? []
+        : [],
+    [activeNode],
+  );
+  const activePathPoints = useMemo(
+    () =>
+      activeNode?.kind === "shape" && activeNode.shape?.primitive === "path"
+        ? activeNode.shape.path?.points ?? []
+        : [],
+    [activeNode],
+  );
+  const activePathPoint = useMemo(
+    () =>
+      activePathPointIndex != null && activePathPoints[activePathPointIndex]
+        ? activePathPoints[activePathPointIndex]
+        : null,
+    [activePathPointIndex, activePathPoints],
+  );
+  const activeInspectorTextSelection = useMemo(() => {
+    if (activeNode?.kind !== "text" || !activeNode.text || !inspectorTextSelection) {
+      return null;
+    }
+
+    const length = activeNode.text.content.length;
+    const start = Math.max(0, Math.min(length, inspectorTextSelection.start));
+    const end = Math.max(0, Math.min(length, inspectorTextSelection.end));
+    if (end <= start) {
+      return null;
+    }
+
+    return {
+      start,
+      end,
+      preview: activeNode.text.content.slice(start, end).replace(/\s+/g, " ").trim(),
+    };
+  }, [activeNode, inspectorTextSelection]);
+  const activeTextStyleTarget = useMemo(() => {
+    if (activeNode?.kind !== "text" || !activeNode.text) {
+      return null;
+    }
+
+    if (textStyleScope === "selection" && activeInspectorTextSelection) {
+      return resolveTextStyleAtIndex(activeNode.text, activeInspectorTextSelection.start);
+    }
+
+    return {
+      fontFamily: activeNode.text.fontFamily,
+      fontSize: activeNode.text.fontSize,
+      fontWeight: activeNode.text.fontWeight,
+      lineHeight: activeNode.text.lineHeight,
+      letterSpacing: activeNode.text.letterSpacing,
+      paragraphSpacing: activeNode.text.paragraphSpacing,
+      align: activeNode.text.align,
+      color: activeNode.text.color,
+      textCase: activeNode.text.textCase,
+      italic: activeNode.text.italic,
+      underline: activeNode.text.underline,
+      lineThrough: activeNode.text.lineThrough,
+    } satisfies TextStylePatch;
+  }, [activeInspectorTextSelection, activeNode, textStyleScope]);
+  const activeAutoLayout = useMemo(
+    () => resolveAutoLayout(activeNode?.layout ?? null),
+    [activeNode?.layout],
+  );
+  const activeInstanceRoot = useMemo(
+    () => findNearestInstanceRoot(activeNode, nodeMap),
+    [activeNode, nodeMap],
+  );
+  const activeInstanceTextOverrides = useMemo(
+    () => activeInstanceRoot?.instance?.textOverrides ?? [],
+    [activeInstanceRoot],
+  );
+  const activeInstanceShapeOverrides = useMemo(
+    () => activeInstanceRoot?.instance?.shapeOverrides ?? [],
+    [activeInstanceRoot],
+  );
+  const activeInstanceOverrideSourceId = activeNode?.instanceSourceNodeId ?? null;
+  const activeInstanceLocalOverride = useMemo(() => {
+    if (!activeInstanceRoot?.instance || !activeInstanceOverrideSourceId) {
+      return null;
+    }
+
+    return {
+      text:
+        activeInstanceRoot.instance.textOverrides?.find(
+          (entry) => entry.sourceNodeId === activeInstanceOverrideSourceId,
+        ) ?? null,
+      shape:
+        activeInstanceRoot.instance.shapeOverrides?.find(
+          (entry) => entry.sourceNodeId === activeInstanceOverrideSourceId,
+        ) ?? null,
+    };
+  }, [activeInstanceOverrideSourceId, activeInstanceRoot]);
+  const activeLayoutSizing = useMemo(
+    () => (activeNode ? resolveLayoutSizing(activeNode.layoutSizing ?? null) : null),
+    [activeNode],
+  );
+  const toggleLayerCollapsed = useCallback((nodeId: string) => {
+    setCollapsedLayerIds((current) =>
+      current.includes(nodeId)
+        ? current.filter((id) => id !== nodeId)
+        : [...current, nodeId],
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!activeNode) {
+      return;
+    }
+
+    const ancestorIds = ancestorNodeIds(activeNode, nodeMap);
+    if (ancestorIds.length === 0) {
+      return;
+    }
+
+    setCollapsedLayerIds((current) =>
+      current.filter((id) => !ancestorIds.includes(id)),
+    );
+  }, [activeNode, nodeMap]);
+  const selectedShapeNodes = useMemo(
+    () =>
+      (snapshot?.selection ?? [])
+        .map((nodeId) => nodes.find((node) => node.id === nodeId) ?? null)
+        .filter(
+          (node): node is SceneNode =>
+            Boolean(node && node.kind === "shape" && node.shape && node.shape.primitive !== "line"),
+        ),
+    [nodes, snapshot?.selection],
+  );
+  const componentNodes = useMemo(
+    () =>
+      nodes.filter(
+        (node): node is SceneNode & { component: NonNullable<SceneNode["component"]> } =>
+          node.kind === "component" && Boolean(node.component),
+      ),
+    [nodes],
+  );
+  const editingTextNode = useMemo(
+    () =>
+      editingTextNodeId
+        ? nodes.find((node) => node.id === editingTextNodeId && node.kind === "text") ?? null
+        : null,
+    [editingTextNodeId, nodes],
+  );
+  const rootFrame = useMemo(
+    () => (currentPage ? (nodeMap.get(currentPage.rootId) ?? null) : null),
+    [currentPage, nodeMap],
+  );
+  const canvasNodes = useMemo(
+    () => (currentPage ? currentPage.nodes.filter((node) => node.id !== currentPage.rootId) : []),
+    [currentPage],
+  );
+  const canvasNodeFrames = useMemo(
+    () =>
+      new Map(
+        canvasNodes.map((node) => [
+          node.id,
+          absoluteNodeFrameMap.get(node.id) ?? node.frame,
+        ] as const),
+      ),
+    [absoluteNodeFrameMap, canvasNodes],
+  );
+  const activeNodeFrame = useMemo(
+    () =>
+      activeNode
+        ? (canvasNodeFrames.get(activeNode.id) ?? absoluteNodeFrameMap.get(activeNode.id) ?? activeNode.frame)
+        : null,
+    [absoluteNodeFrameMap, activeNode, canvasNodeFrames],
+  );
+  const editingTextNodeFrame = useMemo(
+    () =>
+      editingTextNode
+        ? (canvasNodeFrames.get(editingTextNode.id) ??
+          absoluteNodeFrameMap.get(editingTextNode.id) ??
+          editingTextNode.frame)
+        : null,
+    [absoluteNodeFrameMap, canvasNodeFrames, editingTextNode],
+  );
+  const selectionMoveSet = useMemo(() => new Set(snapshot?.selection ?? []), [snapshot?.selection]);
+  const canGroupSelection = useMemo(() => {
+    if (!currentPage || (snapshot?.selection.length ?? 0) < 2) {
+      return false;
+    }
+
+    const selectionSet = new Set(snapshot?.selection ?? []);
+    const selectedRootNodes = currentPage.nodes.filter(
+      (node) =>
+        selectionSet.has(node.id) &&
+        node.id !== currentPage.rootId &&
+        !hasSelectedAncestor(node, selectionSet, nodeMap),
+    );
+    if (selectedRootNodes.length < 2) {
+      return false;
+    }
+
+    const parentId = selectedRootNodes[0]?.parentId ?? null;
+    return Boolean(parentId && selectedRootNodes.every((node) => node.parentId === parentId));
+  }, [currentPage, nodeMap, snapshot?.selection]);
+  const canUngroupSelection = useMemo(
+    () => Boolean((snapshot?.selection ?? []).some((nodeId) => nodeMap.get(nodeId)?.kind === "group")),
+    [nodeMap, snapshot?.selection],
+  );
+  const liveMarqueeRect = useMemo(
+    () => (dragMarquee ? normalizeRect(dragMarquee) : null),
+    [dragMarquee],
+  );
+  const viewViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+  const dragMoveDelta = useMemo(
+    () =>
+      dragMove
+        ? {
+            x: dragMove.currentX - dragMove.originX,
+            y: dragMove.currentY - dragMove.originY,
+          }
+        : null,
+    [dragMove],
+  );
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge || !dragMoveDelta) {
+      setMoveSnapPreview(EMPTY_MOVE_SNAP_PREVIEW);
+      return;
+    }
+
+    const seq = ++snapQuerySeqRef.current;
+    void bridge
+      .query({
+        kind: "move_snap",
+        deltaX: dragMoveDelta.x,
+        deltaY: dragMoveDelta.y,
+      })
+      .then((result) => {
+        if (snapQuerySeqRef.current !== seq) {
+          return;
+        }
+
+        setMoveSnapPreview((result as MoveSnapPreview) ?? EMPTY_MOVE_SNAP_PREVIEW);
+      })
+      .catch(() => {
+        if (snapQuerySeqRef.current === seq) {
+          setMoveSnapPreview(EMPTY_MOVE_SNAP_PREVIEW);
+        }
+      });
+  }, [dragMoveDelta]);
+
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge || !selectionBounds || !dragTransform || dragTransform.handle === "rotate") {
+      setResizeSnapPreview(EMPTY_RESIZE_SNAP_PREVIEW);
+      return;
+    }
+
+    const seq = ++snapQuerySeqRef.current;
+    void bridge
+      .query({
+        kind: "resize_snap",
+        handle: dragTransform.handle,
+        deltaX: dragTransform.currentX - dragTransform.originX,
+        deltaY: dragTransform.currentY - dragTransform.originY,
+        lockAspect: dragTransform.lockAspect,
+      })
+      .then((result) => {
+        if (snapQuerySeqRef.current !== seq) {
+          return;
+        }
+
+        setResizeSnapPreview((result as ResizeSnapPreview) ?? EMPTY_RESIZE_SNAP_PREVIEW);
+      })
+      .catch(() => {
+        if (snapQuerySeqRef.current === seq) {
+          setResizeSnapPreview(EMPTY_RESIZE_SNAP_PREVIEW);
+        }
+      });
+  }, [dragTransform, selectionBounds]);
+  const previewSelectionBounds = useMemo(() => {
+    if (!selectionBounds) {
+      return null;
+    }
+
+    if (dragMoveDelta) {
+      return offsetRect(selectionBounds, moveSnapPreview.deltaX, moveSnapPreview.deltaY);
+    }
+
+    if (dragTransform) {
+      if (dragTransform.handle === "rotate") {
+        return selectionBounds;
+      }
+
+      return resizeSnapPreview.bounds;
+    }
+
+    return selectionBounds;
+  }, [
+    dragMoveDelta,
+    dragTransform,
+    moveSnapPreview.deltaX,
+    moveSnapPreview.deltaY,
+    resizeSnapPreview.bounds,
+    selectionBounds,
+  ]);
+  const previewTransformHandles = useMemo(
+    () => (dragMove || dragTransform ? buildTransformHandles(previewSelectionBounds) : transformHandles),
+    [dragMove, dragTransform, previewSelectionBounds, transformHandles],
+  );
+  const previewGuides = useMemo(
+    () =>
+      dragGuide
+        ? pageGuides.map((guide) =>
+            guide.id === dragGuide.guideId ? { ...guide, position: dragGuide.currentPosition } : guide,
+          )
+        : pageGuides,
+    [dragGuide, pageGuides],
+  );
+  const activeGuides = useMemo(
+    () => (dragMove ? moveSnapPreview.guides : dragTransform ? resizeSnapPreview.guides : []),
+    [dragMove, dragTransform, moveSnapPreview.guides, resizeSnapPreview.guides],
+  );
+  const rulerStep = useMemo(() => chooseRulerStep(viewViewport.zoom), [viewViewport.zoom]);
+  const horizontalRulerTicks = useMemo(
+    () => buildRulerTicks(canvasSize.width, viewViewport.x, viewViewport.zoom, rulerStep),
+    [canvasSize.width, rulerStep, viewViewport.x, viewViewport.zoom],
+  );
+  const verticalRulerTicks = useMemo(
+    () => buildRulerTicks(canvasSize.height, viewViewport.y, viewViewport.zoom, rulerStep),
+    [canvasSize.height, rulerStep, viewViewport.y, viewViewport.zoom],
+  );
+
+  useEffect(() => {
+    if (!editingTextNodeId) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const input = textEditorRef.current;
+      if (!input) {
+        return;
+      }
+
+      input.focus();
+      input.select();
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [editingTextNodeId]);
+
+  useEffect(() => {
+    setInspectorTextSelection(null);
+    setActiveTextRangeIndex(null);
+    setActivePathPointIndex(null);
+    setTextStyleScope("node");
+  }, [activeNode?.id]);
+
+  useEffect(() => {
+    if (!activeInspectorTextSelection && textStyleScope === "selection") {
+      setTextStyleScope("node");
+    }
+  }, [activeInspectorTextSelection, textStyleScope]);
+
+  useEffect(() => {
+    if (!activeInspectorTextSelection) {
+      setActiveTextRangeIndex(null);
+      return;
+    }
+
+    const exactRangeIndex = activeTextRanges.findIndex(
+      (range) =>
+        range.start === activeInspectorTextSelection.start && range.end === activeInspectorTextSelection.end,
+    );
+    setActiveTextRangeIndex(exactRangeIndex >= 0 ? exactRangeIndex : null);
+  }, [activeInspectorTextSelection, activeTextRanges]);
+
+  useEffect(() => {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      setActivePathPointIndex(null);
+      return;
+    }
+
+    const pointsLength = activeNode.shape.path?.points.length ?? 0;
+    if (activePathPointIndex != null && activePathPointIndex >= pointsLength) {
+      setActivePathPointIndex(pointsLength > 0 ? pointsLength - 1 : null);
+    }
+  }, [activeNode, activePathPointIndex]);
+
+  async function applyAndSync(commands: EditorCommand[]) {
+    const bridge = bridgeRef.current;
+    if (!bridge) {
+      return;
+    }
+
+    const result = await bridge.dispatch(commands);
+    setSnapshot(result.snapshot);
+    setDraftViewport(null);
+    await syncBridgeState();
+  }
+
+  async function updateConstraints(
+    axis: "horizontal" | "vertical",
+    value: HorizontalConstraint | VerticalConstraint,
+  ) {
+    if (!activeNode) {
+      return;
+    }
+
+    const current = activeNode.constraints ?? { horizontal: "min", vertical: "min" };
+    await applyAndSync([
+      {
+        kind: "set_node_constraints",
+        nodeId: activeNode.id,
+        constraints: {
+          ...current,
+          [axis]: value,
+        },
+      },
+    ]);
+  }
+
+  async function updateNodeName(name: string) {
+    if (!activeNode) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "rename_node",
+        nodeId: activeNode.id,
+        name,
+      },
+    ]);
+  }
+
+  async function updateAutoLayout(patch: Partial<AutoLayoutData> | null) {
+    if (!activeNode || !supportsAutoLayout(activeNode)) {
+      return;
+    }
+
+    const current: AutoLayoutData = resolveAutoLayout(activeNode.layout) ?? DEFAULT_AUTO_LAYOUT;
+    const nextLayout = patch ? resolveAutoLayout({ ...current, ...patch }) : null;
+
+    await applyAndSync([
+      {
+        kind: "set_node_auto_layout",
+        nodeId: activeNode.id,
+        layout: nextLayout,
+      },
+    ]);
+  }
+
+  async function updateNodeLayoutSizing(patch: Partial<LayoutSizingAxis> | null) {
+    if (!activeNode) {
+      return;
+    }
+
+    const current: LayoutSizingAxis = activeLayoutSizing ?? DEFAULT_LAYOUT_SIZING;
+
+    await applyAndSync([
+      {
+        kind: "set_node_layout_sizing",
+        nodeId: activeNode.id,
+        layoutSizing: patch ? { ...current, ...patch } : null,
+      },
+    ]);
+  }
+
+  async function updateNodeFrame(patch: Partial<EditorRect>) {
+    if (!activeNode) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "move_node",
+        nodeId: activeNode.id,
+        frame: patch,
+      },
+    ]);
+  }
+
+  async function selectNodeIds(nodeIds: string[]) {
+    if (!nodeIds.length) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "select_nodes",
+        nodeIds,
+      },
+    ]);
+  }
+
+  function focusInstanceCloneBySourceId(instanceRootId: string, sourceNodeId: string) {
+    const target = nodes.find(
+      (node) =>
+        node.instanceSourceNodeId === sourceNodeId && isNodeWithinAncestor(node.id, instanceRootId, nodeMap),
+    );
+    if (!target) {
+      return;
+    }
+
+    void selectNodeIds([target.id]);
+  }
+
+  async function promoteActiveNodeToComponent(componentKey?: string) {
+    if (!activeNode || !supportsComponentPromotion(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "promote_to_component",
+        nodeId: activeNode.id,
+        ...(componentKey !== undefined ? { componentKey } : {}),
+      },
+    ]);
+  }
+
+  async function updateActiveComponentKey(componentKey: string) {
+    if (!activeNode || !isComponentNode(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_component_key",
+        nodeId: activeNode.id,
+        componentKey,
+      },
+    ]);
+  }
+
+  async function createInstanceFromActiveComponent() {
+    if (!activeNode || !isComponentNode(activeNode)) {
+      return;
+    }
+
+    await createInstanceFromComponentNode(activeNode.id);
+  }
+
+  async function createInstanceFromComponentNode(sourceNodeId: string) {
+    await applyAndSync([
+      {
+        kind: "create_instance_from_component",
+        pageId: CANVAS_PAGE_ID,
+        sourceNodeId,
+        offsetX: 56,
+        offsetY: 56,
+      },
+    ]);
+  }
+
+  async function refreshActiveInstance() {
+    if (!activeNode || !isInstanceNode(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "refresh_instance",
+        nodeId: activeNode.id,
+      },
+    ]);
+  }
+
+  async function detachActiveInstance() {
+    if (!activeNode || !isInstanceNode(activeNode)) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "detach_instance",
+        nodeId: activeNode.id,
+      },
+    ]);
+  }
+
+  async function clearActiveInstanceOverrides(
+    overrideKind: "all" | "text" | "shape",
+    sourceNodeId?: string,
+    targetInstanceId?: string,
+  ) {
+    const instanceNodeId =
+      targetInstanceId ??
+      (activeNode?.kind === "instance"
+        ? activeNode.id
+        : activeInstanceRoot?.id);
+
+    if (!instanceNodeId) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "clear_instance_overrides",
+        nodeId: instanceNodeId,
+        overrideKind,
+        ...(sourceNodeId ? { sourceNodeId } : {}),
+      },
+    ]);
+  }
+
+  async function updateTextContent(content: string) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_content",
+        nodeId: activeNode.id,
+        content,
+      },
+    ]);
+  }
+
+  function beginInlineTextEdit(node: SceneNode) {
+    if (node.kind !== "text") {
+      return;
+    }
+
+    setSelectedGuideId(null);
+    setEditingTextComposing(false);
+    setEditingTextNodeId(node.id);
+    setEditingTextDraft(node.text?.content ?? "");
+  }
+
+  async function commitInlineTextEdit() {
+    if (!editingTextNode) {
+      setEditingTextNodeId(null);
+      setEditingTextDraft("");
+      setEditingTextComposing(false);
+      return;
+    }
+
+    const nextContent = editingTextDraft;
+    setEditingTextNodeId(null);
+    setEditingTextDraft("");
+    setEditingTextComposing(false);
+
+    if (nextContent === (editingTextNode.text?.content ?? "")) {
+      return;
+    }
+
+    await updateTextContent(nextContent);
+  }
+
+  function cancelInlineTextEdit() {
+    setEditingTextNodeId(null);
+    setEditingTextDraft("");
+    setEditingTextComposing(false);
+  }
+
+  async function updateTextStyle(style: TextStylePatch) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_style",
+        nodeId: activeNode.id,
+        style,
+      },
+    ]);
+  }
+
+  async function applyTextSelectionStyle(style: TextStylePatch) {
+    if (
+      !activeNode ||
+      activeNode.kind !== "text" ||
+      !activeNode.text ||
+      !activeInspectorTextSelection
+    ) {
+      return;
+    }
+
+    const ranges = applyTextStyleToSelection(
+      activeNode.text,
+      activeInspectorTextSelection.start,
+      activeInspectorTextSelection.end,
+      style,
+    );
+    await updateTextRanges(ranges);
+    focusInspectorTextSelection(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
+  }
+
+  async function clearActiveTextSelectionStyles() {
+    if (
+      !activeNode ||
+      activeNode.kind !== "text" ||
+      !activeNode.text ||
+      !activeInspectorTextSelection
+    ) {
+      return;
+    }
+
+    const ranges = clearTextSelectionStyles(
+      activeNode.text,
+      activeInspectorTextSelection.start,
+      activeInspectorTextSelection.end,
+    );
+    await updateTextRanges(ranges);
+    focusInspectorTextSelection(activeInspectorTextSelection.start, activeInspectorTextSelection.end);
+  }
+
+  async function updateActiveTextStyle(style: TextStylePatch) {
+    if (textStyleScope === "selection" && activeInspectorTextSelection) {
+      await applyTextSelectionStyle(style);
+      return;
+    }
+
+    await updateTextStyle(style);
+  }
+
+  async function updateTextRanges(ranges: TextRange[]) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_ranges",
+        nodeId: activeNode.id,
+        ranges,
+      },
+    ]);
+  }
+
+  function focusInspectorTextSelection(start: number, end: number) {
+    setTextStyleScope("selection");
+    setInspectorTextSelection(end > start ? { start, end } : null);
+
+    requestAnimationFrame(() => {
+      const target = inspectorTextRef.current;
+      if (!target) {
+        return;
+      }
+      target.focus();
+      target.setSelectionRange(start, end);
+      syncInspectorTextSelection();
+    });
+  }
+
+  function focusTextRange(index: number) {
+    const range = activeTextRanges[index];
+    if (!range) {
+      return;
+    }
+
+    setActiveTextRangeIndex(index);
+    focusInspectorTextSelection(range.start, range.end);
+  }
+
+  function syncInspectorTextSelection() {
+    const target = inspectorTextRef.current;
+    if (!target) {
+      setInspectorTextSelection(null);
+      return;
+    }
+
+    const start = Math.min(target.selectionStart ?? 0, target.selectionEnd ?? 0);
+    const end = Math.max(target.selectionStart ?? 0, target.selectionEnd ?? 0);
+    setInspectorTextSelection(end > start ? { start, end } : null);
+  }
+
+  function handleInspectorTextKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (!(event.metaKey || event.ctrlKey)) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    if (key === "b") {
+      event.preventDefault();
+      void updateActiveTextStyle({
+        fontWeight:
+          (activeTextStyleTarget?.fontWeight ?? activeNode?.text?.fontWeight ?? 400) >= 700 ? 500 : 700,
+      });
+      return;
+    }
+
+    if (key === "i") {
+      event.preventDefault();
+      void updateActiveTextStyle({
+        italic: !(activeTextStyleTarget?.italic ?? activeNode?.text?.italic ?? false),
+      });
+      return;
+    }
+
+    if (key === "u") {
+      event.preventDefault();
+      void updateActiveTextStyle({
+        underline: !(activeTextStyleTarget?.underline ?? activeNode?.text?.underline ?? false),
+      });
+    }
+  }
+
+  async function updateTextSizing(sizing: TextSizingMode) {
+    if (!activeNode || activeNode.kind !== "text") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_text_sizing",
+        nodeId: activeNode.id,
+        sizing,
+      },
+    ]);
+  }
+
+  async function updateShapePrimitive(primitive: ShapePrimitive) {
+    if (!activeNode || activeNode.kind !== "shape") {
+      return;
+    }
+
+    const commands: EditorCommand[] = [
+      {
+        kind: "set_shape_primitive",
+        nodeId: activeNode.id,
+        primitive,
+      },
+    ];
+
+    if (primitive === "path") {
+      commands.push({
+        kind: "set_shape_path",
+        nodeId: activeNode.id,
+        path: activeNode.shape?.path
+          ? structuredClone(activeNode.shape.path)
+          : createDefaultShapePath(activeNode.frame),
+      });
+    }
+
+    await applyAndSync(commands);
+  }
+
+  async function updateShapeStyle(style: ShapeStylePatch) {
+    if (!activeNode || activeNode.kind !== "shape") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_shape_style",
+        nodeId: activeNode.id,
+        style,
+      },
+    ]);
+  }
+
+  async function updateShapePath(path: ShapePathData) {
+    if (!activeNode || activeNode.kind !== "shape") {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "set_shape_path",
+        nodeId: activeNode.id,
+        path,
+      },
+    ]);
+  }
+
+  async function replaceActiveShapePath(
+    points: ShapePathData["points"],
+    nextSelectedIndex: number | null,
+    closed = activeNode?.shape?.path?.closed ?? false,
+  ) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const safePoints = structuredClone(points);
+    setActivePathPointIndex(nextSelectedIndex);
+    await updateShapePath({
+      points: safePoints,
+      closed,
+    });
+  }
+
+  async function runShapeBoolean(op: ShapeBooleanOp) {
+    if (!snapshot || selectedShapeNodes.length < 2) {
+      return;
+    }
+
+    const sourcePathDs = selectedShapeNodes
+      .map((node) =>
+        nodeToAbsolutePathD(
+          node,
+          canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+        ),
+      )
+      .filter((value): value is string => Boolean(value));
+
+    if (sourcePathDs.length < 2) {
+      return;
+    }
+
+    const rings = sourcePathDs
+      .map((pathD) => pathDataToPolygon(pathD))
+      .filter((ring): ring is number[][] => Boolean(ring));
+
+    if (rings.length < 2) {
+      return;
+    }
+
+    const resultPathD = runBooleanMultiple(rings, op);
+    if (!resultPathD) {
+      return;
+    }
+
+    const normalized = pathDToLocalShapePath(resultPathD);
+    const styleSource = selectedShapeNodes[0]?.shape;
+    const sharedParentId = selectedShapeNodes.every(
+      (node) => node.parentId === selectedShapeNodes[0]?.parentId,
+    )
+      ? selectedShapeNodes[0]?.parentId ?? rootFrame?.id ?? null
+      : rootFrame?.id ?? null;
+    const newNodeId = `boolean-${op}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const newNode: SceneNode = {
+      id: newNodeId,
+      kind: "shape",
+      name: `${op[0]!.toUpperCase()}${op.slice(1)} Result`,
+      parentId: sharedParentId,
+      children: undefined,
+      frame: normalized.frame,
+      shape: {
+        primitive: "path",
+        fill: styleSource?.fill ?? "#93c5fd",
+        strokeColor: styleSource?.strokeColor ?? "#1d4ed8",
+        strokeWidth: styleSource?.strokeWidth ?? 2,
+        cornerRadius: 0,
+        opacity: styleSource?.opacity ?? 1,
+        path: normalized.path,
+      },
+    };
+
+    const commands: EditorCommand[] = [
+      {
+        kind: "create_node",
+        pageId: CANVAS_PAGE_ID,
+        node: newNode,
+      },
+      ...selectedShapeNodes.map((node) => ({
+        kind: "delete_node" as const,
+        nodeId: node.id,
+      })),
+      {
+        kind: "select_nodes",
+        nodeIds: [newNodeId],
+      },
+    ];
+
+    await applyAndSync(commands);
+  }
+
+  async function updateShapePathPoint(
+    pointIndex: number,
+    updater: (point: ShapePathData["points"][number]) => ShapePathData["points"][number],
+  ) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (!points[pointIndex]) {
+      return;
+    }
+
+    points[pointIndex] = updater(points[pointIndex]!);
+    await updateShapePath({
+      points,
+      closed: activeNode.shape.path?.closed ?? false,
+    });
+  }
+
+  async function removeActiveShapePathPoint(pointIndex: number) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (points.length <= 2 || !points[pointIndex]) {
+      return;
+    }
+
+    const nextPoints = points.filter((_, index) => index !== pointIndex);
+    const nextSelectedIndex = nextPoints.length
+      ? Math.max(0, Math.min(pointIndex, nextPoints.length - 1))
+      : null;
+    await replaceActiveShapePath(nextPoints, nextSelectedIndex);
+  }
+
+  async function duplicateActiveShapePathPoint(pointIndex: number) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    const point = points[pointIndex];
+    if (!point) {
+      return;
+    }
+
+    points.splice(pointIndex + 1, 0, {
+      ...structuredClone(point),
+      x: point.x + 12,
+      y: point.y + 12,
+    });
+    await replaceActiveShapePath(points, pointIndex + 1);
+  }
+
+  async function insertActiveShapePathPointAfter(pointIndex: number) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    const current = points[pointIndex];
+    if (!current) {
+      return;
+    }
+
+    const isClosed = activeNode.shape.path?.closed ?? false;
+    const nextPoint =
+      points[pointIndex + 1] ?? (isClosed ? points[0] : undefined);
+
+    const inserted = nextPoint
+      ? {
+          x: Number(((current.x + nextPoint.x) / 2).toFixed(3)),
+          y: Number(((current.y + nextPoint.y) / 2).toFixed(3)),
+        }
+      : {
+          x: current.x + 24,
+          y: current.y + 24,
+        };
+
+    points.splice(pointIndex + 1, 0, inserted);
+    await replaceActiveShapePath(points, pointIndex + 1, isClosed);
+  }
+
+  async function insertActiveShapePathPointAt(pointIndex: number, point: { x: number; y: number }) {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (!points[pointIndex]) {
+      return;
+    }
+
+    const isClosed = activeNode.shape.path?.closed ?? false;
+    points.splice(pointIndex + 1, 0, {
+      x: Number(point.x.toFixed(3)),
+      y: Number(point.y.toFixed(3)),
+    });
+    await replaceActiveShapePath(points, pointIndex + 1, isClosed);
+  }
+
+  async function reverseActiveShapePathPoints() {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (points.length < 2) {
+      return;
+    }
+
+    const nextSelectedIndex =
+      activePathPointIndex == null ? null : Math.max(points.length - 1 - activePathPointIndex, 0);
+    await replaceActiveShapePath(reversePathPoints(points), nextSelectedIndex);
+  }
+
+  async function convertAllActiveShapePathPoints(mode: "curve" | "corner") {
+    if (!activeNode || activeNode.kind !== "shape" || activeNode.shape?.primitive !== "path") {
+      return;
+    }
+
+    const points = structuredClone(activeNode.shape.path?.points ?? []);
+    if (!points.length) {
+      return;
+    }
+
+    const nextPoints = points.map((point, index, collection) => {
+      if (mode === "corner") {
+        return {
+          ...point,
+          handleIn: undefined,
+          handleOut: undefined,
+        };
+      }
+
+      const handles = createCurveHandles(collection, index, activeNode.shape?.path?.closed ?? false);
+      return {
+        ...point,
+        ...(handles ?? {}),
+      };
+    });
+
+    await replaceActiveShapePath(nextPoints, activePathPointIndex);
+  }
+
+  async function nudgeActivePathPoint(deltaX: number, deltaY: number) {
+    if (activePathPointIndex == null) {
+      return;
+    }
+
+    await updateShapePathPoint(activePathPointIndex, (current) => ({
+      ...current,
+      x: Number((current.x + deltaX).toFixed(3)),
+      y: Number((current.y + deltaY).toFixed(3)),
+      ...(current.handleIn
+        ? {
+            handleIn: {
+              x: Number((current.handleIn.x + deltaX).toFixed(3)),
+              y: Number((current.handleIn.y + deltaY).toFixed(3)),
+            },
+          }
+        : {}),
+      ...(current.handleOut
+        ? {
+            handleOut: {
+              x: Number((current.handleOut.x + deltaX).toFixed(3)),
+              y: Number((current.handleOut.y + deltaY).toFixed(3)),
+            },
+          }
+        : {}),
+    }));
+  }
+
+  async function selectNode(nodeId: string, additive = false) {
+    const currentSelection = snapshot?.selection ?? [];
+    const nodeIds = additive
+      ? currentSelection.includes(nodeId)
+        ? currentSelection.filter((selectedId) => selectedId !== nodeId)
+        : [...currentSelection, nodeId]
+      : [nodeId];
+
+    await applyAndSync([{ kind: "select_nodes", nodeIds }]);
+  }
+
+  async function rerunValidation() {
+    await syncBridgeState();
+  }
+
+  const runDeleteSelection = useCallback(async () => {
+    if (!snapshot?.selection.length) {
+      return;
+    }
+
+    const commands = snapshot.selection.map((nodeId) => ({
+      kind: "delete_node" as const,
+      nodeId,
+    }));
+
+    await applyAndSync(commands);
+  }, [snapshot?.selection, syncBridgeState]);
+
+  const runDuplicateSelection = useCallback(async () => {
+    if (!snapshot?.selection.length) {
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "duplicate_selection",
+      },
+    ]);
+  }, [snapshot?.selection, syncBridgeState]);
+
+  const runGroupSelection = useCallback(async () => {
+    if (!canGroupSelection) {
+      return;
+    }
+
+    await applyAndSync([{ kind: "group_selection" }]);
+  }, [canGroupSelection, syncBridgeState]);
+
+  const runUngroupSelection = useCallback(async () => {
+    if (!canUngroupSelection) {
+      return;
+    }
+
+    await applyAndSync([{ kind: "ungroup_selection" }]);
+  }, [canUngroupSelection, syncBridgeState]);
+
+  const runUndo = useCallback(async () => {
+    await applyAndSync([{ kind: "undo" }]);
+  }, [syncBridgeState]);
+
+  const runRedo = useCallback(async () => {
+    await applyAndSync([{ kind: "redo" }]);
+  }, [syncBridgeState]);
+
+  const runNudgeSelection = useCallback(
+    async (deltaX: number, deltaY: number) => {
+      if (!snapshot?.selection.length) {
+        return;
+      }
+
+      await applyAndSync([
+        {
+          kind: "move_selection",
+          deltaX,
+          deltaY,
+        },
+      ]);
+    },
+    [snapshot?.selection, syncBridgeState],
+  );
+
+  const runReorderSelection = useCallback(
+    async (position: ReorderNodePosition) => {
+      if (!activeNode || !activeNode.parentId) {
+        return;
+      }
+
+      await applyAndSync([
+        {
+          kind: "reorder_node",
+          nodeId: activeNode.id,
+          position,
+        },
+      ]);
+    },
+    [activeNode, syncBridgeState],
+  );
+
+  const finishPathDraft = useCallback(async () => {
+    if (!pathDraft) {
+      return;
+    }
+
+    const node = createDraftPathNode(pathDraft, rootFrame);
+    if (!node) {
+      setPathDraft(null);
+      setActiveTool("select");
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "create_node",
+        pageId: CANVAS_PAGE_ID,
+        node,
+      },
+      {
+        kind: "select_nodes",
+        nodeIds: [node.id],
+      },
+    ]);
+
+    setPathDraft(null);
+    setActiveTool("select");
+  }, [applyAndSync, pathDraft, rootFrame]);
+
+  const cancelPathDraft = useCallback(() => {
+    setPathDraft(null);
+    setActiveTool("select");
+  }, []);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (activeTool === "path") {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          cancelPathDraft();
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void finishPathDraft();
+          return;
+        }
+      }
+
+      if (event.key === "Escape" && activePathPointIndex != null) {
+        event.preventDefault();
+        setActivePathPointIndex(null);
+        return;
+      }
+
+      const isMeta = event.metaKey || event.ctrlKey;
+
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (activePathPointIndex != null && activeNode?.kind === "shape" && activeNode.shape?.primitive === "path") {
+          event.preventDefault();
+          void removeActiveShapePathPoint(activePathPointIndex);
+          return;
+        }
+
+        if (selectedGuideId) {
+          event.preventDefault();
+          const guideId = selectedGuideId;
+          setSelectedGuideId(null);
+          void applyAndSync([{ kind: "delete_guide", pageId: CANVAS_PAGE_ID, guideId }]);
+          return;
+        }
+
+        if (snapshot?.selection.length) {
+          event.preventDefault();
+          void runDeleteSelection();
+        }
+        return;
+      }
+
+      if (
+        event.key === "ArrowLeft" ||
+        event.key === "ArrowRight" ||
+        event.key === "ArrowUp" ||
+        event.key === "ArrowDown"
+      ) {
+        if (activePathPointIndex != null && activeNode?.kind === "shape" && activeNode.shape?.primitive === "path") {
+          event.preventDefault();
+          const step = event.shiftKey ? 10 : 1;
+          if (event.key === "ArrowLeft") {
+            void nudgeActivePathPoint(-step, 0);
+            return;
+          }
+          if (event.key === "ArrowRight") {
+            void nudgeActivePathPoint(step, 0);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            void nudgeActivePathPoint(0, -step);
+            return;
+          }
+          if (event.key === "ArrowDown") {
+            void nudgeActivePathPoint(0, step);
+            return;
+          }
+        }
+
+        if (snapshot?.selection.length) {
+          event.preventDefault();
+          const step = event.shiftKey ? 10 : 1;
+          if (event.key === "ArrowLeft") {
+            void runNudgeSelection(-step, 0);
+            return;
+          }
+          if (event.key === "ArrowRight") {
+            void runNudgeSelection(step, 0);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            void runNudgeSelection(0, -step);
+            return;
+          }
+          if (event.key === "ArrowDown") {
+            void runNudgeSelection(0, step);
+            return;
+          }
+        }
+      }
+
+      if (!isMeta) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (event.altKey && (event.code === "BracketLeft" || event.code === "BracketRight")) {
+        if (activeNode?.parentId) {
+          event.preventDefault();
+          const position =
+            event.code === "BracketLeft"
+              ? event.shiftKey
+                ? "back"
+                : "backward"
+              : event.shiftKey
+                ? "front"
+                : "forward";
+          void runReorderSelection(position);
+          return;
+        }
+      }
+
+      if (key === "d" && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        void runDuplicateSelection();
+        return;
+      }
+
+      if (key === "g" && !event.altKey) {
+        event.preventDefault();
+        if (event.shiftKey) {
+          void runUngroupSelection();
+        } else {
+          void runGroupSelection();
+        }
+        return;
+      }
+
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        void runUndo();
+        return;
+      }
+
+      if ((key === "z" && event.shiftKey) || key === "y") {
+        event.preventDefault();
+        void runRedo();
+        return;
+      }
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        setSpacePressed(true);
+      }
+    }
+
+    function onKeyUp(event: KeyboardEvent) {
+      if (event.code === "Space") {
+        setSpacePressed(false);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [
+    activeNode,
+    activePathPointIndex,
+    activeTool,
+    applyAndSync,
+    cancelPathDraft,
+    finishPathDraft,
+    nudgeActivePathPoint,
+    removeActiveShapePathPoint,
+    runDeleteSelection,
+    runDuplicateSelection,
+    runGroupSelection,
+    runNudgeSelection,
+    runReorderSelection,
+    runRedo,
+    runUngroupSelection,
+    runUndo,
+    selectedGuideId,
+    snapshot?.selection.length,
+  ]);
+
+  function toCanvasPointFromClient(clientX: number, clientY: number) {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds) {
+      return null;
+    }
+
+    const activeViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+
+    return {
+      x: (clientX - bounds.left - activeViewport.x) / activeViewport.zoom,
+      y: (clientY - bounds.top - activeViewport.y) / activeViewport.zoom,
+    };
+  }
+
+  function toCanvasPoint(event: React.PointerEvent<HTMLDivElement>) {
+    return toCanvasPointFromClient(event.clientX, event.clientY);
+  }
+
+  async function handleNodePointerDown(
+    event: React.PointerEvent<HTMLButtonElement>,
+    nodeId: string,
+  ) {
+    event.stopPropagation();
+    setSelectedGuideId(null);
+
+    if (editingTextNodeId === nodeId) {
+      return;
+    }
+
+    if (event.button !== 0 || spacePressed) {
+      return;
+    }
+
+    const point = toCanvasPoint(event as unknown as React.PointerEvent<HTMLDivElement>);
+    if (!point) {
+      return;
+    }
+
+    const alreadySelected = snapshot?.selection.includes(nodeId) ?? false;
+    const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+    if (additive) {
+      await selectNode(nodeId, true);
+      if (alreadySelected) {
+        return;
+      }
+    } else if (!alreadySelected) {
+      await selectNode(nodeId);
+    }
+
+    setDragMove({
+      originX: point.x,
+      originY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handleNodeDoubleClick(
+    event: React.MouseEvent<HTMLButtonElement>,
+    node: SceneNode,
+  ) {
+    if (node.kind !== "text") {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    void selectNode(node.id);
+    beginInlineTextEdit(node);
+  }
+
+  function handleTransformHandlePointerDown(
+    event: React.PointerEvent<HTMLButtonElement>,
+    handle: TransformHandle,
+  ) {
+    event.stopPropagation();
+    setSelectedGuideId(null);
+
+    if (event.button !== 0 || !selectionBounds || spacePressed) {
+      return;
+    }
+
+    const point = toCanvasPoint(event as unknown as React.PointerEvent<HTMLDivElement>);
+    if (!point) {
+      return;
+    }
+
+    setDragTransform({
+      handle: handle.kind,
+      originX: point.x,
+      originY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      lockAspect: event.shiftKey,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  async function addGuide(axis: "x" | "y", clientX: number, clientY: number) {
+    const point = toCanvasPointFromClient(clientX, clientY);
+    if (!point) {
+      return;
+    }
+
+    const guide: SceneGuide = {
+      id: createGuideId(),
+      axis,
+      position: Math.round(axis === "x" ? point.x : point.y),
+    };
+
+    setSelectedGuideId(guide.id);
+    await applyAndSync([{ kind: "add_guide", pageId: CANVAS_PAGE_ID, guide }]);
+  }
+
+  function handleGuidePointerDown(
+    event: React.PointerEvent<HTMLButtonElement>,
+    guide: SceneGuide,
+  ) {
+    event.stopPropagation();
+
+    if (event.button !== 0) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    setSelectedGuideId(guide.id);
+    setDragGuide({
+      guideId: guide.id,
+      axis: guide.axis,
+      currentPosition: Math.round(guide.axis === "x" ? point.x : point.y),
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handlePathPointPointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+    node: SceneNode,
+    pointIndex: number,
+  ) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (event.button !== 0 || !node.shape?.path) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    setActivePathPointIndex(pointIndex);
+    const localPoint = localShapePointFromCanvas(
+      node,
+      point.x,
+      point.y,
+      canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+    );
+    setDragPathPoint({
+      nodeId: node.id,
+      pointIndex,
+      points: structuredClone(node.shape.path.points),
+      closed: node.shape.path.closed,
+      currentX: localPoint.x,
+      currentY: localPoint.y,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handlePathHandlePointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+    node: SceneNode,
+    pointIndex: number,
+    handleKey: PathHandleKey,
+  ) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (event.button !== 0 || !node.shape?.path) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    setActivePathPointIndex(pointIndex);
+    const localPoint = localShapePointFromCanvas(
+      node,
+      point.x,
+      point.y,
+      canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+    );
+    setDragPathHandle({
+      nodeId: node.id,
+      pointIndex,
+      handleKey,
+      points: structuredClone(node.shape.path.points),
+      closed: node.shape.path.closed,
+      currentX: localPoint.x,
+      currentY: localPoint.y,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handlePathSegmentPointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+    node: SceneNode,
+    pointIndex: number,
+  ) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (event.button !== 0 || !node.shape?.path) {
+      return;
+    }
+
+    const point = toCanvasPointFromClient(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+
+    const localPoint = localShapePointFromCanvas(
+      node,
+      point.x,
+      point.y,
+      canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+    );
+    void insertActiveShapePathPointAt(pointIndex, localPoint);
+  }
+
+  function handleTopRulerDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    void addGuide("x", event.clientX, event.clientY);
+  }
+
+  function handleLeftRulerDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    void addGuide("y", event.clientX, event.clientY);
+  }
+
+  function handleCanvasPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 && event.button !== 1) {
+      return;
+    }
+
+    setSelectedGuideId(null);
+
+    const activeViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+
+    if (event.button === 1 || spacePressed) {
+      setDragPan({
+        originClientX: event.clientX,
+        originClientY: event.clientY,
+        startViewportX: activeViewport.x,
+        startViewportY: activeViewport.y,
+      });
+      canvasRef.current?.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    const point = toCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    if (activeTool === "path") {
+      setPathDraft((current) => ({
+        closed: current?.closed ?? false,
+        points: [...(current?.points ?? []), { x: point.x, y: point.y }],
+      }));
+      return;
+    }
+
+    setDragMarquee({
+      originX: point.x,
+      originY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      additive: event.shiftKey,
+    });
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function handleCanvasPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (dragPan) {
+      const nextViewport = {
+        zoom: viewViewport.zoom,
+        x: dragPan.startViewportX + (event.clientX - dragPan.originClientX),
+        y: dragPan.startViewportY + (event.clientY - dragPan.originClientY),
+      };
+      setDraftViewport(nextViewport);
+      return;
+    }
+
+    if (dragGuide) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      setDragGuide((current) =>
+        current
+          ? {
+              ...current,
+              currentPosition: Math.round(current.axis === "x" ? point.x : point.y),
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (dragPathHandle) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      const targetNode = nodes.find((node) => node.id === dragPathHandle.nodeId);
+      if (!targetNode) {
+        return;
+      }
+
+      const localPoint = localShapePointFromCanvas(
+        targetNode,
+        point.x,
+        point.y,
+        canvasNodeFrames.get(targetNode.id) ?? absoluteNodeFrameMap.get(targetNode.id) ?? targetNode.frame,
+      );
+      setDragPathHandle((current) =>
+        current
+          ? {
+              ...current,
+              currentX: localPoint.x,
+              currentY: localPoint.y,
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (dragPathPoint) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      const targetNode = nodes.find((node) => node.id === dragPathPoint.nodeId);
+      if (!targetNode) {
+        return;
+      }
+
+      const localPoint = localShapePointFromCanvas(
+        targetNode,
+        point.x,
+        point.y,
+        canvasNodeFrames.get(targetNode.id) ?? absoluteNodeFrameMap.get(targetNode.id) ?? targetNode.frame,
+      );
+      setDragPathPoint((current) =>
+        current
+          ? {
+              ...current,
+              currentX: localPoint.x,
+              currentY: localPoint.y,
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (dragMove) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      setDragMove((current) =>
+        current
+          ? {
+              ...current,
+              currentX: point.x,
+              currentY: point.y,
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (dragTransform) {
+      const point = toCanvasPoint(event);
+      if (!point) {
+        return;
+      }
+
+      setDragTransform((current) =>
+        current
+          ? {
+              ...current,
+              currentX: point.x,
+              currentY: point.y,
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (!dragMarquee) {
+      return;
+    }
+
+    const point = toCanvasPoint(event);
+    if (!point) {
+      return;
+    }
+
+    setDragMarquee((current) =>
+      current
+        ? {
+            ...current,
+            currentX: point.x,
+            currentY: point.y,
+          }
+        : current,
+    );
+  }
+
+  async function commitViewport(viewport: EditorSnapshot["viewport"]) {
+    await applyAndSync([{ kind: "set_viewport", viewport }]);
+  }
+
+  async function zoomCanvas(multiplier: number) {
+    const current = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+    const nextZoom = Math.min(4, Math.max(0.2, Number((current.zoom * multiplier).toFixed(3))));
+    await commitViewport({ ...current, zoom: nextZoom });
+  }
+
+  async function finishMarqueeSelection() {
+    if (!dragMarquee) {
+      return;
+    }
+
+    const rect = normalizeRect(dragMarquee);
+    setDragMarquee(null);
+
+    const isClick =
+      rect.w < 4 &&
+      rect.h < 4;
+
+    if (isClick) {
+      await applyAndSync([{ kind: "select_nodes", nodeIds: [] }]);
+      return;
+    }
+
+    await applyAndSync([
+      {
+        kind: "select_in_rect",
+        pageId: CANVAS_PAGE_ID,
+        rect,
+        mode: dragMarquee.additive ? "add" : "replace",
+      },
+    ]);
+  }
+
+  function handleCanvasPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    if (dragPan) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const viewportToCommit = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+      setDragPan(null);
+      void commitViewport(viewportToCommit);
+      return;
+    }
+
+    if (dragMove) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const deltaX = dragMove.currentX - dragMove.originX;
+      const deltaY = dragMove.currentY - dragMove.originY;
+      setDragMove(null);
+
+      if (Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5) {
+        void applyAndSync([
+          {
+            kind: "move_selection",
+            deltaX: moveSnapPreview.deltaX,
+            deltaY: moveSnapPreview.deltaY,
+          },
+        ]);
+      }
+      return;
+    }
+
+    if (dragGuide) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragGuide;
+      setDragGuide(null);
+      void applyAndSync([
+        {
+          kind: "move_guide",
+          pageId: CANVAS_PAGE_ID,
+          guideId: currentDrag.guideId,
+          position: currentDrag.currentPosition,
+        },
+      ]);
+      return;
+    }
+
+    if (dragPathHandle) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragPathHandle;
+      setDragPathHandle(null);
+      void applyAndSync([
+        {
+          kind: "set_shape_path",
+          nodeId: currentDrag.nodeId,
+          path: {
+            closed: currentDrag.closed,
+            points: applyDraggedPathHandleToPoints(
+              currentDrag.points,
+              currentDrag.pointIndex,
+              currentDrag.handleKey,
+              currentDrag.currentX,
+              currentDrag.currentY,
+            ),
+          },
+        },
+      ]);
+      return;
+    }
+
+    if (dragPathPoint) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragPathPoint;
+      setDragPathPoint(null);
+      void applyAndSync([
+        {
+          kind: "set_shape_path",
+          nodeId: currentDrag.nodeId,
+          path: {
+            closed: currentDrag.closed,
+            points: applyDraggedPathPointToPoints(
+              currentDrag.points,
+              currentDrag.pointIndex,
+              currentDrag.currentX,
+              currentDrag.currentY,
+            ),
+          },
+        },
+      ]);
+      return;
+    }
+
+    if (dragTransform) {
+      if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+        canvasRef.current.releasePointerCapture(event.pointerId);
+      }
+
+      const currentDrag = dragTransform;
+      setDragTransform(null);
+
+      if (currentDrag.handle === "rotate") {
+        if (!selectionBounds) {
+          return;
+        }
+
+        const deltaDeg = angleDeltaFromBounds(
+          selectionBounds,
+          currentDrag.originX,
+          currentDrag.originY,
+          currentDrag.currentX,
+          currentDrag.currentY,
+        );
+
+        if (Math.abs(deltaDeg) >= 0.5) {
+          void applyAndSync([{ kind: "rotate_selection", deltaDeg }]);
+        }
+        return;
+      }
+
+      const deltaX = currentDrag.currentX - currentDrag.originX;
+      const deltaY = currentDrag.currentY - currentDrag.originY;
+      if (Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5) {
+        void applyAndSync([
+          {
+            kind: "resize_selection",
+            handle: currentDrag.handle,
+            deltaX: resizeSnapPreview.deltaX,
+            deltaY: resizeSnapPreview.deltaY,
+            lockAspect: currentDrag.lockAspect,
+          },
+        ]);
+      }
+      return;
+    }
+
+    if (!dragMarquee) {
+      return;
+    }
+
+    if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+      canvasRef.current.releasePointerCapture(event.pointerId);
+    }
+
+    void finishMarqueeSelection();
+  }
+
+  function handleCanvasPointerCancel(event: React.PointerEvent<HTMLDivElement>) {
+    if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+      canvasRef.current.releasePointerCapture(event.pointerId);
+    }
+    setDragPan(null);
+    setDragGuide(null);
+    setDragPathPoint(null);
+    setDragPathHandle(null);
+    setDragMove(null);
+    setDragTransform(null);
+    setDragMarquee(null);
+  }
+
+  async function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!(event.metaKey || event.ctrlKey)) {
+      return;
+    }
+
+    event.preventDefault();
+    const current = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+    const multiplier = event.deltaY < 0 ? 1.08 : 0.92;
+    const nextZoom = Math.min(4, Math.max(0.2, Number((current.zoom * multiplier).toFixed(3))));
+    await commitViewport({ ...current, zoom: nextZoom });
+  }
+
+  function renderLayerNode(nodeId: string, depth = 0): React.ReactNode {
+    if (!currentPage) {
+      return null;
+    }
+
+    const node = nodeMap.get(nodeId);
+    if (!node) {
+      return null;
+    }
+
+    const childIds = orderedLayerChildIds(currentPage, node);
+    const hasChildren = childIds.length > 0;
+    const collapsed = collapsedLayerIds.includes(node.id);
+    const selected = snapshot?.selection.includes(node.id) ?? false;
+
+    return (
+      <div key={`layer-node-${node.id}`} className="space-y-1">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(event) =>
+              void selectNode(node.id, event.shiftKey || event.metaKey || event.ctrlKey)
+            }
+            className={`flex min-w-0 flex-1 items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
+              selected
+                ? "border-slate-950 bg-slate-950 text-white"
+                : "border-transparent bg-slate-50 text-slate-700 hover:border-slate-200 hover:bg-white"
+            }`}
+            style={{ paddingLeft: 12 + depth * 14 }}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {hasChildren ? (
+                <span
+                  className={`text-[10px] transition ${selected ? "text-white/80" : "text-slate-400"} ${
+                    collapsed ? "" : "rotate-90"
+                  }`}
+                >
+                  ▶
+                </span>
+              ) : (
+                <span className="w-2" />
+              )}
+              <span className="truncate text-sm font-medium">{node.name}</span>
+            </span>
+            <span className="ml-3 text-[11px] uppercase tracking-[0.14em] opacity-70">
+              {node.kind}
+            </span>
+          </button>
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleLayerCollapsed(node.id);
+              }}
+              className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-[11px] font-semibold text-slate-500 transition hover:border-slate-300"
+              aria-label={collapsed ? "Expand layer group" : "Collapse layer group"}
+            >
+              {collapsed ? "+" : "−"}
+            </button>
+          ) : null}
+        </div>
+        {hasChildren && !collapsed ? (
+          <div className="space-y-1">
+            {childIds.map((childId) => renderLayerNode(childId, depth + 1))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen flex-col">
+      <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4">
+        <div className="flex items-center gap-4">
+          <div className="rounded-xl bg-slate-950 px-3 py-1 text-sm font-semibold text-white">
+            NULL v2
+          </div>
+          <div>
+            <div className="text-sm font-semibold">
+              {snapshot?.doc.title ?? "Loading editor shell"}
+            </div>
+            <div className="text-xs text-slate-500">
+              {bridgeInfo ? `${bridgeInfo.kernel} bridge` : "Booting bridge"}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTool("select");
+              setPathDraft(null);
+            }}
+            className={`rounded-full border px-3 py-2 text-sm font-medium ${
+              activeTool === "select"
+                ? "border-slate-950 bg-slate-950 text-white"
+                : "border-slate-200 text-slate-700"
+            }`}
+          >
+            Select
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTool("path")}
+            className={`rounded-full border px-3 py-2 text-sm font-medium ${
+              activeTool === "path"
+                ? "border-[#2859ff] bg-[#2859ff] text-white"
+                : "border-slate-200 text-slate-700"
+            }`}
+          >
+            Path
+          </button>
+          {supportsComponentPromotion(activeNode) && activeNode?.kind !== "component" ? (
+            <button
+              type="button"
+              onClick={() => void promoteActiveNodeToComponent()}
+              className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+            >
+              Create component
+            </button>
+          ) : null}
+          {isComponentNode(activeNode) ? (
+            <button
+              type="button"
+              onClick={() => void createInstanceFromActiveComponent()}
+              className="rounded-full border border-[#2859ff]/25 bg-[#2859ff]/10 px-3 py-2 text-sm font-medium text-[#2859ff]"
+            >
+              Create instance
+            </button>
+          ) : null}
+          {selectedShapeNodes.length >= 2 ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("union")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Union
+              </button>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("subtract")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Subtract
+              </button>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("intersect")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Intersect
+              </button>
+              <button
+                type="button"
+                onClick={() => void runShapeBoolean("exclude")}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Exclude
+              </button>
+            </>
+          ) : null}
+          {activeTool === "path" ? (
+            <>
+              <label className="flex items-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={pathDraft?.closed ?? false}
+                  onChange={(event) =>
+                    setPathDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            closed: event.target.checked,
+                          }
+                        : {
+                            points: [],
+                            closed: event.target.checked,
+                          },
+                    )
+                  }
+                />
+                Closed
+              </label>
+              <button
+                type="button"
+                onClick={() => void finishPathDraft()}
+                disabled={(pathDraft?.points.length ?? 0) < 2}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Finish
+              </button>
+              <button
+                type="button"
+                onClick={cancelPathDraft}
+                className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Cancel
+              </button>
+            </>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void zoomCanvas(0.9)}
+            className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+          >
+            -
+          </button>
+          <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600">
+            {Math.round(viewViewport.zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => void zoomCanvas(1.1)}
+            className="rounded-full border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+          >
+            +
+          </button>
+          <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600">
+            schema v{bridgeInfo?.schemaVersion ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600">
+            version {snapshot?.version ?? 0}
+          </span>
+          <button
+            type="button"
+            onClick={rerunValidation}
+            className="rounded-full bg-slate-950 px-4 py-2 text-sm font-medium text-white"
+          >
+            Validate
+          </button>
+        </div>
+      </header>
+
+      <div className="grid min-h-0 flex-1 grid-cols-[280px_minmax(0,1fr)_320px]">
+        <aside className="border-r border-slate-200 bg-white">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Layers
+            </div>
+          </div>
+          <div className="space-y-1 p-3">
+            {layerRootChildIds.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                No layers yet.
+              </div>
+            ) : (
+              layerRootChildIds.map((nodeId) => renderLayerNode(nodeId))
+            )}
+          </div>
+          <div className="border-t border-slate-200 px-4 py-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Components
+            </div>
+          </div>
+          <div className="space-y-2 p-3">
+            {componentNodes.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                No components yet.
+              </div>
+            ) : (
+              componentNodes.map((node) => {
+                const instanceCount = nodes.filter(
+                  (candidate) => candidate.instance?.sourceComponentId === node.id,
+                ).length;
+
+                return (
+                  <div
+                    key={`component-panel-${node.id}`}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void selectNode(node.id)}
+                        className="min-w-0 text-left"
+                      >
+                        <div className="truncate text-sm font-semibold text-slate-900">
+                          {node.name}
+                        </div>
+                        <div className="mt-1 truncate text-xs text-slate-500">
+                          {node.component.componentKey}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void createInstanceFromComponentNode(node.id)}
+                        className="shrink-0 rounded-full bg-[#2859ff] px-3 py-1 text-xs font-semibold text-white"
+                      >
+                        Insert
+                      </button>
+                    </div>
+                    <div className="mt-3 text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                      {instanceCount} instance{instanceCount === 1 ? "" : "s"}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </aside>
+
+        <main className="flex min-h-0 flex-col">
+          <div className="border-b border-slate-200 bg-[#f8fafc] px-5 py-3 text-sm text-slate-600">
+            Editor-first shell. Selection, marquee, handles, history, and diagnostics are driven
+            through the v2 bridge contract.
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto bg-[#edf1f7] p-8">
+            <div
+              ref={canvasRef}
+              className="relative mx-auto h-[960px] w-full max-w-[1280px] rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerUp={handleCanvasPointerUp}
+              onPointerCancel={handleCanvasPointerCancel}
+              onWheel={handleCanvasWheel}
+            >
+              <div
+                className="absolute inset-0 origin-top-left"
+                style={{
+                  transform: `translate(${viewViewport.x}px, ${viewViewport.y}px) scale(${viewViewport.zoom})`,
+                }}
+              >
+                {rootFrame ? (
+                  <div className="pointer-events-none absolute left-0 top-0 rounded-[28px] border border-dashed border-slate-200/80 p-5 text-xs uppercase tracking-[0.18em] text-slate-300">
+                    {rootFrame.name}
+                  </div>
+                ) : null}
+
+                {canvasNodes.map((node) => {
+                  const selected = snapshot?.selection.includes(node.id) ?? false;
+                  const baseFrame =
+                    canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame;
+                  const previewFrame =
+                    dragMoveDelta && nodeAffectedBySelectionMove(node.id, selectionMoveSet, nodeMap)
+                      ? {
+                          ...baseFrame,
+                          x: baseFrame.x + dragMoveDelta.x,
+                          y: baseFrame.y + dragMoveDelta.y,
+                        }
+                      : baseFrame;
+                  const textData = node.kind === "text" ? node.text : undefined;
+                  const shapeData = node.kind === "shape" ? node.shape : undefined;
+                  const previewPath =
+                    shapeData?.primitive === "path"
+                      ? withDraggedPathHandle(
+                          node.id,
+                          withDraggedPathPoint(node.id, shapeData.path, dragPathPoint),
+                          dragPathHandle,
+                        )
+                      : shapeData?.path;
+                  const richTextParagraphs =
+                    textData ? splitRichTextRunsByParagraph(resolveRichTextRuns(textData)) : null;
+                  const isContainerNode =
+                    !textData &&
+                    !shapeData &&
+                    (node.kind === "frame" ||
+                      node.kind === "group" ||
+                      node.kind === "component" ||
+                      node.kind === "instance");
+                  return (
+                    <button
+                      key={node.id}
+                      type="button"
+                      onPointerDown={(event) => void handleNodePointerDown(event, node.id)}
+                      onDoubleClick={(event) => handleNodeDoubleClick(event, node)}
+                      style={{
+                        left: previewFrame.x,
+                        top: previewFrame.y,
+                        width: previewFrame.w,
+                        height: previewFrame.h,
+                        transform: `rotate(${previewFrame.rotation}deg)`,
+                        transformOrigin: "center",
+                      }}
+                      className={`absolute rounded-2xl border text-left transition ${
+                        node.kind === "text" || isContainerNode ? "bg-transparent" : "bg-slate-50"
+                      } ${
+                        selected
+                          ? "border-slate-950 ring-2 ring-slate-950/15"
+                          : "border-slate-200 hover:border-slate-300"
+                      }`}
+                    >
+                      {node.kind === "component" ? (
+                        <div className="pointer-events-none absolute left-2 top-2 rounded-full bg-[#2859ff] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white">
+                          Component
+                        </div>
+                      ) : null}
+                      {node.kind === "instance" ? (
+                        <div className="pointer-events-none absolute left-2 top-2 rounded-full border border-[#2859ff]/25 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#2859ff]">
+                          Instance
+                        </div>
+                      ) : null}
+                      {textData ? (
+                        <div
+                          className="flex h-full w-full flex-col p-1"
+                          style={{
+                            gap: textData.paragraphSpacing,
+                          }}
+                        >
+                          {richTextParagraphs?.map((paragraph, paragraphIndex) => (
+                            <div
+                              key={`${node.id}-paragraph-${paragraphIndex}`}
+                              style={{
+                                textAlign: textData.align,
+                                whiteSpace: "pre-wrap",
+                                overflowWrap: "anywhere",
+                              }}
+                            >
+                              {paragraph.runs.length ? (
+                                paragraph.runs.map((run, runIndex) => (
+                                  <span
+                                    key={`${node.id}-run-${paragraphIndex}-${runIndex}`}
+                                    style={{
+                                      fontFamily: run.style.fontFamily,
+                                      fontSize: run.style.fontSize,
+                                      fontWeight: run.style.fontWeight,
+                                      fontStyle: run.style.italic ? "italic" : "normal",
+                                      lineHeight: `${run.style.lineHeight}px`,
+                                      letterSpacing: run.style.letterSpacing,
+                                      color: run.style.color,
+                                      textDecoration: textDecorationValue(run.style),
+                                      textTransform: textTransformValue(run.style.textCase),
+                                    }}
+                                  >
+                                    {run.text}
+                                  </span>
+                                ))
+                              ) : (
+                                <span
+                                  style={{
+                                    fontFamily: textData.fontFamily,
+                                    fontSize: textData.fontSize,
+                                    fontWeight: textData.fontWeight,
+                                    fontStyle: textData.italic ? "italic" : "normal",
+                                    lineHeight: `${textData.lineHeight}px`,
+                                    letterSpacing: textData.letterSpacing,
+                                    color: textData.color,
+                                    textDecoration: textDecorationValue(textData),
+                                    textTransform: textTransformValue(textData.textCase),
+                                  }}
+                                >
+                                  {" "}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : shapeData ? (
+                        shapeData.primitive === "line" ? (
+                          <div className="flex h-full w-full items-center">
+                            <div
+                              className="w-full"
+                              style={{
+                                borderTop: `${Math.max(shapeData.strokeWidth, 1)}px solid ${shapeData.strokeColor}`,
+                                opacity: shapeData.opacity,
+                              }}
+                            />
+                          </div>
+                        ) : shapeData.primitive === "path" ? (
+                          <div className="relative h-full w-full">
+                            <svg
+                              className="h-full w-full overflow-visible"
+                              viewBox={`0 0 ${Math.max(node.frame.w, 1)} ${Math.max(node.frame.h, 1)}`}
+                            >
+                              <path
+                                d={shapePathToSvgD(previewPath)}
+                                fill={previewPath?.closed ? shapeData.fill : "none"}
+                                stroke={shapeData.strokeColor}
+                                strokeWidth={Math.max(shapeData.strokeWidth, 1)}
+                                opacity={shapeData.opacity}
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                            {selected
+                              ? (
+                                  <>
+                                    {(previewPath?.points ?? []).map((point, pointIndex, points) => {
+                                      const nextPoint =
+                                        points[pointIndex + 1] ??
+                                        (previewPath?.closed ? points[0] : undefined);
+                                      if (!nextPoint || (pointIndex === points.length - 1 && !previewPath?.closed)) {
+                                        return null;
+                                      }
+
+                                      return (
+                                        <div
+                                          key={`path-segment-${node.id}-${pointIndex}`}
+                                          onPointerDown={(event) =>
+                                            handlePathSegmentPointerDown(event, node, pointIndex)
+                                          }
+                                          className="absolute cursor-copy rounded-full"
+                                          style={{
+                                            left: point.x,
+                                            top: point.y,
+                                            width: Math.max(
+                                              Math.hypot(nextPoint.x - point.x, nextPoint.y - point.y),
+                                              1,
+                                            ),
+                                            height: 12,
+                                            transformOrigin: "left center",
+                                            transform: `translateY(-6px) rotate(${(Math.atan2(
+                                              nextPoint.y - point.y,
+                                              nextPoint.x - point.x,
+                                            ) *
+                                              180) /
+                                              Math.PI}deg)`,
+                                          }}
+                                          title="Insert point"
+                                        />
+                                      );
+                                    })}
+                                    {(previewPath?.points ?? []).map((point, pointIndex) => (
+                                      <div key={`path-point-${node.id}-${pointIndex}`}>
+                                    {point.handleIn ? (
+                                      <>
+                                        <div
+                                          className="absolute border-t border-dashed border-[#2859ff]/70"
+                                          style={{
+                                            left: point.x,
+                                            top: point.y,
+                                            width: Math.max(
+                                              Math.hypot(
+                                                point.handleIn.x - point.x,
+                                                point.handleIn.y - point.y,
+                                              ),
+                                              1,
+                                            ),
+                                            transformOrigin: "left center",
+                                            transform: `translateY(-0.5px) rotate(${(Math.atan2(
+                                              point.handleIn.y - point.y,
+                                              point.handleIn.x - point.x,
+                                            ) *
+                                              180) /
+                                              Math.PI}deg)`,
+                                          }}
+                                        />
+                                        <div
+                                          onPointerDown={(event) =>
+                                            handlePathHandlePointerDown(event, node, pointIndex, "handleIn")
+                                          }
+                                          style={{
+                                            left: point.handleIn.x - 4,
+                                            top: point.handleIn.y - 4,
+                                          }}
+                                          className="absolute h-2.5 w-2.5 rounded-full border border-white bg-white shadow-[0_0_0_1px_rgba(40,89,255,0.7)]"
+                                        />
+                                      </>
+                                    ) : null}
+                                    {point.handleOut ? (
+                                      <>
+                                        <div
+                                          className="absolute border-t border-dashed border-[#2859ff]/70"
+                                          style={{
+                                            left: point.x,
+                                            top: point.y,
+                                            width: Math.max(
+                                              Math.hypot(
+                                                point.handleOut.x - point.x,
+                                                point.handleOut.y - point.y,
+                                              ),
+                                              1,
+                                            ),
+                                            transformOrigin: "left center",
+                                            transform: `translateY(-0.5px) rotate(${(Math.atan2(
+                                              point.handleOut.y - point.y,
+                                              point.handleOut.x - point.x,
+                                            ) *
+                                              180) /
+                                              Math.PI}deg)`,
+                                          }}
+                                        />
+                                        <div
+                                          onPointerDown={(event) =>
+                                            handlePathHandlePointerDown(event, node, pointIndex, "handleOut")
+                                          }
+                                          style={{
+                                            left: point.handleOut.x - 4,
+                                            top: point.handleOut.y - 4,
+                                          }}
+                                          className="absolute h-2.5 w-2.5 rounded-full border border-white bg-white shadow-[0_0_0_1px_rgba(40,89,255,0.7)]"
+                                        />
+                                      </>
+                                    ) : null}
+                                    <div
+                                      onPointerDown={(event) =>
+                                        handlePathPointPointerDown(event, node, pointIndex)
+                                      }
+                                      style={{
+                                        left: point.x - 5,
+                                        top: point.y - 5,
+                                      }}
+                                      className={`absolute rounded-full border border-white shadow-[0_0_0_1px_rgba(40,89,255,0.45)] ${
+                                        activeNode?.id === node.id && activePathPointIndex === pointIndex
+                                          ? "h-4 w-4 bg-slate-950 ring-2 ring-[#2859ff]/35"
+                                          : "h-3 w-3 bg-[#2859ff]"
+                                      }`}
+                                    />
+                                  </div>
+                                    ))}
+                                  </>
+                                )
+                              : null}
+                          </div>
+                        ) : (
+                          <div
+                            className="h-full w-full"
+                            style={{
+                              backgroundColor: shapeData.fill,
+                              border: `${shapeData.strokeWidth}px solid ${shapeData.strokeColor}`,
+                              borderRadius:
+                                shapeData.primitive === "ellipse"
+                                  ? "9999px"
+                                  : `${shapeData.cornerRadius}px`,
+                              opacity: shapeData.opacity,
+                            }}
+                          />
+                        )
+                      ) : (
+                        isContainerNode ? (
+                          <div className="pointer-events-none absolute inset-0 rounded-2xl border border-dashed border-slate-200/70">
+                            <div className="absolute left-2 top-2 rounded-full bg-white/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 shadow-sm">
+                              {node.name}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4">
+                            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                              {node.kind}
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-slate-900">
+                              {node.name}
+                            </div>
+                          </div>
+                        )
+                      )}
+                    </button>
+                  );
+                })}
+
+                {pathDraft && pathDraft.points.length > 0 ? (
+                  <div className="pointer-events-none absolute inset-0">
+                    <svg className="h-full w-full overflow-visible">
+                      <path
+                        d={shapePathToSvgD({
+                          closed: pathDraft.closed,
+                          points: pathDraft.points,
+                        })}
+                        fill={pathDraft.closed ? "rgba(147,197,253,0.24)" : "none"}
+                        stroke="#2859ff"
+                        strokeWidth={2}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                    {pathDraft.points.map((point, index) => (
+                      <div
+                        key={`draft-path-point-${index}`}
+                        style={{
+                          left: point.x - 4,
+                          top: point.y - 4,
+                        }}
+                        className="absolute h-2.5 w-2.5 rounded-full border border-white bg-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.45)]"
+                      />
+                    ))}
+                  </div>
+                ) : null}
+
+                {editingTextNode && editingTextNode.text && editingTextNodeFrame ? (
+                  <textarea
+                    ref={textEditorRef}
+                    value={editingTextDraft}
+                    onChange={(event) => setEditingTextDraft(event.target.value)}
+                    onCompositionStart={() => setEditingTextComposing(true)}
+                    onCompositionEnd={() => setEditingTextComposing(false)}
+                    onBlur={() => void commitInlineTextEdit()}
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                      if (editingTextComposing || event.nativeEvent.isComposing) {
+                        return;
+                      }
+
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelInlineTextEdit();
+                        return;
+                      }
+
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void commitInlineTextEdit();
+                      }
+                    }}
+                    style={{
+                      left: editingTextNodeFrame.x,
+                      top: editingTextNodeFrame.y,
+                      width: editingTextNodeFrame.w,
+                      height: editingTextNodeFrame.h,
+                      transform: `rotate(${editingTextNodeFrame.rotation}deg)`,
+                      transformOrigin: "center",
+                      fontFamily: editingTextNode.text.fontFamily,
+                      fontSize: editingTextNode.text.fontSize,
+                      fontWeight: editingTextNode.text.fontWeight,
+                      fontStyle: editingTextNode.text.italic ? "italic" : "normal",
+                      lineHeight: `${editingTextNode.text.lineHeight}px`,
+                      letterSpacing: editingTextNode.text.letterSpacing,
+                      color: editingTextNode.text.color,
+                      textAlign: editingTextNode.text.align,
+                      textDecoration: textDecorationValue(editingTextNode.text),
+                      textTransform: textTransformValue(editingTextNode.text.textCase),
+                    }}
+                    className="absolute z-20 resize-none overflow-hidden rounded-md border border-[#2859ff] bg-white px-1 py-1 outline-none ring-2 ring-[#2859ff]/15"
+                  />
+                ) : null}
+
+                {previewGuides.map((guide) =>
+                  guide.axis === "x" ? (
+                    <button
+                      key={guide.id}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute top-0 h-full w-px ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/65"
+                      }`}
+                      style={{ left: guide.position, cursor: "col-resize" }}
+                      title="Vertical guide"
+                    />
+                  ) : (
+                    <button
+                      key={guide.id}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute left-0 h-px w-full ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/65"
+                      }`}
+                      style={{ top: guide.position, cursor: "row-resize" }}
+                      title="Horizontal guide"
+                    />
+                  ),
+                )}
+
+                {previewSelectionBounds ? (
+                  <div
+                    className="pointer-events-none absolute border border-[#2859ff] shadow-[0_0_0_1px_rgba(40,89,255,0.12)]"
+                    style={{
+                      left: previewSelectionBounds.x,
+                      top: previewSelectionBounds.y,
+                      width: previewSelectionBounds.w,
+                      height: previewSelectionBounds.h,
+                    }}
+                  />
+                ) : null}
+
+                {previewTransformHandles.map((handle) => (
+                  <button
+                    key={`${handle.kind}-${handle.x}-${handle.y}`}
+                    type="button"
+                    onPointerDown={(event) => handleTransformHandlePointerDown(event, handle)}
+                    className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#2859ff] bg-white ${
+                      handle.kind === "rotate" ? "h-3.5 w-3.5" : "h-3 w-3"
+                    }`}
+                    style={{
+                      left: handle.x,
+                      top: handle.y,
+                      cursor: handle.cursor,
+                    }}
+                    title={handle.kind}
+                  />
+                ))}
+
+                {liveMarqueeRect ? (
+                  <div
+                    className="pointer-events-none absolute border border-dashed border-[#2859ff] bg-[#2859ff]/10"
+                    style={{
+                      left: liveMarqueeRect.x,
+                      top: liveMarqueeRect.y,
+                      width: liveMarqueeRect.w,
+                      height: liveMarqueeRect.h,
+                    }}
+                  />
+                ) : null}
+
+                {activeGuides.map((guide) =>
+                  guide.axis === "x" ? (
+                    <div
+                      key={`guide-x-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
+                      className="pointer-events-none absolute w-px bg-[#2859ff]/80"
+                      style={{
+                        left: guide.position,
+                        top: guide.spanStart,
+                        height: Math.max(1, guide.spanEnd - guide.spanStart),
+                      }}
+                    />
+                  ) : (
+                    <div
+                      key={`guide-y-${guide.position}-${guide.spanStart}-${guide.spanEnd}`}
+                      className="pointer-events-none absolute h-px bg-[#2859ff]/80"
+                      style={{
+                        left: guide.spanStart,
+                        top: guide.position,
+                        width: Math.max(1, guide.spanEnd - guide.spanStart),
+                      }}
+                    />
+                  ),
+                )}
+              </div>
+              <div
+                className="absolute inset-x-0 top-0 h-7 border-b border-slate-200/90 bg-white/90 backdrop-blur-sm"
+                onDoubleClick={handleTopRulerDoubleClick}
+              >
+                <div className="pointer-events-none absolute left-0 top-0 h-7 w-7 border-r border-slate-200/90 bg-slate-50/90" />
+                {horizontalRulerTicks.map((tick) => (
+                  <div
+                    key={`ruler-x-${tick.value}-${tick.position}`}
+                    className="pointer-events-none absolute top-0"
+                    style={{ left: tick.position }}
+                  >
+                    <div
+                      className={`w-px bg-slate-300/90 ${tick.major ? "h-4" : "h-2.5"} ml-0`}
+                    />
+                    {tick.major ? (
+                      <div className="mt-0.5 -translate-x-1/2 text-[10px] font-medium text-slate-400">
+                        {Math.round(tick.value)}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {activeGuides
+                  .filter((guide) => guide.axis === "x")
+                  .map((guide) => (
+                    <div
+                      key={`ruler-guide-x-${guide.position}`}
+                      className="absolute top-0 h-7 w-px bg-[#2859ff]"
+                      style={{ left: guide.position }}
+                    />
+                  ))}
+                {previewGuides
+                  .filter((guide) => guide.axis === "x")
+                  .map((guide) => (
+                    <button
+                      key={`persistent-ruler-guide-x-${guide.id}`}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute top-0 h-7 w-px ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/80"
+                      }`}
+                      style={{ left: guide.position * viewViewport.zoom + viewViewport.x }}
+                      title="Vertical guide"
+                    />
+                  ))}
+              </div>
+              <div
+                className="absolute inset-y-0 left-0 w-7 border-r border-slate-200/90 bg-white/90 backdrop-blur-sm"
+                onDoubleClick={handleLeftRulerDoubleClick}
+              >
+                <div className="pointer-events-none absolute left-0 top-0 h-7 w-7 border-b border-slate-200/90 bg-slate-50/90" />
+                {verticalRulerTicks.map((tick) => (
+                  <div
+                    key={`ruler-y-${tick.value}-${tick.position}`}
+                    className="pointer-events-none absolute left-0"
+                    style={{ top: tick.position }}
+                  >
+                    <div
+                      className={`h-px bg-slate-300/90 ${tick.major ? "w-4" : "w-2.5"} mt-0`}
+                    />
+                    {tick.major ? (
+                      <div
+                        className="absolute left-1 top-1/2 -translate-y-1/2 text-[10px] font-medium text-slate-400"
+                        style={{ writingMode: "vertical-rl" }}
+                      >
+                        {Math.round(tick.value)}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {activeGuides
+                  .filter((guide) => guide.axis === "y")
+                  .map((guide) => (
+                    <div
+                      key={`ruler-guide-y-${guide.position}`}
+                      className="absolute left-0 h-px w-7 bg-[#2859ff]"
+                      style={{ top: guide.position }}
+                    />
+                  ))}
+                {previewGuides
+                  .filter((guide) => guide.axis === "y")
+                  .map((guide) => (
+                    <button
+                      key={`persistent-ruler-guide-y-${guide.id}`}
+                      type="button"
+                      onPointerDown={(event) => handleGuidePointerDown(event, guide)}
+                      className={`absolute left-0 h-px w-7 ${
+                        selectedGuideId === guide.id ? "bg-[#2859ff]" : "bg-[#2859ff]/80"
+                      }`}
+                      style={{ top: guide.position * viewViewport.zoom + viewViewport.y }}
+                      title="Horizontal guide"
+                    />
+                  ))}
+              </div>
+              <div
+                className={`pointer-events-none absolute bottom-4 left-4 rounded-full border px-3 py-1 text-xs font-medium ${
+                  dragPan || spacePressed
+                    ? "border-[#2859ff]/20 bg-[#2859ff]/10 text-[#2859ff]"
+                    : "border-slate-200 bg-white/90 text-slate-500"
+                }`}
+              >
+                {dragPan || spacePressed ? "Pan mode" : "Hold Space or use middle mouse to pan"}
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-[1.4fr_1fr] border-t border-slate-200 bg-white">
+            <div className="border-r border-slate-200 px-4 py-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Diagnostics
+              </div>
+              <div className="mt-3 space-y-2">
+                {validation?.issues.length ? (
+                  validation.issues.map((issue) => (
+                    <div
+                      key={issue.id}
+                      className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+                    >
+                      <div className="font-semibold">{issue.code}</div>
+                      <div className="text-xs">{issue.message}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                    No validation issues in the scaffold document.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="px-4 py-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Runtime handoff
+              </div>
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-900">
+                  {runtimeGraph?.routes.length ?? 0} route
+                  {(runtimeGraph?.routes.length ?? 0) === 1 ? "" : "s"}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  Minimal preview/publish contract only.
+                </div>
+              </div>
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-semibold text-slate-900">
+                  {selectionSummary(snapshot?.selection ?? [])}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  Click to select, drag on canvas to marquee, Cmd/Ctrl+Z to undo, Delete to
+                  remove.
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        <aside className="border-l border-slate-200 bg-white">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Inspector
+            </div>
+          </div>
+          <div className="space-y-5 p-4">
+            <section>
+              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Selection
+              </div>
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                {activeNode ? (
+                  <>
+                    <label className="block">
+                      <div className="text-slate-400">Layer name</div>
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                        value={activeNode.name}
+                        onChange={(event) => void updateNodeName(event.target.value)}
+                      />
+                    </label>
+                    <div className="mt-2 text-xs uppercase tracking-[0.14em] text-slate-500">
+                      {activeNode.kind}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void runDuplicateSelection()}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                      >
+                        Duplicate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runDeleteSelection()}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runGroupSelection()}
+                        disabled={!canGroupSelection}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                      >
+                        Group
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runUngroupSelection()}
+                        disabled={!canUngroupSelection}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                      >
+                        Ungroup
+                      </button>
+                    </div>
+                    {activeNode.parentId ? (
+                      <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">Layer order</div>
+                            <div className="text-xs text-slate-500">
+                              Reorder within the current parent stack.
+                            </div>
+                          </div>
+                          <div className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-500">
+                            Alt + [ / ]
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("back")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Send to back
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("backward")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Send backward
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("forward")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Bring forward
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runReorderSelection("front")}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          >
+                            Bring to front
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Frame</div>
+                          <div className="text-xs text-slate-500">
+                            Edit numeric position, size, and rotation directly.
+                          </div>
+                        </div>
+                        {activeNode.frame.rotation !== 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => void updateNodeFrame({ rotation: 0 })}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                          >
+                            Reset rotation
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <label className="block">
+                          <div className="text-slate-400">X</div>
+                          <input
+                            type="number"
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.x}
+                            onChange={(event) => void updateNodeFrame({ x: Number(event.target.value) || 0 })}
+                          />
+                        </label>
+                        <label className="block">
+                          <div className="text-slate-400">Y</div>
+                          <input
+                            type="number"
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.y}
+                            onChange={(event) => void updateNodeFrame({ y: Number(event.target.value) || 0 })}
+                          />
+                        </label>
+                        <label className="block">
+                          <div className="text-slate-400">W</div>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.w}
+                            onChange={(event) =>
+                              void updateNodeFrame({ w: Math.max(Number(event.target.value) || 1, 1) })
+                            }
+                          />
+                        </label>
+                        <label className="block">
+                          <div className="text-slate-400">H</div>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.h}
+                            onChange={(event) =>
+                              void updateNodeFrame({ h: Math.max(Number(event.target.value) || 1, 1) })
+                            }
+                          />
+                        </label>
+                        <label className="col-span-2 block">
+                          <div className="text-slate-400">Rotation</div>
+                          <input
+                            type="number"
+                            step={1}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.frame.rotation}
+                            onChange={(event) =>
+                              void updateNodeFrame({ rotation: Number(event.target.value) || 0 })
+                            }
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <div className="text-slate-400">Horizontal</div>
+                        <select
+                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                          value={activeNode.constraints?.horizontal ?? "min"}
+                          onChange={(event) =>
+                            void updateConstraints("horizontal", event.target.value as HorizontalConstraint)
+                          }
+                        >
+                          {HORIZONTAL_CONSTRAINT_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">Vertical</div>
+                        <select
+                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                          value={activeNode.constraints?.vertical ?? "min"}
+                          onChange={(event) =>
+                            void updateConstraints("vertical", event.target.value as VerticalConstraint)
+                          }
+                        >
+                          {VERTICAL_CONSTRAINT_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    {activeLayoutSizing ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Layout sizing</div>
+                          <div className="text-xs text-slate-500">
+                            Control fill, hug, and fixed behavior inside auto layout parents.
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="block">
+                            <div className="text-slate-400">Width mode</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeLayoutSizing.width}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  width: event.target.value as LayoutSizing,
+                                })
+                              }
+                            >
+                              {LAYOUT_SIZING_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Height mode</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeLayoutSizing.height}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  height: event.target.value as LayoutSizing,
+                                })
+                              }
+                            >
+                              {LAYOUT_SIZING_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Min width</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.minWidth ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  minWidth: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Min height</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.minHeight ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  minHeight: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Max width</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.maxWidth ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  maxWidth: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Max height</div>
+                            <input
+                              type="number"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.layoutSizing?.maxHeight ?? ""}
+                              onChange={(event) =>
+                                void updateNodeLayoutSizing({
+                                  maxHeight: event.target.value === "" ? undefined : Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ) : null}
+                    {supportsAutoLayout(activeNode) ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">Auto layout</div>
+                            <div className="text-xs text-slate-500">
+                              Stack direct children in the Rust kernel.
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void updateAutoLayout(activeNode.layout ? null : {})}
+                            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                              activeNode.layout
+                                ? "bg-[#2859ff] text-white"
+                                : "border border-slate-200 bg-white text-slate-600"
+                            }`}
+                          >
+                            {activeNode.layout ? "Enabled" : "Disabled"}
+                          </button>
+                        </div>
+                        {activeAutoLayout ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            <label className="block">
+                              <div className="text-slate-400">Direction</div>
+                              <select
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.direction}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    direction: event.target.value as AutoLayoutDirection,
+                                  })
+                                }
+                              >
+                                {AUTO_LAYOUT_DIRECTION_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Align</div>
+                              <select
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.align}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    align: event.target.value as AutoLayoutAlign,
+                                  })
+                                }
+                              >
+                                {AUTO_LAYOUT_ALIGN_OPTIONS[activeAutoLayout.direction].map((option) => (
+                                  <option key={option} value={option}>
+                                    {option.replace("_", " ")}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Spacing mode</div>
+                              <select
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.gapMode}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    gapMode: event.target.value as AutoLayoutGapMode,
+                                  })
+                                }
+                              >
+                                {AUTO_LAYOUT_GAP_MODE_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option.replace("_", " ")}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            {activeAutoLayout.gapMode === "fixed" ? (
+                              <label className="block">
+                                <div className="text-slate-400">Justify</div>
+                                <select
+                                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                  value={activeAutoLayout.justify}
+                                  onChange={(event) =>
+                                    void updateAutoLayout({
+                                      justify: event.target.value as AutoLayoutJustify,
+                                    })
+                                  }
+                                >
+                                  {AUTO_LAYOUT_JUSTIFY_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {option.replace("_", " ")}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            ) : (
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                                Space between distributes leftover space across direct children.
+                              </div>
+                            )}
+                            <label className="block">
+                              <div className="text-slate-400">Gap</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.gap}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    gap: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding top</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.paddingTop}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingTop: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding right</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.paddingRight}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingRight: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding bottom</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.paddingBottom}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingBottom: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="block">
+                              <div className="text-slate-400">Padding left</div>
+                              <input
+                                type="number"
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                value={activeAutoLayout.paddingLeft}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    paddingLeft: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="col-span-2 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={activeAutoLayout.wrap}
+                                onChange={(event) =>
+                                  void updateAutoLayout({
+                                    wrap: event.target.checked,
+                                    wrapGap: activeAutoLayout.wrapGap,
+                                  })
+                                }
+                              />
+                              Wrap children to the next row / column
+                            </label>
+                            {activeAutoLayout.wrap ? (
+                              <>
+                                <label className="block">
+                                  <div className="text-slate-400">Wrap gap</div>
+                                  <input
+                                    type="number"
+                                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                    value={activeAutoLayout.wrapGap}
+                                    onChange={(event) =>
+                                      void updateAutoLayout({
+                                        wrapGap: Number(event.target.value) || 0,
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="block">
+                                  <div className="text-slate-400">Wrap align</div>
+                                  <select
+                                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                    value={activeAutoLayout.wrapAlign}
+                                    onChange={(event) =>
+                                      void updateAutoLayout({
+                                        wrapAlign: event.target.value as AutoLayoutWrapAlign,
+                                      })
+                                    }
+                                  >
+                                    {AUTO_LAYOUT_WRAP_ALIGN_OPTIONS.map((option) => (
+                                      <option key={option} value={option}>
+                                        {option.replace("_", " ")}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {supportsComponentPromotion(activeNode) || isInstanceNode(activeNode) ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">Component</div>
+                            <div className="text-xs text-slate-500">
+                              Promote reusable frames and place linked instances.
+                            </div>
+                          </div>
+                          {supportsComponentPromotion(activeNode) && activeNode.kind !== "component" ? (
+                            <button
+                              type="button"
+                              onClick={() => void promoteActiveNodeToComponent()}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Create component
+                            </button>
+                          ) : null}
+                          {isComponentNode(activeNode) ? (
+                            <button
+                              type="button"
+                              onClick={() => void createInstanceFromActiveComponent()}
+                              className="rounded-full bg-[#2859ff] px-3 py-1 text-xs font-semibold text-white"
+                            >
+                              Create instance
+                            </button>
+                          ) : null}
+                        </div>
+                        {isComponentNode(activeNode) ? (
+                          <label className="block">
+                            <div className="text-slate-400">Component key</div>
+                            <input
+                              type="text"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.component?.componentKey ?? ""}
+                              onChange={(event) =>
+                                void updateActiveComponentKey(event.target.value)
+                              }
+                            />
+                          </label>
+                        ) : null}
+                        {isInstanceNode(activeNode) ? (
+                          <div className="space-y-3 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm">
+                            <div>
+                              <div className="text-slate-400">Source component</div>
+                              <div className="mt-1 font-medium text-slate-900">
+                                {activeNode.instance?.sourceComponentKey}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                {activeNode.instance?.sourceComponentId}
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Text overrides
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activeInstanceTextOverrides.length}
+                                </div>
+                              </div>
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Shape overrides
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activeInstanceShapeOverrides.length}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void refreshActiveInstance()}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Refresh
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void detachActiveInstance()}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Detach
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void clearActiveInstanceOverrides("text")}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Clear text
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void clearActiveInstanceOverrides("shape")}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Clear shape
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void clearActiveInstanceOverrides("all")}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Clear all
+                              </button>
+                            </div>
+                            {activeInstanceTextOverrides.length ? (
+                              <div className="space-y-2 border-t border-slate-200 pt-3">
+                                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                  Text override entries
+                                </div>
+                                {activeInstanceTextOverrides.map((override) => (
+                                  <div
+                                    key={`${activeNode.id}-text-override-${override.sourceNodeId}`}
+                                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3"
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-semibold text-slate-900">
+                                          {override.sourceNodeId}
+                                        </div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                          {override.content
+                                            ? override.content.slice(0, 48)
+                                            : "Local text style override"}
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          focusInstanceCloneBySourceId(activeNode.id, override.sourceNodeId)
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Select layer
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void clearActiveInstanceOverrides(
+                                            "text",
+                                            override.sourceNodeId,
+                                            activeNode.id,
+                                          )
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Clear this
+                                      </button>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      {summarizeTextStylePatch(override.style).map((label) => (
+                                        <span
+                                          key={`${activeNode.id}-${override.sourceNodeId}-${label}`}
+                                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                                        >
+                                          {label}
+                                        </span>
+                                      ))}
+                                      {override.ranges?.length ? (
+                                        <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                                          {override.ranges.length} ranges
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                            {activeInstanceShapeOverrides.length ? (
+                              <div className="space-y-2 border-t border-slate-200 pt-3">
+                                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                  Shape override entries
+                                </div>
+                                {activeInstanceShapeOverrides.map((override) => (
+                                  <div
+                                    key={`${activeNode.id}-shape-override-${override.sourceNodeId}`}
+                                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3"
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-semibold text-slate-900">
+                                          {override.sourceNodeId}
+                                        </div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                          Local shape style override
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          focusInstanceCloneBySourceId(activeNode.id, override.sourceNodeId)
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Select layer
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void clearActiveInstanceOverrides(
+                                            "shape",
+                                            override.sourceNodeId,
+                                            activeNode.id,
+                                          )
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                      >
+                                        Clear this
+                                      </button>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      {summarizeShapeStylePatch(override.style).map((label) => (
+                                        <span
+                                          key={`${activeNode.id}-${override.sourceNodeId}-${label}`}
+                                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                                        >
+                                          {label}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {activeInstanceRoot && activeNode && activeInstanceRoot.id !== activeNode.id ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Instance override target</div>
+                          <div className="text-xs text-slate-500">
+                            This layer belongs to an instance. Edits here become local overrides on the instance root.
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm">
+                          <div className="text-slate-400">Instance root</div>
+                          <div className="mt-1 font-medium text-slate-900">{activeInstanceRoot.name}</div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {activeInstanceRoot.instance?.sourceComponentKey}
+                          </div>
+                          {activeInstanceOverrideSourceId ? (
+                            <div className="mt-3">
+                              <div className="text-slate-400">Source layer id</div>
+                              <div className="mt-1 text-xs font-medium text-slate-700">
+                                {activeInstanceOverrideSourceId}
+                              </div>
+                            </div>
+                          ) : null}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void selectNodeIds([activeInstanceRoot.id])}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Select instance root
+                            </button>
+                            {activeInstanceOverrideSourceId ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  focusInstanceCloneBySourceId(
+                                    activeInstanceRoot.id,
+                                    activeInstanceOverrideSourceId,
+                                  )
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Re-focus override layer
+                              </button>
+                            ) : null}
+                          </div>
+                          {activeInstanceLocalOverride?.text || activeInstanceLocalOverride?.shape ? (
+                            <div className="mt-3 space-y-3">
+                              <div className="flex flex-wrap gap-1.5">
+                                {activeInstanceLocalOverride.text ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      activeInstanceOverrideSourceId
+                                        ? void clearActiveInstanceOverrides(
+                                            "text",
+                                            activeInstanceOverrideSourceId,
+                                            activeInstanceRoot.id,
+                                          )
+                                        : undefined
+                                    }
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                  >
+                                    Clear linked text
+                                  </button>
+                                ) : null}
+                                {activeInstanceLocalOverride.shape ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      activeInstanceOverrideSourceId
+                                        ? void clearActiveInstanceOverrides(
+                                            "shape",
+                                            activeInstanceOverrideSourceId,
+                                            activeInstanceRoot.id,
+                                          )
+                                        : undefined
+                                    }
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                  >
+                                    Clear linked shape
+                                  </button>
+                                ) : null}
+                                {activeInstanceOverrideSourceId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void clearActiveInstanceOverrides(
+                                        "all",
+                                        activeInstanceOverrideSourceId,
+                                        activeInstanceRoot.id,
+                                      )
+                                    }
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700"
+                                  >
+                                    Clear linked all
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
+                              {activeInstanceLocalOverride.text ? (
+                                <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                                  Text override linked
+                                </span>
+                              ) : null}
+                              {activeInstanceLocalOverride.shape ? (
+                                <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                                  Shape override linked
+                                </span>
+                              ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    {activeNode.kind === "text" && activeNode.text ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div>
+                          <div className="text-slate-400">Content</div>
+                          <textarea
+                            ref={inspectorTextRef}
+                            className="mt-1 h-28 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                            value={activeNode.text.content}
+                            onChange={(event) => void updateTextContent(event.target.value)}
+                            onKeyDown={handleInspectorTextKeyDown}
+                            onSelect={syncInspectorTextSelection}
+                            onKeyUp={syncInspectorTextSelection}
+                            onMouseUp={syncInspectorTextSelection}
+                          />
+                        </div>
+                        {activeInspectorTextSelection ? (
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-semibold text-slate-900">Text style scope</div>
+                                <div className="text-xs text-slate-500">
+                                  Apply formatting to the whole layer or only the selected text.
+                                </div>
+                              </div>
+                              <div className="inline-flex rounded-full border border-slate-200 bg-white p-1 text-xs font-semibold">
+                                <button
+                                  type="button"
+                                  onClick={() => setTextStyleScope("node")}
+                                  className={`rounded-full px-3 py-1 ${
+                                    textStyleScope === "node" ? "bg-slate-950 text-white" : "text-slate-500"
+                                  }`}
+                                >
+                                  Layer
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setTextStyleScope("selection")}
+                                  className={`rounded-full px-3 py-1 ${
+                                    textStyleScope === "selection" ? "bg-[#2859ff] text-white" : "text-slate-500"
+                                  }`}
+                                >
+                                  Selected text
+                                </button>
+                              </div>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    fontWeight:
+                                      (activeTextStyleTarget?.fontWeight ?? activeNode.text!.fontWeight) >= 700
+                                        ? 500
+                                        : 700,
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Bold
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    italic: !(activeTextStyleTarget?.italic ?? activeNode.text!.italic),
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Italic
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    underline: !(activeTextStyleTarget?.underline ?? activeNode.text!.underline),
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Underline
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateActiveTextStyle({
+                                    lineThrough: !(activeTextStyleTarget?.lineThrough ?? activeNode.text!.lineThrough),
+                                  })
+                                }
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                              >
+                                Strike
+                              </button>
+                              {textStyleScope === "selection" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void clearActiveTextSelectionStyles()}
+                                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                                >
+                                  Clear local style
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
+                        <datalist id="v2-editor-font-family-options">
+                          {FONT_FAMILY_OPTIONS.map((option) => (
+                            <option key={option} value={option} />
+                          ))}
+                        </datalist>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="col-span-2 block">
+                            <div className="text-slate-400">Font family</div>
+                            <input
+                              type="text"
+                              list="v2-editor-font-family-options"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.fontFamily ?? activeNode.text.fontFamily}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({
+                                  fontFamily: event.target.value || activeNode.text!.fontFamily,
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Font size</div>
+                            <input
+                              type="number"
+                              min={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.fontSize ?? activeNode.text.fontSize}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({ fontSize: Number(event.target.value) || 1 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Line height</div>
+                            <input
+                              type="number"
+                              min={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.lineHeight ?? activeNode.text.lineHeight}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({ lineHeight: Number(event.target.value) || 1 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Weight</div>
+                            <input
+                              type="number"
+                              min={100}
+                              step={100}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.fontWeight ?? activeNode.text.fontWeight}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({ fontWeight: Number(event.target.value) || 400 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Letter spacing</div>
+                            <input
+                              type="number"
+                              step={0.1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.letterSpacing ?? activeNode.text.letterSpacing}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({ letterSpacing: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Paragraph spacing</div>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.paragraphSpacing ?? activeNode.text.paragraphSpacing}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({ paragraphSpacing: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Align</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.align ?? activeNode.text.align}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({ align: event.target.value as TextAlign })
+                              }
+                            >
+                              {TEXT_ALIGN_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Sizing</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.text.sizing ?? "fixed"}
+                              onChange={(event) =>
+                                void updateTextSizing(event.target.value as TextSizingMode)
+                              }
+                            >
+                              {TEXT_SIZING_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Color</div>
+                            <input
+                              type="color"
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                              value={activeTextStyleTarget?.color ?? activeNode.text.color}
+                              onChange={(event) => void updateActiveTextStyle({ color: event.target.value })}
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Text case</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeTextStyleTarget?.textCase ?? activeNode.text.textCase}
+                              onChange={(event) =>
+                                void updateActiveTextStyle({ textCase: event.target.value as TextCase })
+                              }
+                            >
+                              {TEXT_CASE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={activeTextStyleTarget?.italic ?? activeNode.text.italic}
+                              onChange={(event) => void updateActiveTextStyle({ italic: event.target.checked })}
+                            />
+                            Italic
+                          </label>
+                          <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={activeTextStyleTarget?.underline ?? activeNode.text.underline}
+                              onChange={(event) => void updateActiveTextStyle({ underline: event.target.checked })}
+                            />
+                            Underline
+                          </label>
+                          <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={activeTextStyleTarget?.lineThrough ?? activeNode.text.lineThrough}
+                              onChange={(event) => void updateActiveTextStyle({ lineThrough: event.target.checked })}
+                            />
+                            Strike
+                          </label>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white px-3 py-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="text-sm font-semibold text-slate-900">Rich text ranges</div>
+                              <div className="text-xs text-slate-500">
+                                One text layer can carry multiple local style runs.
+                              </div>
+                            </div>
+                            <div className="text-xs text-slate-400">{activeTextRanges.length} ranges</div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const ranges = addTextRange(activeNode.text!);
+                                const nextIndex = Math.max(ranges.length - 1, 0);
+                                const nextRange = ranges[nextIndex];
+                                void updateTextRanges(ranges).then(() => {
+                                  if (nextRange) {
+                                    setActiveTextRangeIndex(nextIndex);
+                                    focusInspectorTextSelection(nextRange.start, nextRange.end);
+                                  }
+                                });
+                              }}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Add range
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!activeInspectorTextSelection) {
+                                  return;
+                                }
+
+                                const { start, end } = activeInspectorTextSelection;
+                                const ranges = createTextRangeFromSelection(activeNode.text!, start, end);
+                                void updateTextRanges(ranges).then(() => {
+                                  focusInspectorTextSelection(start, end);
+                                });
+                              }}
+                              disabled={!activeInspectorTextSelection}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              From selection
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void updateTextRanges(buildWordTextRanges(activeNode.text!))}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Word split
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void updateTextRanges(buildParagraphTextRanges(activeNode.text!))}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                            >
+                              Paragraph split
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTextRangeIndex(null);
+                                void updateTextRanges([]);
+                              }}
+                              disabled={activeTextRanges.length === 0}
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Clear all
+                            </button>
+                          </div>
+                          {activeInspectorTextSelection ? (
+                            <div className="mt-3 rounded-xl border border-[#2859ff]/15 bg-[#2859ff]/5 px-3 py-2 text-xs text-slate-600">
+                              Selection: {activeInspectorTextSelection.start} - {activeInspectorTextSelection.end}
+                              {activeInspectorTextSelection.preview
+                                ? `  /  ${activeInspectorTextSelection.preview}`
+                                : ""}
+                            </div>
+                          ) : (
+                            <div className="mt-3 rounded-xl border border-dashed border-slate-200 px-3 py-2 text-xs text-slate-500">
+                              Select text in the content box to create a range from the current selection.
+                            </div>
+                          )}
+                          {activeTextRanges.length ? (
+                            <div className="mt-4 space-y-3">
+                              {activeTextRanges.map((range, index) => (
+                                <div
+                                  key={`text-range-${activeNode.id}-${index}`}
+                                  className={`rounded-2xl px-3 py-3 transition ${
+                                    activeTextRangeIndex === index
+                                      ? "border border-[#2859ff]/30 bg-[#2859ff]/5 shadow-[0_0_0_1px_rgba(40,89,255,0.08)]"
+                                      : "border border-slate-200 bg-slate-50"
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => focusTextRange(index)}
+                                        className="truncate text-left text-sm font-semibold text-slate-900"
+                                      >
+                                        {getTextRangePreview(activeNode.text!, index) || "(empty)"}
+                                      </button>
+                                      <div className="mt-1 text-xs text-slate-500">
+                                        {range.start} - {range.end}
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-1.5">
+                                        {summarizeTextStylePatch(range.style).map((label) => (
+                                          <span
+                                            key={`${activeNode.id}-range-${index}-${label}`}
+                                            className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                                          >
+                                            {label}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => focusTextRange(index)}
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Select
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void updateTextRanges(clearTextRangeStyle(activeNode.text!, index))
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Clear style
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void updateTextRanges(removeTextRange(activeNode.text!, index))
+                                        }
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="mt-3 grid grid-cols-2 gap-3">
+                                    <label className="block">
+                                      <div className="text-slate-400">Start</div>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={activeNode.text!.content.length}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.start}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRange(activeNode.text!, index, {
+                                              start: Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">End</div>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={activeNode.text!.content.length}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.end}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRange(activeNode.text!, index, {
+                                              end: Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Font family</div>
+                                      <input
+                                        type="text"
+                                        list="v2-editor-font-family-options"
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.fontFamily ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              fontFamily: event.target.value || undefined,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Font size</div>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.fontSize ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              fontSize:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 1,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Line height</div>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.lineHeight ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              lineHeight:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 1,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Weight</div>
+                                      <input
+                                        type="number"
+                                        min={100}
+                                        step={100}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.fontWeight ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              fontWeight:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 400,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Color</div>
+                                      <input
+                                        type="color"
+                                        className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                                        value={range.style?.color ?? activeNode.text!.color}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              color: event.target.value,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Text case</div>
+                                      <select
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.textCase ?? activeNode.text!.textCase}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              textCase: event.target.value as TextCase,
+                                            }),
+                                          )
+                                        }
+                                      >
+                                        {TEXT_CASE_OPTIONS.map((option) => (
+                                          <option key={option} value={option}>
+                                            {option}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Letter spacing</div>
+                                      <input
+                                        type="number"
+                                        step={0.1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.letterSpacing ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              letterSpacing:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <div className="text-slate-400">Paragraph spacing</div>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step={1}
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                        value={range.style?.paragraphSpacing ?? ""}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              paragraphSpacing:
+                                                event.target.value === ""
+                                                  ? undefined
+                                                  : Number(event.target.value) || 0,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </label>
+                                  </div>
+                                  <div className="mt-3 grid grid-cols-3 gap-2">
+                                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={range.style?.italic ?? activeNode.text!.italic}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              italic: event.target.checked,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                      Italic
+                                    </label>
+                                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={range.style?.underline ?? activeNode.text!.underline}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              underline: event.target.checked,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                      Underline
+                                    </label>
+                                    <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={range.style?.lineThrough ?? activeNode.text!.lineThrough}
+                                        onChange={(event) =>
+                                          void updateTextRanges(
+                                            updateTextRangeStyle(activeNode.text!, index, {
+                                              lineThrough: event.target.checked,
+                                            }),
+                                          )
+                                        }
+                                      />
+                                      Strike
+                                    </label>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    {supportsShapeEditing(activeNode) ? (
+                      <div className="mt-5 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="text-sm font-semibold text-slate-900">Shape</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="block">
+                            <div className="text-slate-400">Primitive</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.primitive}
+                              onChange={(event) =>
+                                void updateShapePrimitive(event.target.value as ShapePrimitive)
+                              }
+                            >
+                              {SHAPE_PRIMITIVE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Opacity</div>
+                            <input
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.opacity ?? 1}
+                              onChange={(event) =>
+                                void updateShapeStyle({ opacity: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Fill</div>
+                            <input
+                              type="color"
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                              value={activeNode.shape?.fill ?? "#ffffff"}
+                              onChange={(event) => void updateShapeStyle({ fill: event.target.value })}
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Stroke</div>
+                            <input
+                              type="color"
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-2 py-1"
+                              value={activeNode.shape?.strokeColor ?? "#000000"}
+                              onChange={(event) =>
+                                void updateShapeStyle({ strokeColor: event.target.value })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Stroke width</div>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.strokeWidth ?? 0}
+                              onChange={(event) =>
+                                void updateShapeStyle({ strokeWidth: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="text-slate-400">Radius</div>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              disabled={activeNode.shape?.primitive !== "rect"}
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition disabled:bg-slate-100 disabled:text-slate-400 focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                              value={activeNode.shape?.cornerRadius ?? 0}
+                              onChange={(event) =>
+                                void updateShapeStyle({ cornerRadius: Number(event.target.value) || 0 })
+                              }
+                            />
+                          </label>
+                        </div>
+                        {activeNode.shape?.primitive === "path" ? (
+                          <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                            <label className="flex items-center justify-between text-sm font-medium text-slate-700">
+                              <span>Closed path</span>
+                              <input
+                                type="checkbox"
+                                checked={activeNode.shape.path?.closed ?? false}
+                                onChange={(event) =>
+                                  void updateShapePath({
+                                    points: structuredClone(activeNode.shape?.path?.points ?? []),
+                                    closed: event.target.checked,
+                                  })
+                                }
+                              />
+                            </label>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Points
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activePathPoints.length}
+                                </div>
+                              </div>
+                              <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                                  Selection
+                                </div>
+                                <div className="mt-1 text-lg font-semibold text-slate-900">
+                                  {activePathPointIndex != null ? `P${activePathPointIndex + 1}` : "None"}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={activePathPointIndex == null}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() =>
+                                  activePathPointIndex != null
+                                    ? void insertActiveShapePathPointAfter(activePathPointIndex)
+                                    : undefined
+                                }
+                              >
+                                Insert after
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPointIndex == null}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() =>
+                                  activePathPointIndex != null
+                                    ? void duplicateActiveShapePathPoint(activePathPointIndex)
+                                    : undefined
+                                }
+                              >
+                                Duplicate
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPoints.length < 2}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() => void reverseActiveShapePathPoints()}
+                              >
+                                Reverse order
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPoints.length === 0}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() => void convertAllActiveShapePathPoints("curve")}
+                              >
+                                Curve all
+                              </button>
+                              <button
+                                type="button"
+                                disabled={activePathPoints.length === 0}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                onClick={() => void convertAllActiveShapePathPoints("corner")}
+                              >
+                                Corner all
+                              </button>
+                            </div>
+                            {activePathPoint ? (
+                              <div className="rounded-xl border border-[#2859ff]/20 bg-[#2859ff]/5 px-3 py-2 text-xs text-slate-600">
+                                Selected point {activePathPointIndex! + 1}: {Math.round(activePathPoint.x)},{" "}
+                                {Math.round(activePathPoint.y)}. Arrow keys move the point, Shift+Arrow moves by 10.
+                              </div>
+                            ) : null}
+                            <div className="space-y-2">
+                              {activePathPoints.map((point, index, points) => (
+                                <div
+                                  key={`path-point-${index}`}
+                                  className={`space-y-2 rounded-xl p-3 transition ${
+                                    activePathPointIndex === index
+                                      ? "border border-[#2859ff]/30 bg-white shadow-[0_0_0_1px_rgba(40,89,255,0.08)]"
+                                      : "border border-slate-200 bg-white"
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => setActivePathPointIndex(index)}
+                                      className="text-sm font-semibold text-slate-900"
+                                    >
+                                      Point {index + 1}
+                                    </button>
+                                    <div className="flex gap-2">
+                                      {activePathPointIndex === index ? (
+                                        <span className="rounded-full bg-[#2859ff] px-2 py-0.5 text-[11px] font-semibold text-white">
+                                          Selected
+                                        </span>
+                                      ) : null}
+                                      <button
+                                        type="button"
+                                        onClick={() => setActivePathPointIndex(index)}
+                                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600"
+                                      >
+                                        Select
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                                    <input
+                                      type="number"
+                                      step={1}
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                      value={point.x}
+                                      onChange={(event) =>
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          x: Number(event.target.value) || 0,
+                                        }))
+                                      }
+                                    />
+                                    <input
+                                      type="number"
+                                      step={1}
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                      value={point.y}
+                                      onChange={(event) =>
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          y: Number(event.target.value) || 0,
+                                        }))
+                                      }
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={points.length <= 2}
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                                      onClick={() => void removeActiveShapePathPoint(index)}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() => {
+                                        const curveHandles = createCurveHandles(
+                                          points,
+                                          index,
+                                          activeNode.shape?.path?.closed ?? false,
+                                        );
+                                        if (!curveHandles) {
+                                          return;
+                                        }
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          ...curveHandles,
+                                        }));
+                                      }}
+                                    >
+                                      Curve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() =>
+                                        void updateShapePathPoint(index, (current) => ({
+                                          ...current,
+                                          handleIn: undefined,
+                                          handleOut: undefined,
+                                        }))
+                                      }
+                                    >
+                                      Corner
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() => void insertActiveShapePathPointAfter(index)}
+                                    >
+                                      Insert after
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                      onClick={() => void duplicateActiveShapePathPoint(index)}
+                                    >
+                                      Duplicate
+                                    </button>
+                                  </div>
+                                  {point.handleIn || point.handleOut ? (
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <label className="block">
+                                        <div className="text-slate-400">In X</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleIn?.x ?? point.x}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleIn: {
+                                                x: Number(event.target.value) || 0,
+                                                y: current.handleIn?.y ?? current.y,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                      <label className="block">
+                                        <div className="text-slate-400">In Y</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleIn?.y ?? point.y}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleIn: {
+                                                x: current.handleIn?.x ?? current.x,
+                                                y: Number(event.target.value) || 0,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                      <label className="block">
+                                        <div className="text-slate-400">Out X</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleOut?.x ?? point.x}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleOut: {
+                                                x: Number(event.target.value) || 0,
+                                                y: current.handleOut?.y ?? current.y,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                      <label className="block">
+                                        <div className="text-slate-400">Out Y</div>
+                                        <input
+                                          type="number"
+                                          step={1}
+                                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#2859ff] focus:ring-2 focus:ring-[#2859ff]/20"
+                                          value={point.handleOut?.y ?? point.y}
+                                          onChange={(event) =>
+                                            void updateShapePathPoint(index, (current) => ({
+                                              ...current,
+                                              handleOut: {
+                                                x: current.handleOut?.x ?? current.x,
+                                                y: Number(event.target.value) || 0,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </label>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300"
+                              onClick={() => {
+                                const points = structuredClone(activePathPoints);
+                                const lastPoint = points[points.length - 1] ?? {
+                                  x: Math.round(activeNode.frame.w / 2),
+                                  y: Math.round(activeNode.frame.h / 2),
+                                };
+                                points.push({
+                                  x: Math.min(lastPoint.x + 24, activeNode.frame.w),
+                                  y: Math.min(lastPoint.y + 24, activeNode.frame.h),
+                                });
+                                void replaceActiveShapePath(points, points.length - 1);
+                              }}
+                            >
+                              Add point
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="text-sm text-slate-500">Select a layer or canvas object.</div>
+                )}
+              </div>
+            </section>
+
+            <section>
+              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Bridge state
+              </div>
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                <div>mode: {bridgeInfo?.mode ?? "loading"}</div>
+                <div className="mt-1">kernel: {bridgeInfo?.kernel ?? "loading"}</div>
+                <div className="mt-1">
+                  viewport: {Math.round(viewViewport.zoom * 100)}% / {Math.round(viewViewport.x)}/
+                  {Math.round(viewViewport.y)}
+                </div>
+              </div>
+            </section>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
