@@ -30,6 +30,7 @@ import type {
   SnapGuide,
   TextAlign,
   TextCase,
+  TextLayout,
   TextSizingMode,
   TextRange,
   TextStylePatch,
@@ -1657,6 +1658,7 @@ export function V2EditorShell() {
   const [editingTextComposing, setEditingTextComposing] = useState(false);
   const [inspectorTextSelection, setInspectorTextSelection] = useState<{ start: number; end: number } | null>(null);
   const [activeTextRangeIndex, setActiveTextRangeIndex] = useState<number | null>(null);
+  const [activeTextLayout, setActiveTextLayout] = useState<TextLayout | null>(null);
   const [activePathPointIndex, setActivePathPointIndex] = useState<number | null>(null);
   const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
@@ -1667,6 +1669,7 @@ export function V2EditorShell() {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const inspectorTextRef = useRef<HTMLTextAreaElement | null>(null);
   const snapQuerySeqRef = useRef(0);
+  const textLayoutQuerySeqRef = useRef(0);
 
   const syncBridgeState = useCallback(async () => {
     const bridge = bridgeRef.current;
@@ -1852,6 +1855,30 @@ export function V2EditorShell() {
     () => (activeNode ? resolveLayoutSizing(activeNode.layoutSizing ?? null) : null),
     [activeNode],
   );
+
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge || activeNode?.kind !== "text" || !activeNode.text) {
+      textLayoutQuerySeqRef.current += 1;
+      setActiveTextLayout(null);
+      return;
+    }
+
+    const sequence = ++textLayoutQuerySeqRef.current;
+    void bridge
+      .query({ kind: "text_layout", nodeId: activeNode.id })
+      .then((result) => {
+        if (textLayoutQuerySeqRef.current === sequence) {
+          setActiveTextLayout((result as TextLayout | null) ?? null);
+        }
+      })
+      .catch(() => {
+        if (textLayoutQuerySeqRef.current === sequence) {
+          setActiveTextLayout(null);
+        }
+      });
+  }, [activeNode, bridgeInfo?.kernel, snapshot?.version]);
+
   const toggleLayerCollapsed = useCallback((nodeId: string) => {
     setCollapsedLayerIds((current) =>
       current.includes(nodeId)
@@ -5823,6 +5850,26 @@ export function V2EditorShell() {
                             onMouseUp={syncInspectorTextSelection}
                           />
                         </div>
+                        {activeTextLayout ? (
+                          <div
+                            data-testid="v2-text-layout-summary"
+                            className="flex items-center justify-between gap-3 border-y border-slate-200 py-2 text-xs"
+                          >
+                            <div className="font-semibold text-slate-700">Kernel text layout</div>
+                            <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-slate-500">
+                              <span>
+                                {activeTextLayout.lines.length}{" "}
+                                {activeTextLayout.lines.length === 1 ? "line" : "lines"}
+                              </span>
+                              <span>
+                                {activeTextLayout.graphemes.length}{" "}
+                                {activeTextLayout.graphemes.length === 1 ? "grapheme" : "graphemes"}
+                              </span>
+                              <span>{Math.round(activeTextLayout.height)} px</span>
+                              <span className="text-amber-700">fallback metrics</span>
+                            </div>
+                          </div>
+                        ) : null}
                         {activeInspectorTextSelection ? (
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
                             <div className="flex items-center justify-between gap-3">

@@ -9,6 +9,7 @@ publish.workspace = true
 core-error = { path = "../core-error" }
 core-id = { path = "../core-id" }
 kernel-doc = { path = "../kernel-doc" }
+kernel-text = { path = "../kernel-text" }
 serde_json = "1"
 
 [lib]

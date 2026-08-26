@@ -10,6 +10,7 @@ import type {
   ResizeSnapPreview,
   RuntimeGraph,
   SceneDoc,
+  TextLayout,
   TransformHandle,
   ValidationReport,
 } from "@/v2/editor/contracts";
@@ -20,6 +21,7 @@ type WasmEditorBridgeModule = {
     load_document(serializedDoc: string): string;
     dispatch_editor_commands(commandsJson: string): string;
     query_node(nodeId: string): string;
+    text_layout(nodeId: string): string;
     hit_test(pageId: string, x: number, y: number, mode: string): string;
     selection_bounds(): string;
     transform_handles(): string;
@@ -69,9 +71,9 @@ export class BrowserWasmEditorBridge implements EditorBridge {
   private snapshot: EditorSnapshot | null = null;
 
   static async create() {
-    const module = (await import("../wasm/load-ffi-wasm-editor")) as unknown as WasmEditorBridgeModule;
-    await module.default();
-    return new BrowserWasmEditorBridge(new module.WasmEditorBridgeHandle());
+    const wasmModule = (await import("../wasm/load-ffi-wasm-editor")) as unknown as WasmEditorBridgeModule;
+    await wasmModule.default();
+    return new BrowserWasmEditorBridge(new wasmModule.WasmEditorBridgeHandle());
   }
 
   async info() {
@@ -107,6 +109,10 @@ export class BrowserWasmEditorBridge implements EditorBridge {
 
     if (selector.kind === "node") {
       return JSON.parse(this.handle.query_node(selector.nodeId)) as unknown;
+    }
+
+    if (selector.kind === "text_layout") {
+      return JSON.parse(this.handle.text_layout(selector.nodeId)) as TextLayout;
     }
 
     if (selector.kind === "hit_test") {

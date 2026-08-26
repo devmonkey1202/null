@@ -99,6 +99,16 @@ type SceneNode = {
 };
 ```
 
+### 4.1 Text offset and layout query contract
+
+- `TextRange.start`, `TextRange.end`, caret offsets, hit-test offsets use UTF-16 code units.
+- This matches browser `selectionStart` / `selectionEnd` and JavaScript `String.slice`.
+- Grapheme boundaries are computed by the Rust text kernel. A caret must never be emitted inside a grapheme cluster.
+- `query({ kind: "text_layout", nodeId })` returns `TextLayout` from the active editor kernel.
+- `TextLayout` contains line, grapheme, caret, baseline, wrapping, width, height, and measurement-mode data.
+- JS must not independently calculate authoritative text geometry while the Rust/WASM bridge is active.
+- Preview and publish must consume the same future shaped-text output; the deterministic fallback is an implementation phase, not release parity.
+
 ## 5. Design Token 계약
 
 ```ts

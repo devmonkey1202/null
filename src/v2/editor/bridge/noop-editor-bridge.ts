@@ -41,6 +41,7 @@ import {
   V2_EDITOR_SCHEMA_VERSION,
 } from "@/v2/editor/contracts";
 import { DEFAULT_LAYOUT_SIZING, resolveAutoLayout, resolveLayoutSizing } from "@/v2/editor/auto-layout";
+import { buildFallbackTextLayout, fallbackTextAutoHeight } from "@/v2/editor/text-layout-fallback";
 
 const DEFAULT_VIEWPORT: EditorViewport = { zoom: 1, x: 0, y: 0 };
 
@@ -1667,17 +1668,7 @@ function duplicateSelection(
 }
 
 function estimateTextAutoHeight(width: number, text: TextNodeData) {
-  const availableWidth = Math.max(width, text.fontSize);
-  const averageCharWidth = Math.max(text.fontSize * 0.56 + Math.max(text.letterSpacing, 0), 1);
-  const charsPerLine = Math.max(Math.floor(availableWidth / averageCharWidth), 1);
-  const paragraphs = text.content.split("\n");
-  const lines = paragraphs.reduce((count, paragraph) => {
-    const paragraphLength = Math.max(Array.from(paragraph).length, 1);
-    return count + Math.max(Math.ceil(paragraphLength / charsPerLine), 1);
-  }, 0);
-  const paragraphGap = Math.max(paragraphs.length - 1, 0) * Math.max(text.paragraphSpacing, 0);
-
-  return Math.max(text.lineHeight * Math.max(lines, 1) + paragraphGap, text.lineHeight);
+  return fallbackTextAutoHeight(width, text);
 }
 
 function normalizeTextNode(node: SceneNode): SceneNode {
@@ -3309,6 +3300,12 @@ export class NoopEditorBridge implements EditorBridge {
         return this.document.pages
           .flatMap((page) => page.nodes)
           .find((node) => node.id === selector.nodeId);
+      case "text_layout": {
+        const node = this.document.pages
+          .flatMap((page) => page.nodes)
+          .find((candidate) => candidate.id === selector.nodeId);
+        return node ? buildFallbackTextLayout(node) : null;
+      }
       case "hit_test":
         return runHitTest(
           this.document,

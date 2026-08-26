@@ -3,7 +3,7 @@ use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, TransformH
 use kernel_history::HistoryStore;
 use kernel_scene::{
     dispatch_commands, hit_test, move_snap_preview, query_node, resize_snap_preview,
-    selection_bounds, selection_handles, EditorState, HitTestMode,
+    selection_bounds, selection_handles, text_layout_for_node, EditorState, HitTestMode,
 };
 use serde_json::json;
 use std::cell::RefCell;
@@ -180,6 +180,17 @@ impl EditorBridgeHandle {
                 .collect::<Vec<_>>(),
         )
         .map_err(|error| CoreError::new("editor.transform_handles.serialize_failed", error.to_string()))
+    }
+
+    pub fn text_layout(&self, node_id: &str) -> Result<String, CoreError> {
+        let state = self.state.borrow();
+        let editor_state = state
+            .as_ref()
+            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let layout = text_layout_for_node(&editor_state.doc, node_id)?;
+
+        serde_json::to_string(&layout)
+            .map_err(|error| CoreError::new("editor.text_layout.serialize_failed", error.to_string()))
     }
 
     pub fn move_snap(
@@ -359,6 +370,10 @@ impl WasmEditorBridgeHandle {
 
     pub fn transform_handles(&self) -> Result<String, JsValue> {
         self.inner.transform_handles().map_err(map_js_error)
+    }
+
+    pub fn text_layout(&self, node_id: &str) -> Result<String, JsValue> {
+        self.inner.text_layout(node_id).map_err(map_js_error)
     }
 
     pub fn move_snap(&self, delta_x: f32, delta_y: f32, threshold: Option<f32>) -> Result<String, JsValue> {
@@ -542,7 +557,12 @@ mod tests {
             .expect("select should succeed");
         let bounds = bridge.selection_bounds().expect("selection bounds should serialize");
         assert!(bounds.contains("\"w\":50.0"));
-        assert!(bounds.contains("\"h\":48.0"));
+        assert!(bounds.contains("\"h\":24.0"));
+
+        let text_layout = bridge.text_layout("title").expect("text layout should serialize");
+        assert!(text_layout.contains("\"measurementMode\":\"deterministic_fallback\""));
+        assert!(text_layout.contains("\"engineVersion\":1"));
+        assert!(text_layout.contains("\"height\":24.0"));
 
         let handles = bridge
             .transform_handles()

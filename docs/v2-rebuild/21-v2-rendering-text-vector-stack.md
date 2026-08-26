@@ -143,3 +143,25 @@
 ## 12. 최종 결론
 
 v2 렌더링 축은 **WebGL2 기반 GPU renderer + Rust text/vector kernel + render command parity**로 간다.
+
+## 13. Text implementation checkpoint
+
+Implemented in `kernel-text` Phase 1:
+
+- Unicode grapheme segmentation
+- Unicode line-break opportunities and deterministic wrapping
+- UTF-16 browser offset contract
+- paragraph spacing and left/center/right/justify geometry
+- multi-style metric runs
+- line/baseline/grapheme/caret/selection geometry
+- scene auto-height and WASM `text_layout` query integration
+
+Not yet implemented and still release-blocking:
+
+- bundled font registry and font-file loading
+- `ttf-parser` metrics and `rustybuzz` shaping
+- bidi/script itemization and OpenType feature handling
+- glyph raster/atlas and GPU render commands
+- editor/preview/publish shaped-text visual parity
+
+The current `deterministic_fallback` measurement mode must not be described as Figma-grade text rendering.

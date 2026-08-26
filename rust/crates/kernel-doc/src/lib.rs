@@ -297,7 +297,9 @@ pub struct TextStylePatch {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TextRange {
+    /// Browser-compatible UTF-16 code-unit offset.
     pub start: usize,
+    /// Browser-compatible UTF-16 code-unit offset.
     pub end: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<TextStylePatch>,
@@ -867,7 +869,7 @@ pub fn validate_scene_doc(doc: &SceneDoc) -> ValidationReport {
                                 Some(node.id.clone()),
                             ));
                         }
-                        let content_len = text.content.chars().count();
+                        let content_len = text.content.encode_utf16().count();
                         for (range_index, range) in text.ranges.iter().enumerate() {
                             if range.end <= range.start {
                                 issues.push(issue(

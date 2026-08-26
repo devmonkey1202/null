@@ -98,6 +98,7 @@ export type TextNodeData = {
 export type TextStylePatch = Partial<Omit<TextNodeData, "content" | "sizing" | "ranges">>;
 
 export type TextRange = {
+  /** Browser-compatible UTF-16 code-unit offsets. */
   start: number;
   end: number;
   style?: TextStylePatch;
@@ -349,10 +350,59 @@ export type ResizeSnapPreview = {
   guides: SnapGuide[];
 };
 
+export type TextMeasurementMode = "deterministic_fallback";
+
+export type TextCaretAffinity = "upstream" | "downstream";
+
+export type TextLayoutLine = {
+  index: number;
+  paragraphIndex: number;
+  start: number;
+  end: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  baseline: number;
+  hardBreak: boolean;
+  softWrapped: boolean;
+};
+
+export type TextGraphemeBox = {
+  start: number;
+  end: number;
+  lineIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type TextCaretGeometry = {
+  offset: number;
+  lineIndex: number;
+  x: number;
+  y: number;
+  height: number;
+  affinity: TextCaretAffinity;
+};
+
+export type TextLayout = {
+  engineVersion: number;
+  measurementMode: TextMeasurementMode;
+  width: number;
+  height: number;
+  lines: TextLayoutLine[];
+  graphemes: TextGraphemeBox[];
+  carets: TextCaretGeometry[];
+  fontFallbacks: string[];
+};
+
 export type BridgeQuery =
   | { kind: "selection" }
   | { kind: "document" }
   | { kind: "node"; nodeId: string }
+  | { kind: "text_layout"; nodeId: string }
   | { kind: "hit_test"; pageId: string; x: number; y: number; mode?: HitTestMode }
   | { kind: "selection_bounds" }
   | { kind: "transform_handles" }

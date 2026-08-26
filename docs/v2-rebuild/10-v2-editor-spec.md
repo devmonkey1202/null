@@ -186,6 +186,14 @@ v2 편집기는 다음을 동시에 만족해야 합니다.
 - shaping library 사용
 - selection/caret geometry는 kernel 계산
 
+구현 단계 구분:
+
+- Phase 1: Unicode grapheme, UAX#14 line-break opportunity, wrapping, alignment, baseline, caret/selection geometry, multi-style metrics, auto-height
+- Phase 2: font registry, actual font loading, `ttf-parser` metrics, `rustybuzz` shaping, bidi/script runs
+- Phase 3: glyph raster/atlas, render-command integration, editor/preview/publish text parity
+- Phase 1의 `deterministic_fallback` 측정은 계약과 편집 흐름 검증용이며 상용 텍스트 엔진 완료 판정이 아니다.
+- 모든 텍스트 offset 계약은 browser-compatible UTF-16 code unit으로 고정한다.
+
 ### 4.8 Vector Engine
 
 최소 범위:

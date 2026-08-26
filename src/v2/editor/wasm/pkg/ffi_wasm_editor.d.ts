@@ -14,6 +14,7 @@ export class WasmEditorBridgeHandle {
     resize_snap(handle: string, delta_x: number, delta_y: number, lock_aspect: boolean, threshold?: number | null): string;
     run_validation(): string;
     selection_bounds(): string;
+    text_layout(node_id: string): string;
     transform_handles(): string;
 }
 
@@ -29,6 +30,7 @@ export interface InitOutput {
     readonly wasmeditorbridgehandle_hit_test: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_selection_bounds: (a: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_transform_handles: (a: number) => [number, number, number, number];
+    readonly wasmeditorbridgehandle_text_layout: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_move_snap: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_resize_snap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_run_validation: (a: number) => [number, number, number, number];

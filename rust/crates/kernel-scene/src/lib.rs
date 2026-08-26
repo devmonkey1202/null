@@ -8,6 +8,10 @@ use kernel_doc::{
     SelectionSetMode, ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch,
     TransformHandleKind, ValidationReport, VerticalConstraint,
 };
+use kernel_text::{
+    layout_text, TextAlignment, TextLayout, TextLayoutRequest, TextLayoutRun, TextStyleMetrics,
+    TextTransform,
+};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,6 +595,29 @@ pub fn query_node<'a>(doc: &'a SceneDoc, node_id: &str) -> Option<&'a SceneNode>
         .iter()
         .flat_map(|page| page.nodes.iter())
         .find(|node| node.id == node_id)
+}
+
+pub fn text_layout_for_node(doc: &SceneDoc, node_id: &str) -> Result<TextLayout, CoreError> {
+    let node = query_node(doc, node_id).ok_or_else(|| {
+        CoreError::new(
+            "scene.node.not_found",
+            format!("Node '{}' was not found.", node_id),
+        )
+    })?;
+    if !matches!(node.kind, SceneNodeKind::Text) {
+        return Err(CoreError::new(
+            "scene.node.not_text",
+            format!("Node '{}' is not a text node.", node_id),
+        ));
+    }
+    let text = node.text.as_ref().ok_or_else(|| {
+        CoreError::new(
+            "scene.text.data_missing",
+            format!("Text node '{}' has no text data.", node_id),
+        )
+    })?;
+
+    layout_text(&build_text_layout_request(node.frame.w, text))
 }
 
 fn build_page_node_map<'a>(nodes: &'a [SceneNode]) -> HashMap<&'a str, &'a SceneNode> {
@@ -2930,7 +2957,7 @@ fn apply_text_style_patch(text: &mut kernel_doc::TextNodeData, style: TextStyleP
 }
 
 fn normalize_text_ranges(content: &str, ranges: Vec<TextRange>) -> Vec<TextRange> {
-    let content_len = content.chars().count();
+    let content_len = content.encode_utf16().count();
     let mut normalized = ranges
         .into_iter()
         .map(|range| {
@@ -2988,7 +3015,83 @@ fn normalize_text_frame(node: &mut SceneNode) {
         return;
     }
 
-    node.frame.h = estimate_text_auto_height(node.frame.w, text);
+    if let Ok(layout) = layout_text(&build_text_layout_request(node.frame.w, text)) {
+        node.frame.h = layout.height.max(1.0);
+    }
+}
+
+fn build_text_layout_request(width: f32, text: &kernel_doc::TextNodeData) -> TextLayoutRequest {
+    let base_style = text_style_metrics(text);
+    let mut boundaries = vec![0, text.content.encode_utf16().count()];
+    for range in &text.ranges {
+        boundaries.push(range.start);
+        boundaries.push(range.end);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let runs = boundaries
+        .windows(2)
+        .filter_map(|bounds| {
+            let start = bounds[0];
+            let end = bounds[1];
+            if end <= start {
+                return None;
+            }
+
+            let matching = text
+                .ranges
+                .iter()
+                .filter(|range| range.start <= start && range.end >= end)
+                .collect::<Vec<_>>();
+            if matching.is_empty() {
+                return None;
+            }
+
+            let mut resolved = text.clone();
+            for range in matching {
+                if let Some(style) = &range.style {
+                    apply_text_style_patch(&mut resolved, style.clone());
+                }
+            }
+            Some(TextLayoutRun {
+                start,
+                end,
+                style: text_style_metrics(&resolved),
+            })
+        })
+        .collect();
+
+    TextLayoutRequest {
+        content: text.content.clone(),
+        width: width.max(1.0),
+        alignment: match text.align {
+            kernel_doc::TextAlign::Left => TextAlignment::Left,
+            kernel_doc::TextAlign::Center => TextAlignment::Center,
+            kernel_doc::TextAlign::Right => TextAlignment::Right,
+            kernel_doc::TextAlign::Justify => TextAlignment::Justify,
+        },
+        paragraph_spacing: text.paragraph_spacing.max(0.0),
+        base_style,
+        runs,
+    }
+}
+
+fn text_style_metrics(text: &kernel_doc::TextNodeData) -> TextStyleMetrics {
+    TextStyleMetrics {
+        font_family: text.font_family.clone(),
+        font_size: text.font_size,
+        font_weight: text.font_weight,
+        line_height: text.line_height,
+        letter_spacing: text.letter_spacing,
+        italic: text.italic,
+        transform: match text.text_case {
+            kernel_doc::TextCase::None => TextTransform::None,
+            kernel_doc::TextCase::Upper => TextTransform::Upper,
+            kernel_doc::TextCase::Lower => TextTransform::Lower,
+            kernel_doc::TextCase::Capitalize => TextTransform::Capitalize,
+        },
+    }
 }
 
 fn normalize_auto_height_nodes(doc: &mut SceneDoc) {
@@ -3585,23 +3688,6 @@ fn ordered_child_ids(page: &kernel_doc::ScenePage, parent_index: usize) -> Vec<S
         .filter(|node| node.parent_id.as_deref() == Some(parent_id))
         .map(|node| node.id.clone())
         .collect()
-}
-
-fn estimate_text_auto_height(width: f32, text: &kernel_doc::TextNodeData) -> f32 {
-    let available_width = width.max(text.font_size);
-    let average_char_width = (text.font_size * 0.56 + text.letter_spacing.max(0.0)).max(1.0);
-    let chars_per_line = ((available_width / average_char_width).floor() as usize).max(1);
-    let paragraphs = text.content.split('\n').collect::<Vec<_>>();
-    let mut lines = 0usize;
-
-    for paragraph in &paragraphs {
-        let paragraph_length = paragraph.chars().count().max(1);
-        lines += ((paragraph_length + chars_per_line - 1) / chars_per_line).max(1);
-    }
-
-    let paragraph_gap = text.paragraph_spacing.max(0.0) * paragraphs.len().saturating_sub(1) as f32;
-
-    text.line_height * (lines.max(1) as f32) + paragraph_gap
 }
 
 fn move_guide(
@@ -4814,7 +4900,7 @@ mod tests {
         assert_eq!(resized, vec!["title".to_string()]);
         let node = query_node(&doc, "title").expect("node exists");
         assert_eq!(node.frame.w, 50.0);
-        assert_eq!(node.frame.h, 48.0);
+        assert_eq!(node.frame.h, 24.0);
     }
 
     #[test]
@@ -6240,7 +6326,86 @@ mod tests {
         assert_eq!(text.ranges[0].start, 0);
         assert_eq!(text.ranges[0].end, 7);
         assert_eq!(text.ranges[1].start, 8);
-        assert_eq!(text.ranges[1].end, text.content.chars().count());
+        assert_eq!(text.ranges[1].end, text.content.encode_utf16().count());
+    }
+
+    #[test]
+    fn text_ranges_use_browser_utf16_offsets() {
+        let mut state = EditorState::new(sample_doc());
+
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SetTextContent {
+                    node_id: "title".to_string(),
+                    content: "A🙂B".to_string(),
+                },
+                EditorCommand::SetTextRanges {
+                    node_id: "title".to_string(),
+                    ranges: vec![TextRange {
+                        start: 1,
+                        end: 3,
+                        style: Some(TextStylePatch {
+                            font_weight: Some(700),
+                            ..TextStylePatch::default()
+                        }),
+                    }],
+                },
+            ],
+        )
+        .expect("UTF-16 range should be accepted");
+
+        let node = query_node(&state.doc, "title").expect("node exists");
+        let text = node.text.as_ref().expect("text data exists");
+        assert_eq!(text.content.encode_utf16().count(), 4);
+        assert_eq!(text.ranges[0].start, 1);
+        assert_eq!(text.ranges[0].end, 3);
+        let layout = text_layout_for_node(&state.doc, "title").expect("layout succeeds");
+        assert!(layout
+            .graphemes
+            .iter()
+            .any(|cluster| cluster.start == 1 && cluster.end == 3));
+    }
+
+    #[test]
+    fn text_layout_merges_overlapping_partial_styles() {
+        let mut doc = sample_doc();
+        let node = doc.pages[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "title")
+            .expect("title exists");
+        let text = node.text.as_mut().expect("text exists");
+        text.content = "Mixed".to_string();
+        text.ranges = vec![
+            TextRange {
+                start: 0,
+                end: 5,
+                style: Some(TextStylePatch {
+                    font_size: Some(30.0),
+                    line_height: Some(40.0),
+                    ..TextStylePatch::default()
+                }),
+            },
+            TextRange {
+                start: 1,
+                end: 3,
+                style: Some(TextStylePatch {
+                    italic: Some(true),
+                    ..TextStylePatch::default()
+                }),
+            },
+        ];
+
+        let request = build_text_layout_request(node.frame.w, text);
+        let overlap = request
+            .runs
+            .iter()
+            .find(|run| run.start == 1 && run.end == 3)
+            .expect("overlap run exists");
+        assert_eq!(overlap.style.font_size, 30.0);
+        assert_eq!(overlap.style.line_height, 40.0);
+        assert!(overlap.style.italic);
     }
 
     #[test]

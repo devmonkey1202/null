@@ -123,17 +123,28 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 이 변경은 v2 문서 작업과 별개입니다.  
 정리/보존 여부를 분리해서 다뤄야 합니다.
 
-## 9. 아직 직접 구현하지 않은 것
+## 9. 현재 구현 상태
 
-- v2 실제 코드
-- Rust workspace
-- Prisma 실파일
-- migration SQL
-- validator / parser / runtime code
-- benchmark 실측
-- staging 운영 검증
+현재 `v2-rebuild`에는 다음 기반 코드가 구현돼 있습니다.
 
-즉, 현재 상태는 **문서 착수 완료**이지 **제품 완성**이 아닙니다.
+- React/Next v2 editor shell과 독립 `/editor/v2` 경로
+- Rust workspace와 실제 browser WASM bridge
+- SceneDoc load/query/validation 및 command 기반 변경
+- selection, hit test, move, rotate, resize, align, distribute, snapping, guide, ruler, history
+- auto layout, group, component/instance, rich-text range 기초
+- Unicode grapheme/line-break/caret geometry를 계산하는 `kernel-text` Phase 1
+- Playwright 기반 실제 Rust/WASM 편집 흐름 검증
+
+아직 상용 수준 완료로 간주할 수 없는 핵심 범위:
+
+- 실제 폰트 파일 registry와 `rustybuzz` shaping
+- glyph raster/atlas와 GPU render list 기반 캔버스
+- 완성형 vector boolean/tessellation
+- editor collaboration document ops
+- 대규모 문서 benchmark와 memory profiling
+- autosave/version persistence, staging validation, acceptance gate
+
+따라서 현재 상태는 **실제 v2 구현 진행 중**이며 **제품 완성이나 교체 준비 완료 상태는 아닙니다.**
 
 ## 10. 한 줄 요약
 
