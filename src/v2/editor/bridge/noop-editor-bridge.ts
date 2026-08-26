@@ -238,12 +238,67 @@ function updateNode(
   }));
 }
 
-function pointInsideRect(node: SceneNode, x: number, y: number) {
+function buildPageNodeMap(page: ScenePage) {
+  return new Map(page.nodes.map((node) => [node.id, node] as const));
+}
+
+function resolveAbsoluteFrame(
+  nodeId: string,
+  nodeMap: Map<string, SceneNode>,
+  cache: Map<string, EditorRect>,
+  lineage = new Set<string>(),
+): EditorRect | null {
+  const cached = cache.get(nodeId);
+  if (cached) {
+    return cached;
+  }
+
+  const node = nodeMap.get(nodeId);
+  if (!node) {
+    return null;
+  }
+
+  if (lineage.has(nodeId)) {
+    return {
+      ...node.frame,
+    };
+  }
+
+  lineage.add(nodeId);
+  const parentFrame = node.parentId
+    ? resolveAbsoluteFrame(node.parentId, nodeMap, cache, lineage)
+    : null;
+  lineage.delete(nodeId);
+
+  const frame = parentFrame
+    ? {
+        ...node.frame,
+        x: parentFrame.x + node.frame.x,
+        y: parentFrame.y + node.frame.y,
+        rotation: normalizeDegrees(parentFrame.rotation + node.frame.rotation),
+      }
+    : {
+        ...node.frame,
+      };
+  cache.set(nodeId, frame);
+  return frame;
+}
+
+function buildAbsoluteFrameMap(nodes: SceneNode[]) {
+  const nodeMap = new Map(nodes.map((node) => [node.id, node] as const));
+  const cache = new Map<string, EditorRect>();
+  nodes.forEach((node) => {
+    resolveAbsoluteFrame(node.id, nodeMap, cache);
+  });
+  return cache;
+}
+
+function pointInsideRect(frame: EditorRect, x: number, y: number) {
   return (
-    x >= node.frame.x &&
-    y >= node.frame.y &&
-    x <= node.frame.x + node.frame.w &&
-    y <= node.frame.y + node.frame.h
+    x >= frame.x &&
+    y >= frame.y &&
+    x <= frame.x + frame.w &&
+    y <= frame.y + frame.h
   );
 }
 
@@ -252,18 +307,22 @@ function rectsIntersect(a: EditorRect, b: EditorRect) {
 }
 
 function buildSelectionBounds(document: SceneDoc, selection: string[]) {
-  const nodes = document.pages
-    .flatMap((page) => page.nodes)
-    .filter((node) => selection.includes(node.id));
+  const frames = document.pages.flatMap((page) => {
+    const frameMap = buildAbsoluteFrameMap(page.nodes);
+    return page.nodes
+      .filter((node) => selection.includes(node.id))
+      .map((node) => frameMap.get(node.id))
+      .filter((frame): frame is EditorRect => Boolean(frame));
+  });
 
-  if (nodes.length === 0) {
+  if (frames.length === 0) {
     return null;
   }
 
-  const left = Math.min(...nodes.map((node) => node.frame.x));
-  const top = Math.min(...nodes.map((node) => node.frame.y));
-  const right = Math.max(...nodes.map((node) => node.frame.x + node.frame.w));
-  const bottom = Math.max(...nodes.map((node) => node.frame.y + node.frame.h));
+  const left = Math.min(...frames.map((frame) => frame.x));
+  const top = Math.min(...frames.map((frame) => frame.y));
+  const right = Math.max(...frames.map((frame) => frame.x + frame.w));
+  const bottom = Math.max(...frames.map((frame) => frame.y + frame.h));
 
   return {
     x: left,
@@ -1289,6 +1348,209 @@ function reorderNode(document: SceneDoc, nodeId: string, position: ReorderNodePo
   throw new Error(`Node '${nodeId}' was not found.`);
 }
 
+function groupSelection(document: SceneDoc, selection: string[]) {
+  const nextDocument = structuredClone(document);
+  const groupedRootIds: string[] = [];
+  const dirtyNodeIds: string[] = [];
+
+  for (const page of nextDocument.pages) {
+    const sourceNodes = structuredClone(page.nodes);
+    const nodeMap = new Map(sourceNodes.map((node) => [node.id, node] as const));
+    const selectionSet = new Set(selection.filter((nodeId) => nodeMap.has(nodeId)));
+    if (selectionSet.size < 2) {
+      continue;
+    }
+
+    const selectedRootIds = sourceNodes
+      .filter(
+        (node) =>
+          selectionSet.has(node.id) &&
+          node.id !== page.rootId &&
+          !hasSelectedAncestor(node, selectionSet, nodeMap),
+      )
+      .map((node) => node.id);
+
+    if (selectedRootIds.length < 2) {
+      continue;
+    }
+
+    const sharedParentId = nodeMap.get(selectedRootIds[0]!)?.parentId ?? null;
+    if (
+      !sharedParentId ||
+      !selectedRootIds.every((nodeId) => nodeMap.get(nodeId)?.parentId === sharedParentId)
+    ) {
+      continue;
+    }
+
+    const sourceParent = sourceNodes.find((node) => node.id === sharedParentId);
+    if (!sourceParent) {
+      continue;
+    }
+
+    const siblingIds = orderedChildIdsFromNodes(sourceNodes, sourceParent);
+    const orderedSelectedRootIds = siblingIds.filter((nodeId) => selectedRootIds.includes(nodeId));
+    const absoluteFrameMap = buildAbsoluteFrameMap(sourceNodes);
+    const selectedFrames = orderedSelectedRootIds
+      .map((nodeId) => absoluteFrameMap.get(nodeId))
+      .filter((frame): frame is EditorRect => Boolean(frame));
+    if (selectedFrames.length !== orderedSelectedRootIds.length) {
+      continue;
+    }
+
+    const parentFrame = absoluteFrameMap.get(sharedParentId) ?? {
+      x: 0,
+      y: 0,
+      w: 0,
+      h: 0,
+      rotation: 0,
+    };
+    const left = Math.min(...selectedFrames.map((frame) => frame.x));
+    const top = Math.min(...selectedFrames.map((frame) => frame.y));
+    const right = Math.max(...selectedFrames.map((frame) => frame.x + frame.w));
+    const bottom = Math.max(...selectedFrames.map((frame) => frame.y + frame.h));
+    const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    page.nodes = page.nodes.map((node) => {
+      if (!orderedSelectedRootIds.includes(node.id)) {
+        return node;
+      }
+
+      const absoluteFrame = absoluteFrameMap.get(node.id) ?? node.frame;
+      return {
+        ...node,
+        parentId: groupId,
+        frame: {
+          ...node.frame,
+          x: absoluteFrame.x - left,
+          y: absoluteFrame.y - top,
+        },
+      };
+    });
+
+    page.nodes.push({
+      id: groupId,
+      kind: "group",
+      name: "Group",
+      parentId: sharedParentId,
+      children: [...orderedSelectedRootIds],
+      frame: {
+        x: left - parentFrame.x,
+        y: top - parentFrame.y,
+        w: Math.max(right - left, 1),
+        h: Math.max(bottom - top, 1),
+        rotation: 0,
+      },
+      constraints: { horizontal: "min", vertical: "min" },
+      layout: undefined,
+      layoutSizing: undefined,
+      text: undefined,
+      shape: undefined,
+      component: undefined,
+      instance: undefined,
+      instanceSourceNodeId: undefined,
+    });
+
+    const parent = page.nodes.find((node) => node.id === sharedParentId);
+    if (parent) {
+      let inserted = false;
+      parent.children = siblingIds.flatMap((siblingId) => {
+        if (orderedSelectedRootIds.includes(siblingId)) {
+          if (!inserted) {
+            inserted = true;
+            return [groupId];
+          }
+          return [];
+        }
+        return [siblingId];
+      });
+    }
+
+    rebuildPageNodeOrder(page);
+    groupedRootIds.push(groupId);
+    dirtyNodeIds.push(groupId, sharedParentId, ...orderedSelectedRootIds);
+  }
+
+  return {
+    document: normalizeDocument(nextDocument),
+    groupedRootIds,
+    dirtyNodeIds: [...new Set(dirtyNodeIds)],
+  };
+}
+
+function ungroupSelection(document: SceneDoc, selection: string[]) {
+  const nextDocument = structuredClone(document);
+  const nextSelectionIds: string[] = [];
+  const dirtyNodeIds: string[] = [];
+
+  for (const page of nextDocument.pages) {
+    const selectedGroupIds = selection.filter((nodeId) => {
+      const node = page.nodes.find((candidate) => candidate.id === nodeId);
+      return node?.kind === "group";
+    });
+    if (!selectedGroupIds.length) {
+      continue;
+    }
+
+    for (const groupId of selectedGroupIds) {
+      const sourceNodes = structuredClone(page.nodes);
+      const nodeMap = new Map(sourceNodes.map((node) => [node.id, node] as const));
+      const group = nodeMap.get(groupId);
+      if (!group || group.kind !== "group" || !group.parentId) {
+        continue;
+      }
+
+      const parent = page.nodes.find((node) => node.id === group.parentId);
+      const sourceParent = nodeMap.get(group.parentId);
+      if (!parent || !sourceParent) {
+        continue;
+      }
+
+      const absoluteFrameMap = buildAbsoluteFrameMap(sourceNodes);
+      const parentFrame = absoluteFrameMap.get(group.parentId) ?? {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+        rotation: 0,
+      };
+      const childIds = orderedChildIdsFromNodes(sourceNodes, group);
+
+      page.nodes = page.nodes
+        .filter((node) => node.id !== groupId)
+        .map((node) => {
+          if (!childIds.includes(node.id)) {
+            return node;
+          }
+
+          const absoluteFrame = absoluteFrameMap.get(node.id) ?? node.frame;
+          return {
+            ...node,
+            parentId: group.parentId,
+            frame: {
+              ...node.frame,
+              x: absoluteFrame.x - parentFrame.x,
+              y: absoluteFrame.y - parentFrame.y,
+            },
+          };
+        });
+
+      const siblingIds = orderedChildIdsFromNodes(sourceNodes, sourceParent);
+      parent.children = siblingIds.flatMap((siblingId) => (siblingId === groupId ? childIds : [siblingId]));
+
+      nextSelectionIds.push(...childIds);
+      dirtyNodeIds.push(groupId, group.parentId, ...childIds);
+    }
+
+    rebuildPageNodeOrder(page);
+  }
+
+  return {
+    document: normalizeDocument(nextDocument),
+    selection: [...new Set(nextSelectionIds)],
+    dirtyNodeIds: [...new Set(dirtyNodeIds)],
+  };
+}
+
 function duplicateSelection(
   document: SceneDoc,
   selection: string[],
@@ -1838,7 +2100,13 @@ function selectInRect(
     return currentSelection;
   }
 
-  const hitIds = page.nodes.filter((node) => rectsIntersect(node.frame, rect)).map((node) => node.id);
+  const frameMap = buildAbsoluteFrameMap(page.nodes);
+  const hitIds = page.nodes
+    .filter((node) => {
+      const frame = frameMap.get(node.id);
+      return frame ? rectsIntersect(frame, rect) : false;
+    })
+    .map((node) => node.id);
 
   switch (mode) {
     case "add":
@@ -1873,15 +2141,19 @@ function resizeSelection(
     ...document,
     pages: document.pages.map((page) => ({
       ...page,
-      nodes: page.nodes.map((node) => {
+      nodes: (() => {
+        const frameMap = buildAbsoluteFrameMap(page.nodes);
+        return page.nodes.map((node) => {
         if (!selection.includes(node.id)) {
           return node;
         }
 
-        const leftOffset = node.frame.x - bounds.x;
-        const topOffset = node.frame.y - bounds.y;
-        const rightOffset = node.frame.x + node.frame.w - bounds.x;
-        const bottomOffset = node.frame.y + node.frame.h - bounds.y;
+        const absoluteFrame = frameMap.get(node.id) ?? node.frame;
+        const parentFrame = node.parentId ? (frameMap.get(node.parentId) ?? null) : null;
+        const leftOffset = absoluteFrame.x - bounds.x;
+        const topOffset = absoluteFrame.y - bounds.y;
+        const rightOffset = absoluteFrame.x + absoluteFrame.w - bounds.x;
+        const bottomOffset = absoluteFrame.y + absoluteFrame.h - bounds.y;
 
         const nextLeft = nextBounds.x + leftOffset * scaleX;
         const nextTop = nextBounds.y + topOffset * scaleY;
@@ -1892,13 +2164,14 @@ function resizeSelection(
           ...node,
           frame: {
             ...node.frame,
-            x: nextLeft,
-            y: nextTop,
+            x: nextLeft - (parentFrame?.x ?? 0),
+            y: nextTop - (parentFrame?.y ?? 0),
             w: Math.max(nextRight - nextLeft, 1),
             h: Math.max(nextBottom - nextTop, 1),
           },
         });
-      }),
+        });
+      })(),
     })),
     meta: { ...document.meta, updatedAt: new Date().toISOString() },
   };
@@ -1953,13 +2226,17 @@ function rotateSelection(document: SceneDoc, selection: string[], deltaDeg: numb
     ...document,
     pages: document.pages.map((page) => ({
       ...page,
-      nodes: page.nodes.map((node) => {
+      nodes: (() => {
+        const frameMap = buildAbsoluteFrameMap(page.nodes);
+        return page.nodes.map((node) => {
         if (!selection.includes(node.id)) {
           return node;
         }
 
-        const nodeCenterX = node.frame.x + node.frame.w / 2;
-        const nodeCenterY = node.frame.y + node.frame.h / 2;
+        const absoluteFrame = frameMap.get(node.id) ?? node.frame;
+        const parentFrame = node.parentId ? (frameMap.get(node.parentId) ?? null) : null;
+        const nodeCenterX = absoluteFrame.x + absoluteFrame.w / 2;
+        const nodeCenterY = absoluteFrame.y + absoluteFrame.h / 2;
         const localX = nodeCenterX - centerX;
         const localY = nodeCenterY - centerY;
         const rotatedX = localX * cosTheta - localY * sinTheta;
@@ -1969,12 +2246,13 @@ function rotateSelection(document: SceneDoc, selection: string[], deltaDeg: numb
           ...node,
           frame: {
             ...node.frame,
-            x: centerX + rotatedX - node.frame.w / 2,
-            y: centerY + rotatedY - node.frame.h / 2,
+            x: centerX + rotatedX - absoluteFrame.w / 2 - (parentFrame?.x ?? 0),
+            y: centerY + rotatedY - absoluteFrame.h / 2 - (parentFrame?.y ?? 0),
             rotation: normalizeDegrees(node.frame.rotation + deltaDeg),
           },
         };
-      }),
+        });
+      })(),
     })),
     meta: { ...document.meta, updatedAt: new Date().toISOString() },
   };
@@ -2089,7 +2367,13 @@ function runHitTest(
     };
   }
 
-  const hitNodes = [...page.nodes].reverse().filter((node) => pointInsideRect(node, x, y));
+  const frameMap = buildAbsoluteFrameMap(page.nodes);
+  const hitNodes = [...page.nodes]
+    .reverse()
+    .filter((node) => {
+      const frame = frameMap.get(node.id);
+      return frame ? pointInsideRect(frame, x, y) : false;
+    });
   const nodeIds = mode === "topmost" ? hitNodes.slice(0, 1).map((node) => node.id) : hitNodes.map((node) => node.id);
 
   return {
@@ -2548,6 +2832,30 @@ export class NoopEditorBridge implements EditorBridge {
           dirtyNodeIds.push(command.nodeId);
           this.recordHistory();
           break;
+        case "group_selection": {
+          const result = groupSelection(this.document, this.selection);
+          if (!result.groupedRootIds.length) {
+            break;
+          }
+          this.document = result.document;
+          this.selection = result.groupedRootIds;
+          this.version += 1;
+          dirtyNodeIds.push(...result.dirtyNodeIds);
+          this.recordHistory();
+          break;
+        }
+        case "ungroup_selection": {
+          const result = ungroupSelection(this.document, this.selection);
+          if (!result.selection.length) {
+            break;
+          }
+          this.document = result.document;
+          this.selection = result.selection;
+          this.version += 1;
+          dirtyNodeIds.push(...result.dirtyNodeIds);
+          this.recordHistory();
+          break;
+        }
         case "reorder_node":
           this.document = normalizeDocument(
             reorderNode(this.document, command.nodeId, command.position),
@@ -2823,12 +3131,13 @@ export class NoopEditorBridge implements EditorBridge {
       case "move_snap": {
         const selectionBounds = buildSelectionBounds(this.document, this.selection);
         const page = selectionPage(this.document, this.selection);
+        const frameMap = page ? buildAbsoluteFrameMap(page.nodes) : null;
         return computeMoveSnap(
           selectionBounds,
           { x: selector.deltaX, y: selector.deltaY },
           (page?.nodes ?? [])
             .filter((node) => !this.selection.includes(node.id))
-            .map((node) => node.frame),
+            .map((node) => frameMap?.get(node.id) ?? node.frame),
           page?.guides ?? [],
           selector.threshold ?? 8,
         );
@@ -2845,13 +3154,14 @@ export class NoopEditorBridge implements EditorBridge {
             )
           : null;
         const page = selectionPage(this.document, this.selection);
+        const frameMap = page ? buildAbsoluteFrameMap(page.nodes) : null;
         return computeResizeSnap(
           selectionBounds,
           previewBounds,
           selector.handle,
           (page?.nodes ?? [])
             .filter((node) => !this.selection.includes(node.id))
-            .map((node) => node.frame),
+            .map((node) => frameMap?.get(node.id) ?? node.frame),
           page?.guides ?? [],
           selector.threshold ?? 8,
         );

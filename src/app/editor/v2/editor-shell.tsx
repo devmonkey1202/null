@@ -615,14 +615,19 @@ function applyDraggedPathHandleToPoints(
   return nextPoints;
 }
 
-function localShapePointFromCanvas(node: SceneNode, canvasX: number, canvasY: number) {
-  const centerX = node.frame.x + node.frame.w / 2;
-  const centerY = node.frame.y + node.frame.h / 2;
-  const radians = (-node.frame.rotation * Math.PI) / 180;
+function localShapePointFromCanvas(
+  node: SceneNode,
+  canvasX: number,
+  canvasY: number,
+  frame: EditorRect = node.frame,
+) {
+  const centerX = frame.x + frame.w / 2;
+  const centerY = frame.y + frame.h / 2;
+  const radians = (-frame.rotation * Math.PI) / 180;
   const dx = canvasX - centerX;
   const dy = canvasY - centerY;
-  const localX = dx * Math.cos(radians) - dy * Math.sin(radians) + node.frame.w / 2;
-  const localY = dx * Math.sin(radians) + dy * Math.cos(radians) + node.frame.h / 2;
+  const localX = dx * Math.cos(radians) - dy * Math.sin(radians) + frame.w / 2;
+  const localY = dx * Math.sin(radians) + dy * Math.cos(radians) + frame.h / 2;
 
   return {
     x: Number(localX.toFixed(3)),
@@ -630,12 +635,12 @@ function localShapePointFromCanvas(node: SceneNode, canvasX: number, canvasY: nu
   };
 }
 
-function nodeCanvasPointFromLocal(node: SceneNode, localX: number, localY: number) {
-  const centerX = node.frame.x + node.frame.w / 2;
-  const centerY = node.frame.y + node.frame.h / 2;
-  const radians = (node.frame.rotation * Math.PI) / 180;
-  const dx = localX - node.frame.w / 2;
-  const dy = localY - node.frame.h / 2;
+function nodeCanvasPointFromLocal(node: SceneNode, localX: number, localY: number, frame: EditorRect = node.frame) {
+  const centerX = frame.x + frame.w / 2;
+  const centerY = frame.y + frame.h / 2;
+  const radians = (frame.rotation * Math.PI) / 180;
+  const dx = localX - frame.w / 2;
+  const dy = localY - frame.h / 2;
 
   return {
     x: dx * Math.cos(radians) - dy * Math.sin(radians) + centerX,
@@ -654,16 +659,16 @@ function localShapePathToAnchors(path: ShapePathData): PathAnchor[] {
   }));
 }
 
-function transformAnchorsToCanvas(node: SceneNode, anchors: PathAnchor[]) {
+function transformAnchorsToCanvas(node: SceneNode, anchors: PathAnchor[], frame: EditorRect = node.frame) {
   return anchors.map((anchor) => {
-    const origin = nodeCanvasPointFromLocal(node, anchor.x, anchor.y);
+    const origin = nodeCanvasPointFromLocal(node, anchor.x, anchor.y, frame);
     const handleIn =
       anchor.handle1X != null && anchor.handle1Y != null
-        ? nodeCanvasPointFromLocal(node, anchor.handle1X, anchor.handle1Y)
+        ? nodeCanvasPointFromLocal(node, anchor.handle1X, anchor.handle1Y, frame)
         : null;
     const handleOut =
       anchor.handle2X != null && anchor.handle2Y != null
-        ? nodeCanvasPointFromLocal(node, anchor.handle2X, anchor.handle2Y)
+        ? nodeCanvasPointFromLocal(node, anchor.handle2X, anchor.handle2Y, frame)
         : null;
 
     return {
@@ -685,7 +690,7 @@ function transformAnchorsToCanvas(node: SceneNode, anchors: PathAnchor[]) {
   });
 }
 
-function nodeToAbsolutePathD(node: SceneNode) {
+function nodeToAbsolutePathD(node: SceneNode, frame: EditorRect = node.frame) {
   if (node.kind !== "shape" || !node.shape) {
     return null;
   }
@@ -693,10 +698,10 @@ function nodeToAbsolutePathD(node: SceneNode) {
   let localPathD: string | null = null;
   switch (node.shape.primitive) {
     case "rect":
-      localPathD = rectToPath({ x: 0, y: 0, w: node.frame.w, h: node.frame.h });
+      localPathD = rectToPath({ x: 0, y: 0, w: frame.w, h: frame.h });
       break;
     case "ellipse":
-      localPathD = ellipseToPath({ x: 0, y: 0, w: node.frame.w, h: node.frame.h });
+      localPathD = ellipseToPath({ x: 0, y: 0, w: frame.w, h: frame.h });
       break;
     case "line":
       return null;
@@ -713,7 +718,7 @@ function nodeToAbsolutePathD(node: SceneNode) {
   }
 
   const { anchors, closed } = pathDataToAnchors(localPathD);
-  const absoluteAnchors = transformAnchorsToCanvas(node, anchors);
+  const absoluteAnchors = transformAnchorsToCanvas(node, anchors, frame);
   return anchorsToPathData(absoluteAnchors, closed);
 }
 
@@ -871,6 +876,92 @@ function selectedNode(nodes: SceneNode[], selection: string[]) {
 
 function buildNodeMap(nodes: SceneNode[]) {
   return new Map(nodes.map((node) => [node.id, node]));
+}
+
+function normalizeRotation(value: number) {
+  const normalized = ((value % 360) + 360) % 360;
+  return normalized > 180 ? normalized - 360 : normalized;
+}
+
+function resolveAbsoluteNodeFrame(
+  nodeId: string,
+  nodeMap: Map<string, SceneNode>,
+  cache: Map<string, EditorRect>,
+  lineage = new Set<string>(),
+): EditorRect | null {
+  const cached = cache.get(nodeId);
+  if (cached) {
+    return cached;
+  }
+
+  const node = nodeMap.get(nodeId);
+  if (!node) {
+    return null;
+  }
+
+  if (lineage.has(nodeId)) {
+    return {
+      ...node.frame,
+    };
+  }
+
+  lineage.add(nodeId);
+  const parentFrame = node.parentId
+    ? resolveAbsoluteNodeFrame(node.parentId, nodeMap, cache, lineage)
+    : null;
+  lineage.delete(nodeId);
+
+  const frame = parentFrame
+    ? {
+        ...node.frame,
+        x: parentFrame.x + node.frame.x,
+        y: parentFrame.y + node.frame.y,
+        rotation: normalizeRotation(parentFrame.rotation + node.frame.rotation),
+      }
+    : {
+        ...node.frame,
+      };
+  cache.set(nodeId, frame);
+  return frame;
+}
+
+function buildAbsoluteNodeFrameMap(nodes: SceneNode[]) {
+  const nodeMap = buildNodeMap(nodes);
+  const cache = new Map<string, EditorRect>();
+  nodes.forEach((node) => {
+    resolveAbsoluteNodeFrame(node.id, nodeMap, cache);
+  });
+  return cache;
+}
+
+function nodeAffectedBySelectionMove(
+  nodeId: string,
+  selectionSet: Set<string>,
+  nodeMap: Map<string, SceneNode>,
+) {
+  let current = nodeMap.get(nodeId) ?? null;
+  while (current) {
+    if (selectionSet.has(current.id)) {
+      return true;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return false;
+}
+
+function hasSelectedAncestor(
+  node: SceneNode,
+  selectionSet: Set<string>,
+  nodeMap: Map<string, SceneNode>,
+) {
+  let current = node.parentId ? (nodeMap.get(node.parentId) ?? null) : null;
+  while (current) {
+    if (selectionSet.has(current.id)) {
+      return true;
+    }
+    current = current.parentId ? (nodeMap.get(current.parentId) ?? null) : null;
+  }
+  return false;
 }
 
 function orderedLayerChildIds(
@@ -1587,6 +1678,7 @@ export function V2EditorShell() {
   );
   const pageGuides = currentPage?.guides ?? [];
   const nodeMap = useMemo(() => buildNodeMap(nodes), [nodes]);
+  const absoluteNodeFrameMap = useMemo(() => buildAbsoluteNodeFrameMap(nodes), [nodes]);
   const layerRootChildIds = useMemo(() => {
     if (!currentPage) {
       return [];
@@ -1751,12 +1843,62 @@ export function V2EditorShell() {
     [editingTextNodeId, nodes],
   );
   const rootFrame = useMemo(
-    () => nodes.find((node) => node.parentId === null) ?? null,
-    [nodes],
+    () => (currentPage ? (nodeMap.get(currentPage.rootId) ?? null) : null),
+    [currentPage, nodeMap],
   );
   const canvasNodes = useMemo(
-    () => nodes.filter((node) => node.parentId !== null),
-    [nodes],
+    () => (currentPage ? currentPage.nodes.filter((node) => node.id !== currentPage.rootId) : []),
+    [currentPage],
+  );
+  const canvasNodeFrames = useMemo(
+    () =>
+      new Map(
+        canvasNodes.map((node) => [
+          node.id,
+          absoluteNodeFrameMap.get(node.id) ?? node.frame,
+        ] as const),
+      ),
+    [absoluteNodeFrameMap, canvasNodes],
+  );
+  const activeNodeFrame = useMemo(
+    () =>
+      activeNode
+        ? (canvasNodeFrames.get(activeNode.id) ?? absoluteNodeFrameMap.get(activeNode.id) ?? activeNode.frame)
+        : null,
+    [absoluteNodeFrameMap, activeNode, canvasNodeFrames],
+  );
+  const editingTextNodeFrame = useMemo(
+    () =>
+      editingTextNode
+        ? (canvasNodeFrames.get(editingTextNode.id) ??
+          absoluteNodeFrameMap.get(editingTextNode.id) ??
+          editingTextNode.frame)
+        : null,
+    [absoluteNodeFrameMap, canvasNodeFrames, editingTextNode],
+  );
+  const selectionMoveSet = useMemo(() => new Set(snapshot?.selection ?? []), [snapshot?.selection]);
+  const canGroupSelection = useMemo(() => {
+    if (!currentPage || (snapshot?.selection.length ?? 0) < 2) {
+      return false;
+    }
+
+    const selectionSet = new Set(snapshot?.selection ?? []);
+    const selectedRootNodes = currentPage.nodes.filter(
+      (node) =>
+        selectionSet.has(node.id) &&
+        node.id !== currentPage.rootId &&
+        !hasSelectedAncestor(node, selectionSet, nodeMap),
+    );
+    if (selectedRootNodes.length < 2) {
+      return false;
+    }
+
+    const parentId = selectedRootNodes[0]?.parentId ?? null;
+    return Boolean(parentId && selectedRootNodes.every((node) => node.parentId === parentId));
+  }, [currentPage, nodeMap, snapshot?.selection]);
+  const canUngroupSelection = useMemo(
+    () => Boolean((snapshot?.selection ?? []).some((nodeId) => nodeMap.get(nodeId)?.kind === "group")),
+    [nodeMap, snapshot?.selection],
   );
   const liveMarqueeRect = useMemo(
     () => (dragMarquee ? normalizeRect(dragMarquee) : null),
@@ -2443,7 +2585,12 @@ export function V2EditorShell() {
     }
 
     const sourcePathDs = selectedShapeNodes
-      .map((node) => nodeToAbsolutePathD(node))
+      .map((node) =>
+        nodeToAbsolutePathD(
+          node,
+          canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+        ),
+      )
       .filter((value): value is string => Boolean(value));
 
     if (sourcePathDs.length < 2) {
@@ -2684,8 +2831,15 @@ export function V2EditorShell() {
     }));
   }
 
-  async function selectNode(nodeId: string) {
-    await applyAndSync([{ kind: "select_nodes", nodeIds: [nodeId] }]);
+  async function selectNode(nodeId: string, additive = false) {
+    const currentSelection = snapshot?.selection ?? [];
+    const nodeIds = additive
+      ? currentSelection.includes(nodeId)
+        ? currentSelection.filter((selectedId) => selectedId !== nodeId)
+        : [...currentSelection, nodeId]
+      : [nodeId];
+
+    await applyAndSync([{ kind: "select_nodes", nodeIds }]);
   }
 
   async function rerunValidation() {
@@ -2716,6 +2870,22 @@ export function V2EditorShell() {
       },
     ]);
   }, [snapshot?.selection, syncBridgeState]);
+
+  const runGroupSelection = useCallback(async () => {
+    if (!canGroupSelection) {
+      return;
+    }
+
+    await applyAndSync([{ kind: "group_selection" }]);
+  }, [canGroupSelection, syncBridgeState]);
+
+  const runUngroupSelection = useCallback(async () => {
+    if (!canUngroupSelection) {
+      return;
+    }
+
+    await applyAndSync([{ kind: "ungroup_selection" }]);
+  }, [canUngroupSelection, syncBridgeState]);
 
   const runUndo = useCallback(async () => {
     await applyAndSync([{ kind: "undo" }]);
@@ -2924,6 +3094,16 @@ export function V2EditorShell() {
         return;
       }
 
+      if (key === "g" && !event.altKey) {
+        event.preventDefault();
+        if (event.shiftKey) {
+          void runUngroupSelection();
+        } else {
+          void runGroupSelection();
+        }
+        return;
+      }
+
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
         void runUndo();
@@ -2965,9 +3145,11 @@ export function V2EditorShell() {
     removeActiveShapePathPoint,
     runDeleteSelection,
     runDuplicateSelection,
+    runGroupSelection,
     runNudgeSelection,
     runReorderSelection,
     runRedo,
+    runUngroupSelection,
     runUndo,
     selectedGuideId,
     snapshot?.selection.length,
@@ -3012,8 +3194,14 @@ export function V2EditorShell() {
     }
 
     const alreadySelected = snapshot?.selection.includes(nodeId) ?? false;
-    if (!alreadySelected) {
-      await applyAndSync([{ kind: "select_nodes", nodeIds: [nodeId] }]);
+    const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+    if (additive) {
+      await selectNode(nodeId, true);
+      if (alreadySelected) {
+        return;
+      }
+    } else if (!alreadySelected) {
+      await selectNode(nodeId);
     }
 
     setDragMove({
@@ -3124,7 +3312,12 @@ export function V2EditorShell() {
     }
 
     setActivePathPointIndex(pointIndex);
-    const localPoint = localShapePointFromCanvas(node, point.x, point.y);
+    const localPoint = localShapePointFromCanvas(
+      node,
+      point.x,
+      point.y,
+      canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+    );
     setDragPathPoint({
       nodeId: node.id,
       pointIndex,
@@ -3155,7 +3348,12 @@ export function V2EditorShell() {
     }
 
     setActivePathPointIndex(pointIndex);
-    const localPoint = localShapePointFromCanvas(node, point.x, point.y);
+    const localPoint = localShapePointFromCanvas(
+      node,
+      point.x,
+      point.y,
+      canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+    );
     setDragPathHandle({
       nodeId: node.id,
       pointIndex,
@@ -3185,7 +3383,12 @@ export function V2EditorShell() {
       return;
     }
 
-    const localPoint = localShapePointFromCanvas(node, point.x, point.y);
+    const localPoint = localShapePointFromCanvas(
+      node,
+      point.x,
+      point.y,
+      canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame,
+    );
     void insertActiveShapePathPointAt(pointIndex, localPoint);
   }
 
@@ -3281,7 +3484,12 @@ export function V2EditorShell() {
         return;
       }
 
-      const localPoint = localShapePointFromCanvas(targetNode, point.x, point.y);
+      const localPoint = localShapePointFromCanvas(
+        targetNode,
+        point.x,
+        point.y,
+        canvasNodeFrames.get(targetNode.id) ?? absoluteNodeFrameMap.get(targetNode.id) ?? targetNode.frame,
+      );
       setDragPathHandle((current) =>
         current
           ? {
@@ -3305,7 +3513,12 @@ export function V2EditorShell() {
         return;
       }
 
-      const localPoint = localShapePointFromCanvas(targetNode, point.x, point.y);
+      const localPoint = localShapePointFromCanvas(
+        targetNode,
+        point.x,
+        point.y,
+        canvasNodeFrames.get(targetNode.id) ?? absoluteNodeFrameMap.get(targetNode.id) ?? targetNode.frame,
+      );
       setDragPathPoint((current) =>
         current
           ? {
@@ -3612,7 +3825,9 @@ export function V2EditorShell() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void selectNode(node.id)}
+            onClick={(event) =>
+              void selectNode(node.id, event.shiftKey || event.metaKey || event.ctrlKey)
+            }
             className={`flex min-w-0 flex-1 items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
               selected
                 ? "border-slate-950 bg-slate-950 text-white"
@@ -3922,8 +4137,16 @@ export function V2EditorShell() {
 
                 {canvasNodes.map((node) => {
                   const selected = snapshot?.selection.includes(node.id) ?? false;
-                  const previewX = selected && dragMoveDelta ? node.frame.x + dragMoveDelta.x : node.frame.x;
-                  const previewY = selected && dragMoveDelta ? node.frame.y + dragMoveDelta.y : node.frame.y;
+                  const baseFrame =
+                    canvasNodeFrames.get(node.id) ?? absoluteNodeFrameMap.get(node.id) ?? node.frame;
+                  const previewFrame =
+                    dragMoveDelta && nodeAffectedBySelectionMove(node.id, selectionMoveSet, nodeMap)
+                      ? {
+                          ...baseFrame,
+                          x: baseFrame.x + dragMoveDelta.x,
+                          y: baseFrame.y + dragMoveDelta.y,
+                        }
+                      : baseFrame;
                   const textData = node.kind === "text" ? node.text : undefined;
                   const shapeData = node.kind === "shape" ? node.shape : undefined;
                   const previewPath =
@@ -3936,23 +4159,29 @@ export function V2EditorShell() {
                       : shapeData?.path;
                   const richTextParagraphs =
                     textData ? splitRichTextRunsByParagraph(resolveRichTextRuns(textData)) : null;
+                  const isContainerNode =
+                    !textData &&
+                    !shapeData &&
+                    (node.kind === "frame" ||
+                      node.kind === "group" ||
+                      node.kind === "component" ||
+                      node.kind === "instance");
                   return (
                     <button
                       key={node.id}
                       type="button"
                       onPointerDown={(event) => void handleNodePointerDown(event, node.id)}
-                      onClick={() => void selectNode(node.id)}
                       onDoubleClick={(event) => handleNodeDoubleClick(event, node)}
                       style={{
-                        left: previewX,
-                        top: previewY,
-                        width: node.frame.w,
-                        height: node.frame.h,
-                        transform: `rotate(${node.frame.rotation}deg)`,
+                        left: previewFrame.x,
+                        top: previewFrame.y,
+                        width: previewFrame.w,
+                        height: previewFrame.h,
+                        transform: `rotate(${previewFrame.rotation}deg)`,
                         transformOrigin: "center",
                       }}
                       className={`absolute rounded-2xl border text-left transition ${
-                        node.kind === "text" ? "bg-transparent" : "bg-slate-50"
+                        node.kind === "text" || isContainerNode ? "bg-transparent" : "bg-slate-50"
                       } ${
                         selected
                           ? "border-slate-950 ring-2 ring-slate-950/15"
@@ -4196,14 +4425,22 @@ export function V2EditorShell() {
                           />
                         )
                       ) : (
-                        <div className="p-4">
-                          <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
-                            {node.kind}
+                        isContainerNode ? (
+                          <div className="pointer-events-none absolute inset-0 rounded-2xl border border-dashed border-slate-200/70">
+                            <div className="absolute left-2 top-2 rounded-full bg-white/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 shadow-sm">
+                              {node.name}
+                            </div>
                           </div>
-                          <div className="mt-2 text-sm font-semibold text-slate-900">
-                            {node.name}
+                        ) : (
+                          <div className="p-4">
+                            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                              {node.kind}
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-slate-900">
+                              {node.name}
+                            </div>
                           </div>
-                        </div>
+                        )
                       )}
                     </button>
                   );
@@ -4237,7 +4474,7 @@ export function V2EditorShell() {
                   </div>
                 ) : null}
 
-                {editingTextNode && editingTextNode.text ? (
+                {editingTextNode && editingTextNode.text && editingTextNodeFrame ? (
                   <textarea
                     ref={textEditorRef}
                     value={editingTextDraft}
@@ -4263,11 +4500,11 @@ export function V2EditorShell() {
                       }
                     }}
                     style={{
-                      left: editingTextNode.frame.x,
-                      top: editingTextNode.frame.y,
-                      width: editingTextNode.frame.w,
-                      height: editingTextNode.frame.h,
-                      transform: `rotate(${editingTextNode.frame.rotation}deg)`,
+                      left: editingTextNodeFrame.x,
+                      top: editingTextNodeFrame.y,
+                      width: editingTextNodeFrame.w,
+                      height: editingTextNodeFrame.h,
+                      transform: `rotate(${editingTextNodeFrame.rotation}deg)`,
                       transformOrigin: "center",
                       fontFamily: editingTextNode.text.fontFamily,
                       fontSize: editingTextNode.text.fontSize,
@@ -4568,6 +4805,22 @@ export function V2EditorShell() {
                         className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
                       >
                         Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runGroupSelection()}
+                        disabled={!canGroupSelection}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                      >
+                        Group
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runUngroupSelection()}
+                        disabled={!canUngroupSelection}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                      >
+                        Ungroup
                       </button>
                     </div>
                     {activeNode.parentId ? (

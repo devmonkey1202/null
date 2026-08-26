@@ -5,11 +5,10 @@ use kernel_doc::{
     EditorViewport, FramePatch, GuideAxis, HorizontalConstraint, InstanceNodeData,
     InstanceOverrideKind, InstanceShapeOverride, InstanceTextOverride, LayoutSizing,
     ReorderNodePosition, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
-    ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch,
-    TransformHandleKind, ValidationReport, VerticalConstraint,
+    ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch, TransformHandleKind,
+    ValidationReport, VerticalConstraint,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitTestMode {
@@ -75,6 +74,16 @@ struct DuplicateSelectionResult {
     created_root_ids: Vec<String>,
     created_node_ids: Vec<String>,
     dirty_parent_ids: Vec<String>,
+}
+
+struct GroupSelectionResult {
+    grouped_root_ids: Vec<String>,
+    dirty_node_ids: Vec<String>,
+}
+
+struct UngroupSelectionResult {
+    selection: Vec<String>,
+    dirty_node_ids: Vec<String>,
 }
 
 impl EditorState {
@@ -277,11 +286,7 @@ pub fn dispatch_commands(
                     offset_x.unwrap_or(48.0),
                     offset_y.unwrap_or(48.0),
                 )?;
-                state.selection = created_ids
-                    .first()
-                    .cloned()
-                    .into_iter()
-                    .collect();
+                state.selection = created_ids.first().cloned().into_iter().collect();
                 normalize_document(&mut state.doc);
                 state.version += 1;
                 touch_doc(&mut state.doc);
@@ -320,6 +325,30 @@ pub fn dispatch_commands(
                 touch_doc(&mut state.doc);
                 applied_commands.push("clear_instance_overrides".to_string());
                 dirty_node_ids.push(node_id);
+            }
+            EditorCommand::GroupSelection => {
+                let grouped = group_selection(&mut state.doc, &state.selection)?;
+                if grouped.grouped_root_ids.is_empty() {
+                    continue;
+                }
+                state.selection = grouped.grouped_root_ids.clone();
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("group_selection".to_string());
+                dirty_node_ids.extend(grouped.dirty_node_ids);
+            }
+            EditorCommand::UngroupSelection => {
+                let ungrouped = ungroup_selection(&mut state.doc, &state.selection)?;
+                if ungrouped.selection.is_empty() {
+                    continue;
+                }
+                state.selection = ungrouped.selection.clone();
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("ungroup_selection".to_string());
+                dirty_node_ids.extend(ungrouped.dirty_node_ids);
             }
             EditorCommand::ReorderNode { node_id, position } => {
                 let parent_id = query_node(&state.doc, &node_id)
@@ -542,6 +571,57 @@ pub fn query_node<'a>(doc: &'a SceneDoc, node_id: &str) -> Option<&'a SceneNode>
         .find(|node| node.id == node_id)
 }
 
+fn build_page_node_map<'a>(nodes: &'a [SceneNode]) -> HashMap<&'a str, &'a SceneNode> {
+    nodes.iter().map(|node| (node.id.as_str(), node)).collect()
+}
+
+fn resolve_absolute_frame(
+    node_id: &str,
+    node_map: &HashMap<&str, &SceneNode>,
+    cache: &mut HashMap<String, EditorRect>,
+    lineage: &mut HashSet<String>,
+) -> Option<EditorRect> {
+    if let Some(cached) = cache.get(node_id) {
+        return Some(cached.clone());
+    }
+
+    let node = node_map.get(node_id).copied()?;
+    if !lineage.insert(node_id.to_string()) {
+        return Some(node.frame.clone());
+    }
+
+    let parent_frame = node
+        .parent_id
+        .as_deref()
+        .and_then(|parent_id| resolve_absolute_frame(parent_id, node_map, cache, lineage));
+    lineage.remove(node_id);
+
+    let frame = if let Some(parent_frame) = parent_frame {
+        EditorRect {
+            x: parent_frame.x + node.frame.x,
+            y: parent_frame.y + node.frame.y,
+            w: node.frame.w,
+            h: node.frame.h,
+            rotation: normalize_degrees(parent_frame.rotation + node.frame.rotation),
+        }
+    } else {
+        node.frame.clone()
+    };
+
+    cache.insert(node_id.to_string(), frame.clone());
+    Some(frame)
+}
+
+fn build_absolute_frame_map(nodes: &[SceneNode]) -> HashMap<String, EditorRect> {
+    let node_map = build_page_node_map(nodes);
+    let mut cache = HashMap::new();
+    for node in nodes {
+        let mut lineage = HashSet::new();
+        let _ = resolve_absolute_frame(node.id.as_str(), &node_map, &mut cache, &mut lineage);
+    }
+    cache
+}
+
 pub fn hit_test(
     doc: &SceneDoc,
     page_id: &str,
@@ -560,9 +640,13 @@ pub fn hit_test(
             )
         })?;
 
+    let frame_map = build_absolute_frame_map(page.nodes.as_slice());
     let mut hits = Vec::new();
     for node in page.nodes.iter().rev() {
-        if point_inside_rect(&node.frame, x, y) {
+        if frame_map
+            .get(node.id.as_str())
+            .is_some_and(|frame| point_inside_rect(frame, x, y))
+        {
             hits.push(node.id.clone());
             if matches!(mode, HitTestMode::Topmost) {
                 break;
@@ -578,30 +662,37 @@ pub fn hit_test(
 }
 
 pub fn selection_bounds(doc: &SceneDoc, selection: &[String]) -> Option<EditorRect> {
-    let nodes: Vec<&SceneNode> = selection
+    let frames: Vec<EditorRect> = doc
+        .pages
         .iter()
-        .filter_map(|node_id| query_node(doc, node_id))
+        .flat_map(|page| {
+            let frame_map = build_absolute_frame_map(page.nodes.as_slice());
+            selection
+                .iter()
+                .filter_map(|node_id| frame_map.get(node_id.as_str()).cloned())
+                .collect::<Vec<_>>()
+        })
         .collect();
 
-    if nodes.is_empty() {
+    if frames.is_empty() {
         return None;
     }
 
-    let left = nodes
+    let left = frames
         .iter()
-        .map(|node| node.frame.x)
+        .map(|frame| frame.x)
         .fold(f32::INFINITY, f32::min);
-    let top = nodes
+    let top = frames
         .iter()
-        .map(|node| node.frame.y)
+        .map(|frame| frame.y)
         .fold(f32::INFINITY, f32::min);
-    let right = nodes
+    let right = frames
         .iter()
-        .map(|node| node.frame.x + node.frame.w)
+        .map(|frame| frame.x + frame.w)
         .fold(f32::NEG_INFINITY, f32::max);
-    let bottom = nodes
+    let bottom = frames
         .iter()
-        .map(|node| node.frame.y + node.frame.h)
+        .map(|frame| frame.y + frame.h)
         .fold(f32::NEG_INFINITY, f32::max);
 
     Some(EditorRect {
@@ -703,11 +794,12 @@ pub fn move_snap_preview(
         };
     };
 
+    let frame_map = build_absolute_frame_map(page.nodes.as_slice());
     let target_rects = page
         .nodes
         .iter()
         .filter(|node| !selection.iter().any(|selected| selected == &node.id))
-        .map(|node| node.frame.clone())
+        .filter_map(|node| frame_map.get(node.id.as_str()).cloned())
         .collect::<Vec<_>>();
 
     compute_move_snap(
@@ -759,11 +851,12 @@ pub fn resize_snap_preview(
         };
     };
 
+    let frame_map = build_absolute_frame_map(page.nodes.as_slice());
     let target_rects = page
         .nodes
         .iter()
         .filter(|node| !selection.iter().any(|selected| selected == &node.id))
-        .map(|node| node.frame.clone())
+        .filter_map(|node| frame_map.get(node.id.as_str()).cloned())
         .collect::<Vec<_>>();
 
     compute_resize_snap(
@@ -801,25 +894,40 @@ pub fn resize_selection(
     let next_bounds = resize_bounds(&bounds, handle, delta_x, delta_y, lock_aspect);
     let scale_x = next_bounds.w / bounds.w.max(1.0);
     let scale_y = next_bounds.h / bounds.h.max(1.0);
+    let all_nodes = doc
+        .pages
+        .iter()
+        .flat_map(|page| page.nodes.iter().cloned())
+        .collect::<Vec<_>>();
+    let frame_map = build_absolute_frame_map(all_nodes.as_slice());
 
     let selected_set: HashSet<String> = selection.iter().cloned().collect();
     let mut resized_ids = Vec::new();
     for node_id in selection {
+        let absolute_frame = frame_map.get(node_id.as_str()).cloned().ok_or_else(|| {
+            CoreError::new(
+                "scene.node.not_found",
+                format!("Node '{}' was not found.", node_id),
+            )
+        })?;
+        let parent_frame = query_node(doc, node_id)
+            .and_then(|node| node.parent_id.as_deref())
+            .and_then(|parent_id| frame_map.get(parent_id).cloned());
         let (previous, next) = {
             let node = find_node_mut(doc, node_id)?;
             let previous = node.frame.clone();
-            let left_offset = node.frame.x - bounds.x;
-            let top_offset = node.frame.y - bounds.y;
-            let right_offset = (node.frame.x + node.frame.w) - bounds.x;
-            let bottom_offset = (node.frame.y + node.frame.h) - bounds.y;
+            let left_offset = absolute_frame.x - bounds.x;
+            let top_offset = absolute_frame.y - bounds.y;
+            let right_offset = (absolute_frame.x + absolute_frame.w) - bounds.x;
+            let bottom_offset = (absolute_frame.y + absolute_frame.h) - bounds.y;
 
             let next_left = next_bounds.x + left_offset * scale_x;
             let next_top = next_bounds.y + top_offset * scale_y;
             let next_right = next_bounds.x + right_offset * scale_x;
             let next_bottom = next_bounds.y + bottom_offset * scale_y;
 
-            node.frame.x = next_left;
-            node.frame.y = next_top;
+            node.frame.x = next_left - parent_frame.as_ref().map_or(0.0, |frame| frame.x);
+            node.frame.y = next_top - parent_frame.as_ref().map_or(0.0, |frame| frame.y);
             node.frame.w = (next_right - next_left).max(1.0);
             node.frame.h = (next_bottom - next_top).max(1.0);
             normalize_text_frame(node);
@@ -827,7 +935,14 @@ pub fn resize_selection(
         };
 
         resized_ids.push(node_id.clone());
-        apply_child_constraints(doc, node_id, &previous, &next, &selected_set, &mut resized_ids)?;
+        apply_child_constraints(
+            doc,
+            node_id,
+            &previous,
+            &next,
+            &selected_set,
+            &mut resized_ids,
+        )?;
     }
 
     Ok(dedupe_ids(resized_ids))
@@ -874,20 +989,39 @@ pub fn rotate_selection(
     let angle = delta_deg.to_radians();
     let cos_theta = angle.cos();
     let sin_theta = angle.sin();
+    let all_nodes = doc
+        .pages
+        .iter()
+        .flat_map(|page| page.nodes.iter().cloned())
+        .collect::<Vec<_>>();
+    let frame_map = build_absolute_frame_map(all_nodes.as_slice());
 
     let mut rotated_ids = Vec::new();
     for node_id in selection {
+        let absolute_frame = frame_map.get(node_id.as_str()).cloned().ok_or_else(|| {
+            CoreError::new(
+                "scene.node.not_found",
+                format!("Node '{}' was not found.", node_id),
+            )
+        })?;
+        let parent_frame = query_node(doc, node_id)
+            .and_then(|node| node.parent_id.as_deref())
+            .and_then(|parent_id| frame_map.get(parent_id).cloned());
         let node = find_node_mut(doc, node_id)?;
-        let node_center_x = node.frame.x + node.frame.w / 2.0;
-        let node_center_y = node.frame.y + node.frame.h / 2.0;
+        let node_center_x = absolute_frame.x + absolute_frame.w / 2.0;
+        let node_center_y = absolute_frame.y + absolute_frame.h / 2.0;
         let local_x = node_center_x - center_x;
         let local_y = node_center_y - center_y;
 
         let rotated_x = (local_x * cos_theta) - (local_y * sin_theta);
         let rotated_y = (local_x * sin_theta) + (local_y * cos_theta);
 
-        node.frame.x = center_x + rotated_x - node.frame.w / 2.0;
-        node.frame.y = center_y + rotated_y - node.frame.h / 2.0;
+        node.frame.x = center_x + rotated_x
+            - absolute_frame.w / 2.0
+            - parent_frame.as_ref().map_or(0.0, |frame| frame.x);
+        node.frame.y = center_y + rotated_y
+            - absolute_frame.h / 2.0
+            - parent_frame.as_ref().map_or(0.0, |frame| frame.y);
         node.frame.rotation = normalize_degrees(node.frame.rotation + delta_deg);
         rotated_ids.push(node_id.clone());
     }
@@ -979,7 +1113,8 @@ fn delete_node(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreErr
             }
         }
 
-        page.nodes.retain(|node| !delete_set.contains(node.id.as_str()));
+        page.nodes
+            .retain(|node| !delete_set.contains(node.id.as_str()));
         return Ok(to_delete);
     }
 
@@ -995,10 +1130,7 @@ fn duplicate_selection(
     offset_x: f32,
     offset_y: f32,
 ) -> Result<DuplicateSelectionResult, CoreError> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
+    let mut used_node_ids = collect_document_node_ids(doc);
     let mut clone_index = 0usize;
     let mut created_root_ids = Vec::new();
     let mut created_node_ids = Vec::new();
@@ -1046,7 +1178,10 @@ fn duplicate_selection(
             let id_map = subtree_ids
                 .iter()
                 .map(|old_id| {
-                    let next_id = format!("duplicate-{}-{}-{}", root_id, nonce, clone_index);
+                    let next_id = allocate_unique_node_id(
+                        &mut used_node_ids,
+                        &format!("duplicate-{}-{}", root_id, clone_index + 1),
+                    );
                     clone_index += 1;
                     (old_id.clone(), next_id)
                 })
@@ -1167,6 +1302,325 @@ fn duplicate_selection(
     })
 }
 
+fn group_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+) -> Result<GroupSelectionResult, CoreError> {
+    let mut used_node_ids = collect_document_node_ids(doc);
+    let mut grouped_root_ids = Vec::new();
+    let mut dirty_node_ids = Vec::new();
+
+    for page in &mut doc.pages {
+        let source_nodes = page.nodes.clone();
+        let node_map = source_nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect::<HashMap<_, _>>();
+        let selection_set = selection
+            .iter()
+            .filter(|node_id| node_map.contains_key(node_id.as_str()))
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+
+        if selection_set.len() < 2 {
+            continue;
+        }
+
+        let selected_root_ids = source_nodes
+            .iter()
+            .filter(|node| {
+                selection_set.contains(node.id.as_str())
+                    && node.id != page.root_id
+                    && !has_selected_ancestor(node, &selection_set, &node_map)
+            })
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+
+        if selected_root_ids.len() < 2 {
+            continue;
+        }
+
+        let Some(shared_parent_id) = node_map
+            .get(selected_root_ids[0].as_str())
+            .and_then(|node| node.parent_id.clone())
+        else {
+            continue;
+        };
+
+        if !selected_root_ids.iter().all(|node_id| {
+            node_map
+                .get(node_id.as_str())
+                .and_then(|node| node.parent_id.as_deref())
+                == Some(shared_parent_id.as_str())
+        }) {
+            continue;
+        }
+
+        let source_parent = source_nodes
+            .iter()
+            .find(|node| node.id == shared_parent_id)
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.parent_missing",
+                    format!("Parent '{}' was not found.", shared_parent_id),
+                )
+            })?;
+        let sibling_ids = ordered_child_ids_from_nodes(source_nodes.as_slice(), source_parent);
+        let ordered_selected_root_ids = sibling_ids
+            .iter()
+            .filter(|sibling_id| {
+                selected_root_ids
+                    .iter()
+                    .any(|selected| selected == *sibling_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let frame_map = build_absolute_frame_map(source_nodes.as_slice());
+        let selected_frames = ordered_selected_root_ids
+            .iter()
+            .map(|node_id| {
+                frame_map.get(node_id.as_str()).cloned().ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.not_found",
+                        format!("Node '{}' was not found.", node_id),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let parent_frame =
+            frame_map
+                .get(shared_parent_id.as_str())
+                .cloned()
+                .unwrap_or(EditorRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                    rotation: 0.0,
+                });
+        let left = selected_frames
+            .iter()
+            .map(|frame| frame.x)
+            .fold(f32::INFINITY, f32::min);
+        let top = selected_frames
+            .iter()
+            .map(|frame| frame.y)
+            .fold(f32::INFINITY, f32::min);
+        let right = selected_frames
+            .iter()
+            .map(|frame| frame.x + frame.w)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = selected_frames
+            .iter()
+            .map(|frame| frame.y + frame.h)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let group_id = allocate_unique_node_id(&mut used_node_ids, "group");
+
+        for node in &mut page.nodes {
+            if !ordered_selected_root_ids
+                .iter()
+                .any(|selected| selected == &node.id)
+            {
+                continue;
+            }
+
+            let absolute_frame = frame_map.get(node.id.as_str()).cloned().ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", node.id),
+                )
+            })?;
+            node.parent_id = Some(group_id.clone());
+            node.frame.x = absolute_frame.x - left;
+            node.frame.y = absolute_frame.y - top;
+        }
+
+        page.nodes.push(SceneNode {
+            id: group_id.clone(),
+            kind: SceneNodeKind::Group,
+            name: "Group".to_string(),
+            parent_id: Some(shared_parent_id.clone()),
+            children: Some(ordered_selected_root_ids.clone()),
+            frame: EditorRect {
+                x: left - parent_frame.x,
+                y: top - parent_frame.y,
+                w: (right - left).max(1.0),
+                h: (bottom - top).max(1.0),
+                rotation: 0.0,
+            },
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: None,
+            shape: None,
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+
+        let parent_index = page
+            .nodes
+            .iter()
+            .position(|node| node.id == shared_parent_id)
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.parent_missing",
+                    format!("Parent '{}' was not found.", shared_parent_id),
+                )
+            })?;
+        let mut inserted = false;
+        page.nodes[parent_index].children = Some(
+            sibling_ids
+                .into_iter()
+                .flat_map(|sibling_id| {
+                    if ordered_selected_root_ids
+                        .iter()
+                        .any(|selected| selected == &sibling_id)
+                    {
+                        if inserted {
+                            Vec::new()
+                        } else {
+                            inserted = true;
+                            vec![group_id.clone()]
+                        }
+                    } else {
+                        vec![sibling_id]
+                    }
+                })
+                .collect(),
+        );
+
+        rebuild_page_node_order(page);
+        grouped_root_ids.push(group_id.clone());
+        dirty_node_ids.push(group_id);
+        dirty_node_ids.push(shared_parent_id);
+        dirty_node_ids.extend(ordered_selected_root_ids);
+    }
+
+    Ok(GroupSelectionResult {
+        grouped_root_ids,
+        dirty_node_ids: dedupe_ids(dirty_node_ids),
+    })
+}
+
+fn ungroup_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+) -> Result<UngroupSelectionResult, CoreError> {
+    let mut next_selection = Vec::new();
+    let mut dirty_node_ids = Vec::new();
+
+    for page in &mut doc.pages {
+        let selected_group_ids = selection
+            .iter()
+            .filter(|node_id| {
+                page.nodes
+                    .iter()
+                    .find(|node| node.id == node_id.as_str())
+                    .is_some_and(|node| matches!(node.kind, SceneNodeKind::Group))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if selected_group_ids.is_empty() {
+            continue;
+        }
+
+        for group_id in selected_group_ids {
+            let source_nodes = page.nodes.clone();
+            let node_map = source_nodes
+                .iter()
+                .map(|node| (node.id.as_str(), node))
+                .collect::<HashMap<_, _>>();
+            let group = node_map.get(group_id.as_str()).copied().ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", group_id),
+                )
+            })?;
+            if !matches!(group.kind, SceneNodeKind::Group) {
+                continue;
+            }
+
+            let Some(parent_id) = group.parent_id.clone() else {
+                continue;
+            };
+
+            let source_parent = node_map.get(parent_id.as_str()).copied().ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.parent_missing",
+                    format!("Parent '{}' was not found.", parent_id),
+                )
+            })?;
+            let parent_index = page
+                .nodes
+                .iter()
+                .position(|node| node.id == parent_id)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.parent_missing",
+                        format!("Parent '{}' was not found.", parent_id),
+                    )
+                })?;
+            let frame_map = build_absolute_frame_map(source_nodes.as_slice());
+            let parent_frame = frame_map
+                .get(parent_id.as_str())
+                .cloned()
+                .unwrap_or(EditorRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                    rotation: 0.0,
+                });
+            let child_ids = ordered_child_ids_from_nodes(source_nodes.as_slice(), group);
+
+            page.nodes.retain(|node| node.id != group_id);
+            for node in &mut page.nodes {
+                if !child_ids.iter().any(|child_id| child_id == &node.id) {
+                    continue;
+                }
+
+                let absolute_frame = frame_map.get(node.id.as_str()).cloned().ok_or_else(|| {
+                    CoreError::new(
+                        "scene.node.not_found",
+                        format!("Node '{}' was not found.", node.id),
+                    )
+                })?;
+                node.parent_id = Some(parent_id.clone());
+                node.frame.x = absolute_frame.x - parent_frame.x;
+                node.frame.y = absolute_frame.y - parent_frame.y;
+            }
+
+            let sibling_ids = ordered_child_ids_from_nodes(source_nodes.as_slice(), source_parent);
+            page.nodes[parent_index].children = Some(
+                sibling_ids
+                    .into_iter()
+                    .flat_map(|sibling_id| {
+                        if sibling_id == group_id {
+                            child_ids.clone()
+                        } else {
+                            vec![sibling_id]
+                        }
+                    })
+                    .collect(),
+            );
+
+            next_selection.extend(child_ids.clone());
+            dirty_node_ids.push(group_id);
+            dirty_node_ids.push(parent_id);
+            dirty_node_ids.extend(child_ids);
+        }
+
+        rebuild_page_node_order(page);
+    }
+
+    Ok(UngroupSelectionResult {
+        selection: dedupe_ids(next_selection),
+        dirty_node_ids: dedupe_ids(dirty_node_ids),
+    })
+}
+
 fn reorder_node(
     doc: &mut SceneDoc,
     node_id: &str,
@@ -1270,7 +1724,9 @@ fn reorder_node(
         } else {
             let subtree_ids: Vec<String> = reordered_ids
                 .iter()
-                .flat_map(|sibling_id| collect_subtree_ids(page.nodes.as_slice(), sibling_id).unwrap_or_default())
+                .flat_map(|sibling_id| {
+                    collect_subtree_ids(page.nodes.as_slice(), sibling_id).unwrap_or_default()
+                })
                 .collect();
             let subtree_set: HashSet<&str> = subtree_ids.iter().map(String::as_str).collect();
             let mut ordered_nodes: Vec<SceneNode> = subtree_ids
@@ -1323,7 +1779,11 @@ fn promote_to_component(
     Ok(())
 }
 
-fn sync_component_key(doc: &mut SceneDoc, node_id: &str, component_key: &str) -> Result<(), CoreError> {
+fn sync_component_key(
+    doc: &mut SceneDoc,
+    node_id: &str,
+    component_key: &str,
+) -> Result<(), CoreError> {
     let next_key = component_key.trim();
     if next_key.is_empty() {
         return Err(CoreError::new(
@@ -1401,10 +1861,7 @@ fn create_instance_from_component(
         .unwrap_or_else(|| format!("component-{}", source_root.id));
 
     let subtree_ids = collect_subtree_ids(source_page_nodes.as_slice(), source_node_id)?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
+    let mut used_node_ids = collect_document_node_ids(doc);
 
     let id_map = subtree_ids
         .iter()
@@ -1412,17 +1869,24 @@ fn create_instance_from_component(
         .map(|(index, old_id)| {
             (
                 old_id.clone(),
-                format!("instance-{}-{}-{}", source_node_id, nonce, index),
+                allocate_unique_node_id(
+                    &mut used_node_ids,
+                    &format!("instance-{}-{}", source_node_id, index + 1),
+                ),
             )
         })
         .collect::<std::collections::HashMap<_, _>>();
 
-    let target_page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
-        CoreError::new(
-            "scene.page.not_found",
-            format!("Page '{}' was not found.", page_id),
-        )
-    })?;
+    let target_page = doc
+        .pages
+        .iter_mut()
+        .find(|page| page.id == page_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.page.not_found",
+                format!("Page '{}' was not found.", page_id),
+            )
+        })?;
 
     let fallback_parent_id = Some(target_page.root_id.clone());
     let target_parent_id = source_root
@@ -1445,10 +1909,9 @@ fn create_instance_from_component(
             })?;
 
         let mut clone = original.clone();
-        clone.id = id_map
-            .get(old_id)
-            .cloned()
-            .ok_or_else(|| CoreError::new("scene.component.clone_failed", "Missing id map entry."))?;
+        clone.id = id_map.get(old_id).cloned().ok_or_else(|| {
+            CoreError::new("scene.component.clone_failed", "Missing id map entry.")
+        })?;
         clone.parent_id = if old_id == source_node_id {
             target_parent_id.clone()
         } else {
@@ -1484,7 +1947,12 @@ fn create_instance_from_component(
     let created_root_id = created_nodes
         .first()
         .map(|node| node.id.clone())
-        .ok_or_else(|| CoreError::new("scene.component.clone_empty", "No instance nodes were created."))?;
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.component.clone_empty",
+                "No instance nodes were created.",
+            )
+        })?;
 
     if let Some(parent_id) = &target_parent_id {
         let parent = target_page
@@ -1502,7 +1970,11 @@ fn create_instance_from_component(
     }
 
     for node in &created_nodes {
-        if target_page.nodes.iter().any(|existing| existing.id == node.id) {
+        if target_page
+            .nodes
+            .iter()
+            .any(|existing| existing.id == node.id)
+        {
             return Err(CoreError::new(
                 "scene.node.duplicate_id",
                 format!("Node '{}' already exists.", node.id),
@@ -1515,8 +1987,19 @@ fn create_instance_from_component(
     Ok(created_nodes.into_iter().map(|node| node.id).collect())
 }
 
-fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec<String>, CoreError> {
-    let (instance_page_id, source_component_id, source_component_key, instance_parent_id, instance_frame, text_overrides, shape_overrides) = {
+fn refresh_instance_from_source(
+    doc: &mut SceneDoc,
+    node_id: &str,
+) -> Result<Vec<String>, CoreError> {
+    let (
+        instance_page_id,
+        source_component_id,
+        source_component_key,
+        instance_parent_id,
+        instance_frame,
+        text_overrides,
+        shape_overrides,
+    ) = {
         let instance_page = doc
             .pages
             .iter()
@@ -1531,7 +2014,9 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
             .nodes
             .iter()
             .find(|node| node.id == node_id)
-            .ok_or_else(|| CoreError::new("scene.instance.not_found", "Instance root was not found."))?;
+            .ok_or_else(|| {
+                CoreError::new("scene.instance.not_found", "Instance root was not found.")
+            })?;
         if !matches!(instance_root.kind, SceneNodeKind::Instance) {
             return Err(CoreError::new(
                 "scene.instance.invalid_target",
@@ -1570,7 +2055,12 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
         .nodes
         .iter()
         .find(|node| node.id == source_component_id)
-        .ok_or_else(|| CoreError::new("scene.component.source_missing", "Component source was not found."))?;
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.component.source_missing",
+                "Component source was not found.",
+            )
+        })?;
     if !matches!(source_root.kind, SceneNodeKind::Component) {
         return Err(CoreError::new(
             "scene.component.source_invalid",
@@ -1586,13 +2076,18 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
             .pages
             .iter()
             .find(|page| page.id == instance_page_id)
-            .ok_or_else(|| CoreError::new("scene.page.not_found", "Instance page was not found."))?;
+            .ok_or_else(|| {
+                CoreError::new("scene.page.not_found", "Instance page was not found.")
+            })?;
         collect_subtree_ids(instance_page.nodes.as_slice(), node_id)?
     };
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
+    let mut used_node_ids = collect_document_node_ids(doc);
+    for old_id in old_instance_subtree_ids
+        .iter()
+        .filter(|old_id| old_id.as_str() != node_id)
+    {
+        used_node_ids.remove(old_id);
+    }
     let id_map = subtree_ids
         .iter()
         .enumerate()
@@ -1600,7 +2095,10 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
             let next_id = if old_id == &source_component_id {
                 node_id.to_string()
             } else {
-                format!("instance-{}-refresh-{}-{}", source_component_id, nonce, index)
+                allocate_unique_node_id(
+                    &mut used_node_ids,
+                    &format!("instance-{}-refresh-{}", source_component_id, index + 1),
+                )
             };
             (old_id.clone(), next_id)
         })
@@ -1626,12 +2124,16 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
             .nodes
             .iter()
             .find(|node| node.id == *old_id)
-            .ok_or_else(|| CoreError::new("scene.node.not_found", "Source subtree node was not found."))?;
+            .ok_or_else(|| {
+                CoreError::new("scene.node.not_found", "Source subtree node was not found.")
+            })?;
         let mut clone = original.clone();
-        clone.id = id_map
-            .get(old_id)
-            .cloned()
-            .ok_or_else(|| CoreError::new("scene.component.clone_failed", "Missing refresh id map entry."))?;
+        clone.id = id_map.get(old_id).cloned().ok_or_else(|| {
+            CoreError::new(
+                "scene.component.clone_failed",
+                "Missing refresh id map entry.",
+            )
+        })?;
         clone.parent_id = if old_id == &source_component_id {
             instance_parent_id.clone()
         } else {
@@ -1668,7 +2170,11 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
     apply_shape_overrides_to_instance_nodes(&mut refreshed_nodes, &shape_overrides);
 
     for refreshed in refreshed_nodes {
-        if let Some(existing) = target_page.nodes.iter_mut().find(|node| node.id == refreshed.id) {
+        if let Some(existing) = target_page
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == refreshed.id)
+        {
             *existing = refreshed;
         } else {
             target_page.nodes.push(refreshed);
@@ -1678,7 +2184,18 @@ fn refresh_instance_from_source(doc: &mut SceneDoc, node_id: &str) -> Result<Vec
     Ok(dedupe_ids(
         old_instance_subtree_ids
             .into_iter()
-            .chain(target_page.nodes.iter().filter(|node| node.id == node_id || node.id.contains(&format!("instance-{}-refresh-", source_component_id))).map(|node| node.id.clone()))
+            .chain(
+                target_page
+                    .nodes
+                    .iter()
+                    .filter(|node| {
+                        node.id == node_id
+                            || node
+                                .id
+                                .contains(&format!("instance-{}-refresh-", source_component_id))
+                    })
+                    .map(|node| node.id.clone()),
+            )
             .collect(),
     ))
 }
@@ -1813,7 +2330,13 @@ fn capture_text_ranges_override(doc: &mut SceneDoc, node_id: &str) -> Result<(),
             format!("Instance '{}' is missing metadata.", instance_root_id),
         )
     })?;
-    upsert_text_override(&mut instance.text_overrides, &source_node_id, None, None, Some(ranges));
+    upsert_text_override(
+        &mut instance.text_overrides,
+        &source_node_id,
+        None,
+        None,
+        Some(ranges),
+    );
     Ok(())
 }
 
@@ -1986,7 +2509,10 @@ fn merge_text_style_patch(current: Option<TextStylePatch>, next: TextStylePatch)
     merged
 }
 
-fn merge_shape_style_patch(current: Option<ShapeStylePatch>, next: ShapeStylePatch) -> ShapeStylePatch {
+fn merge_shape_style_patch(
+    current: Option<ShapeStylePatch>,
+    next: ShapeStylePatch,
+) -> ShapeStylePatch {
     let mut merged = current.unwrap_or_default();
     if next.fill.is_some() {
         merged.fill = next.fill;
@@ -2006,12 +2532,15 @@ fn merge_shape_style_patch(current: Option<ShapeStylePatch>, next: ShapeStylePat
     merged
 }
 
-fn apply_text_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[InstanceTextOverride]) {
+fn apply_text_overrides_to_instance_nodes(
+    nodes: &mut [SceneNode],
+    overrides: &[InstanceTextOverride],
+) {
     for override_entry in overrides {
-        let Some(node) = nodes
-            .iter_mut()
-            .find(|candidate| candidate.instance_source_node_id.as_deref() == Some(override_entry.source_node_id.as_str()))
-        else {
+        let Some(node) = nodes.iter_mut().find(|candidate| {
+            candidate.instance_source_node_id.as_deref()
+                == Some(override_entry.source_node_id.as_str())
+        }) else {
             continue;
         };
         let Some(text) = &mut node.text else {
@@ -2031,12 +2560,15 @@ fn apply_text_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[
     }
 }
 
-fn apply_shape_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &[InstanceShapeOverride]) {
+fn apply_shape_overrides_to_instance_nodes(
+    nodes: &mut [SceneNode],
+    overrides: &[InstanceShapeOverride],
+) {
     for override_entry in overrides {
-        let Some(node) = nodes
-            .iter_mut()
-            .find(|candidate| candidate.instance_source_node_id.as_deref() == Some(override_entry.source_node_id.as_str()))
-        else {
+        let Some(node) = nodes.iter_mut().find(|candidate| {
+            candidate.instance_source_node_id.as_deref()
+                == Some(override_entry.source_node_id.as_str())
+        }) else {
             continue;
         };
         let Some(shape) = &mut node.shape else {
@@ -2049,12 +2581,16 @@ fn apply_shape_overrides_to_instance_nodes(nodes: &mut [SceneNode], overrides: &
 }
 
 fn add_guide(doc: &mut SceneDoc, page_id: &str, guide: SceneGuide) -> Result<(), CoreError> {
-    let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
-        CoreError::new(
-            "scene.page.not_found",
-            format!("Page '{}' was not found.", page_id),
-        )
-    })?;
+    let page = doc
+        .pages
+        .iter_mut()
+        .find(|page| page.id == page_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.page.not_found",
+                format!("Page '{}' was not found.", page_id),
+            )
+        })?;
 
     if page.guides.iter().any(|existing| existing.id == guide.id) {
         return Err(CoreError::new(
@@ -2263,12 +2799,20 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
             AutoLayoutDirection::Vertical => parent_frame.x + padding_left,
         };
         let available_primary = match layout.direction {
-            AutoLayoutDirection::Horizontal => (parent_frame.w - padding_left - padding_right).max(1.0),
-            AutoLayoutDirection::Vertical => (parent_frame.h - padding_top - padding_bottom).max(1.0),
+            AutoLayoutDirection::Horizontal => {
+                (parent_frame.w - padding_left - padding_right).max(1.0)
+            }
+            AutoLayoutDirection::Vertical => {
+                (parent_frame.h - padding_top - padding_bottom).max(1.0)
+            }
         };
         let available_cross = match layout.direction {
-            AutoLayoutDirection::Horizontal => (parent_frame.h - padding_top - padding_bottom).max(1.0),
-            AutoLayoutDirection::Vertical => (parent_frame.w - padding_left - padding_right).max(1.0),
+            AutoLayoutDirection::Horizontal => {
+                (parent_frame.h - padding_top - padding_bottom).max(1.0)
+            }
+            AutoLayoutDirection::Vertical => {
+                (parent_frame.w - padding_left - padding_right).max(1.0)
+            }
         };
         let hug_main = matches!(
             main_layout_mode(&parent_layout_sizing, &layout.direction),
@@ -2370,7 +2914,10 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                 .filter(|child_index| {
                     let child = &page.nodes[*child_index];
                     let sizing = resolved_layout_sizing(child);
-                    matches!(main_layout_mode(&sizing, &layout.direction), LayoutSizing::Fill) && !hug_main
+                    matches!(
+                        main_layout_mode(&sizing, &layout.direction),
+                        LayoutSizing::Fill
+                    ) && !hug_main
                 })
                 .count() as f32;
             let total_gap = layout.gap * gap_count;
@@ -2467,9 +3014,8 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                         _ => 0.0,
                     }
                 };
-            let is_baseline =
-                matches!(layout.align, AutoLayoutAlign::Baseline)
-                    && matches!(layout.direction, AutoLayoutDirection::Horizontal);
+            let is_baseline = matches!(layout.align, AutoLayoutAlign::Baseline)
+                && matches!(layout.direction, AutoLayoutDirection::Horizontal);
             let line_baseline = if is_baseline {
                 resolved_children
                     .iter()
@@ -2500,8 +3046,7 @@ fn apply_auto_layout_recursive(page: &mut kernel_doc::ScenePage, parent_id: &str
                             child.frame.y = cross_cursor;
                             child.frame.h = line_cross.max(1.0);
                         } else if is_baseline {
-                            child.frame.y =
-                                cross_cursor + line_baseline - baseline_offset(child);
+                            child.frame.y = cross_cursor + line_baseline - baseline_offset(child);
                             child.frame.h = resolved_child.height.max(1.0);
                         } else {
                             let (cross_position, cross_size) = align_cross_axis(
@@ -2658,14 +3203,20 @@ fn resolved_layout_sizing(node: &kernel_doc::SceneNode) -> ResolvedLayoutSizing 
     }
 }
 
-fn main_layout_mode(sizing: &ResolvedLayoutSizing, direction: &AutoLayoutDirection) -> LayoutSizing {
+fn main_layout_mode(
+    sizing: &ResolvedLayoutSizing,
+    direction: &AutoLayoutDirection,
+) -> LayoutSizing {
     match direction {
         AutoLayoutDirection::Horizontal => sizing.width.clone(),
         AutoLayoutDirection::Vertical => sizing.height.clone(),
     }
 }
 
-fn cross_layout_mode(sizing: &ResolvedLayoutSizing, direction: &AutoLayoutDirection) -> LayoutSizing {
+fn cross_layout_mode(
+    sizing: &ResolvedLayoutSizing,
+    direction: &AutoLayoutDirection,
+) -> LayoutSizing {
     match direction {
         AutoLayoutDirection::Horizontal => sizing.height.clone(),
         AutoLayoutDirection::Vertical => sizing.width.clone(),
@@ -2689,8 +3240,12 @@ fn clamped_child_main_size(
     direction: &AutoLayoutDirection,
 ) -> f32 {
     match direction {
-        AutoLayoutDirection::Horizontal => clamp_size(node.frame.w, sizing.min_width, sizing.max_width),
-        AutoLayoutDirection::Vertical => clamp_size(node.frame.h, sizing.min_height, sizing.max_height),
+        AutoLayoutDirection::Horizontal => {
+            clamp_size(node.frame.w, sizing.min_width, sizing.max_width)
+        }
+        AutoLayoutDirection::Vertical => {
+            clamp_size(node.frame.h, sizing.min_height, sizing.max_height)
+        }
     }
 }
 
@@ -2700,8 +3255,12 @@ fn clamped_child_cross_size(
     direction: &AutoLayoutDirection,
 ) -> f32 {
     match direction {
-        AutoLayoutDirection::Horizontal => clamp_size(node.frame.h, sizing.min_height, sizing.max_height),
-        AutoLayoutDirection::Vertical => clamp_size(node.frame.w, sizing.min_width, sizing.max_width),
+        AutoLayoutDirection::Horizontal => {
+            clamp_size(node.frame.h, sizing.min_height, sizing.max_height)
+        }
+        AutoLayoutDirection::Vertical => {
+            clamp_size(node.frame.w, sizing.min_width, sizing.max_width)
+        }
     }
 }
 
@@ -2744,10 +3303,7 @@ fn align_cross_axis(
             cross_start + (cross_size - current_size) / 2.0,
             current_size,
         ),
-        AutoLayoutAlign::End => (
-            cross_start + cross_size - current_size,
-            current_size,
-        ),
+        AutoLayoutAlign::End => (cross_start + cross_size - current_size, current_size),
         AutoLayoutAlign::Stretch => (cross_start, cross_size),
         AutoLayoutAlign::Baseline | AutoLayoutAlign::Start => (cross_start, current_size),
     }
@@ -2783,32 +3339,49 @@ fn estimate_text_auto_height(width: f32, text: &kernel_doc::TextNodeData) -> f32
     text.line_height * (lines.max(1) as f32) + paragraph_gap
 }
 
-fn move_guide(doc: &mut SceneDoc, page_id: &str, guide_id: &str, position: i32) -> Result<(), CoreError> {
-    let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
-        CoreError::new(
-            "scene.page.not_found",
-            format!("Page '{}' was not found.", page_id),
-        )
-    })?;
+fn move_guide(
+    doc: &mut SceneDoc,
+    page_id: &str,
+    guide_id: &str,
+    position: i32,
+) -> Result<(), CoreError> {
+    let page = doc
+        .pages
+        .iter_mut()
+        .find(|page| page.id == page_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.page.not_found",
+                format!("Page '{}' was not found.", page_id),
+            )
+        })?;
 
-    let guide = page.guides.iter_mut().find(|guide| guide.id == guide_id).ok_or_else(|| {
-        CoreError::new(
-            "scene.guide.not_found",
-            format!("Guide '{}' was not found.", guide_id),
-        )
-    })?;
+    let guide = page
+        .guides
+        .iter_mut()
+        .find(|guide| guide.id == guide_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.guide.not_found",
+                format!("Guide '{}' was not found.", guide_id),
+            )
+        })?;
 
     guide.position = position;
     Ok(())
 }
 
 fn delete_guide(doc: &mut SceneDoc, page_id: &str, guide_id: &str) -> Result<(), CoreError> {
-    let page = doc.pages.iter_mut().find(|page| page.id == page_id).ok_or_else(|| {
-        CoreError::new(
-            "scene.page.not_found",
-            format!("Page '{}' was not found.", page_id),
-        )
-    })?;
+    let page = doc
+        .pages
+        .iter_mut()
+        .find(|page| page.id == page_id)
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.page.not_found",
+                format!("Page '{}' was not found.", page_id),
+            )
+        })?;
 
     let previous_len = page.guides.len();
     page.guides.retain(|guide| guide.id != guide_id);
@@ -2884,7 +3457,8 @@ fn constrained_frame(
     child: &EditorRect,
     constraints: Option<(&HorizontalConstraint, &VerticalConstraint)>,
 ) -> EditorRect {
-    let (horizontal, vertical) = constraints.unwrap_or((&HorizontalConstraint::Min, &VerticalConstraint::Min));
+    let (horizontal, vertical) =
+        constraints.unwrap_or((&HorizontalConstraint::Min, &VerticalConstraint::Min));
     let old_parent_right = old_parent.x + old_parent.w;
     let new_parent_right = new_parent.x + new_parent.w;
     let old_parent_bottom = old_parent.y + old_parent.h;
@@ -2976,7 +3550,8 @@ fn ordered_child_ids_from_nodes(nodes: &[SceneNode], parent: &SceneNode) -> Vec<
         }
     }
 
-    nodes.iter()
+    nodes
+        .iter()
         .filter(|node| node.parent_id.as_deref() == Some(parent.id.as_str()))
         .map(|node| node.id.clone())
         .collect()
@@ -3026,7 +3601,10 @@ fn rebuild_page_node_order(page: &mut kernel_doc::ScenePage) {
             return;
         }
 
-        let Some(node) = source_nodes.iter().find(|candidate| candidate.id == node_id) else {
+        let Some(node) = source_nodes
+            .iter()
+            .find(|candidate| candidate.id == node_id)
+        else {
             return;
         };
 
@@ -3044,7 +3622,12 @@ fn rebuild_page_node_order(page: &mut kernel_doc::ScenePage) {
         &mut visited,
     );
     for node_id in original_order {
-        visit(&node_id, original_nodes.as_slice(), &mut ordered_ids, &mut visited);
+        visit(
+            &node_id,
+            original_nodes.as_slice(),
+            &mut ordered_ids,
+            &mut visited,
+        );
     }
 
     page.nodes = ordered_ids
@@ -3216,7 +3799,10 @@ fn resize_bounds(
     }
 }
 
-fn selection_page<'a>(doc: &'a SceneDoc, selection: &[String]) -> Option<&'a kernel_doc::ScenePage> {
+fn selection_page<'a>(
+    doc: &'a SceneDoc,
+    selection: &[String],
+) -> Option<&'a kernel_doc::ScenePage> {
     if let Some(first_selected) = selection.first() {
         return doc
             .pages
@@ -3360,7 +3946,8 @@ fn compute_resize_snap(
     target_guides: &[SceneGuide],
     threshold: f32,
 ) -> ResizeSnapPreview {
-    let (preview_left, _, preview_right, preview_top, _, preview_bottom) = rect_anchors(preview_bounds);
+    let (preview_left, _, preview_right, preview_top, _, preview_bottom) =
+        rect_anchors(preview_bounds);
 
     let active_x_values: Vec<f32> = match handle {
         TransformHandleKind::E | TransformHandleKind::Ne | TransformHandleKind::Se => {
@@ -3534,7 +4121,10 @@ fn resize_delta_from_bounds(
             bounds.x + bounds.w - (original_bounds.x + original_bounds.w),
             bounds.y + bounds.h - (original_bounds.y + original_bounds.h),
         ),
-        TransformHandleKind::S => (0.0, bounds.y + bounds.h - (original_bounds.y + original_bounds.h)),
+        TransformHandleKind::S => (
+            0.0,
+            bounds.y + bounds.h - (original_bounds.y + original_bounds.h),
+        ),
         TransformHandleKind::Sw => (
             bounds.x - original_bounds.x,
             bounds.y + bounds.h - (original_bounds.y + original_bounds.h),
@@ -3563,22 +4153,23 @@ fn select_in_rect(
             )
         })?;
 
+    let frame_map = build_absolute_frame_map(page.nodes.as_slice());
     let hit_ids: Vec<String> = page
         .nodes
         .iter()
-        .filter(|node| rects_intersect(&node.frame, rect))
+        .filter(|node| {
+            frame_map
+                .get(node.id.as_str())
+                .is_some_and(|frame| rects_intersect(frame, rect))
+        })
         .map(|node| node.id.clone())
         .collect();
 
     let next = match mode {
         SelectionSetMode::Replace => hit_ids,
-        SelectionSetMode::Add => dedupe_ids(
-            current_selection
-                .iter()
-                .cloned()
-                .chain(hit_ids)
-                .collect(),
-        ),
+        SelectionSetMode::Add => {
+            dedupe_ids(current_selection.iter().cloned().chain(hit_ids).collect())
+        }
         SelectionSetMode::Toggle => {
             let hits: HashSet<&str> = hit_ids.iter().map(String::as_str).collect();
             let mut toggled: Vec<String> = current_selection
@@ -3606,6 +4197,28 @@ fn point_inside_rect(frame: &EditorRect, x: f32, y: f32) -> bool {
 
 fn rects_intersect(a: &EditorRect, b: &EditorRect) -> bool {
     a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+fn collect_document_node_ids(doc: &SceneDoc) -> HashSet<String> {
+    doc.pages
+        .iter()
+        .flat_map(|page| page.nodes.iter().map(|node| node.id.clone()))
+        .collect()
+}
+
+fn allocate_unique_node_id(used_node_ids: &mut HashSet<String>, preferred_id: &str) -> String {
+    if used_node_ids.insert(preferred_id.to_string()) {
+        return preferred_id.to_string();
+    }
+
+    let mut suffix = 2usize;
+    loop {
+        let candidate = format!("{}-{}", preferred_id, suffix);
+        if used_node_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix += 1;
+    }
 }
 
 fn dedupe_ids(ids: Vec<String>) -> Vec<String> {
@@ -5272,9 +5885,18 @@ mod tests {
         )
         .expect("component + instance should succeed");
 
-        let instance_id = state.selection.first().cloned().expect("instance root selected");
+        let instance_id = state
+            .selection
+            .first()
+            .cloned()
+            .expect("instance root selected");
         let original_instance_child_id = query_node(&state.doc, &instance_id)
-            .and_then(|root| root.children.as_ref().and_then(|children| children.first()).cloned())
+            .and_then(|root| {
+                root.children
+                    .as_ref()
+                    .and_then(|children| children.first())
+                    .cloned()
+            })
             .expect("instance child exists");
 
         dispatch_commands(
@@ -5321,14 +5943,16 @@ mod tests {
         )
         .expect("refresh should succeed");
 
-        let instance_root = query_node(&state.doc, &instance_id).expect("instance exists after refresh");
+        let instance_root =
+            query_node(&state.doc, &instance_id).expect("instance exists after refresh");
         let instance_child_id = instance_root
             .children
             .as_ref()
             .and_then(|children| children.first())
             .cloned()
             .expect("instance child exists");
-        let instance_child = query_node(&state.doc, &instance_child_id).expect("instance child exists");
+        let instance_child =
+            query_node(&state.doc, &instance_child_id).expect("instance child exists");
         assert_eq!(
             instance_child
                 .text
@@ -5420,7 +6044,11 @@ mod tests {
         )
         .expect("component + instance should succeed");
 
-        let instance_id = state.selection.first().cloned().expect("instance root selected");
+        let instance_id = state
+            .selection
+            .first()
+            .cloned()
+            .expect("instance root selected");
         let instance_root = query_node(&state.doc, &instance_id).expect("instance exists");
         let instance_text_child_id = instance_root
             .children
@@ -5464,7 +6092,10 @@ mod tests {
         .expect("clear overrides should succeed");
 
         let instance_root = query_node(&state.doc, &instance_id).expect("instance exists");
-        let instance = instance_root.instance.as_ref().expect("instance metadata exists");
+        let instance = instance_root
+            .instance
+            .as_ref()
+            .expect("instance metadata exists");
         assert!(instance.text_overrides.is_empty());
         assert!(instance.shape_overrides.is_empty());
     }
@@ -5535,7 +6166,11 @@ mod tests {
         )
         .expect("component + instance should succeed");
 
-        let instance_id = state.selection.first().cloned().expect("instance root selected");
+        let instance_id = state
+            .selection
+            .first()
+            .cloned()
+            .expect("instance root selected");
         let instance_root = query_node(&state.doc, &instance_id).expect("instance exists");
         let instance_text_child_id = instance_root
             .children
@@ -5579,7 +6214,10 @@ mod tests {
         .expect("targeted clear should succeed");
 
         let instance_root = query_node(&state.doc, &instance_id).expect("instance exists");
-        let instance = instance_root.instance.as_ref().expect("instance metadata exists");
+        let instance = instance_root
+            .instance
+            .as_ref()
+            .expect("instance metadata exists");
         assert!(instance.text_overrides.is_empty());
         assert_eq!(instance.shape_overrides.len(), 1);
         assert_eq!(instance.shape_overrides[0].source_node_id, "shape-child");
@@ -5778,6 +6416,94 @@ mod tests {
     }
 
     #[test]
+    fn group_and_ungroup_preserve_absolute_geometry_and_sibling_order() {
+        let mut doc = sample_doc();
+        doc.pages[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "title")
+            .and_then(|node| node.text.as_mut())
+            .expect("title text exists")
+            .sizing = TextSizingMode::Fixed;
+        let mut body = doc.pages[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == "title")
+            .cloned()
+            .expect("title exists");
+        body.id = "body".to_string();
+        body.name = "Body".to_string();
+        body.frame = EditorRect {
+            x: 70.0,
+            y: 25.0,
+            w: 20.0,
+            h: 30.0,
+            rotation: 0.0,
+        };
+        doc.pages[0].nodes.push(body);
+        doc.pages[0].nodes[0].children = Some(vec!["title".to_string(), "body".to_string()]);
+
+        let mut state = EditorState::new(doc);
+        dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SelectNodes {
+                    node_ids: vec!["title".to_string(), "body".to_string()],
+                },
+                EditorCommand::GroupSelection,
+            ],
+        )
+        .expect("group selection should succeed");
+
+        let group_id = state.selection.first().cloned().expect("group selected");
+        let root = query_node(&state.doc, "root").expect("root exists");
+        assert_eq!(root.children.as_ref(), Some(&vec![group_id.clone()]));
+
+        let group = query_node(&state.doc, &group_id).expect("group exists");
+        assert!(matches!(group.kind, SceneNodeKind::Group));
+        assert_eq!(group.parent_id.as_deref(), Some("root"));
+        assert_eq!(
+            group.children.as_ref(),
+            Some(&vec!["title".to_string(), "body".to_string()])
+        );
+        assert_eq!(group.frame.x, 10.0);
+        assert_eq!(group.frame.y, 10.0);
+        assert_eq!(group.frame.w, 80.0);
+        assert_eq!(group.frame.h, 45.0);
+
+        let title = query_node(&state.doc, "title").expect("title exists");
+        let body = query_node(&state.doc, "body").expect("body exists");
+        assert_eq!(title.parent_id.as_deref(), Some(group_id.as_str()));
+        assert_eq!(title.frame.x, 0.0);
+        assert_eq!(title.frame.y, 0.0);
+        assert_eq!(body.parent_id.as_deref(), Some(group_id.as_str()));
+        assert_eq!(body.frame.x, 60.0);
+        assert_eq!(body.frame.y, 15.0);
+
+        dispatch_commands(&mut state, vec![EditorCommand::UngroupSelection])
+            .expect("ungroup selection should succeed");
+
+        assert!(query_node(&state.doc, &group_id).is_none());
+        let root = query_node(&state.doc, "root").expect("root exists");
+        assert_eq!(
+            root.children.as_ref(),
+            Some(&vec!["title".to_string(), "body".to_string()])
+        );
+        let title = query_node(&state.doc, "title").expect("title exists");
+        let body = query_node(&state.doc, "body").expect("body exists");
+        assert_eq!(title.parent_id.as_deref(), Some("root"));
+        assert_eq!(title.frame.x, 10.0);
+        assert_eq!(title.frame.y, 10.0);
+        assert_eq!(body.parent_id.as_deref(), Some("root"));
+        assert_eq!(body.frame.x, 70.0);
+        assert_eq!(body.frame.y, 25.0);
+        assert_eq!(
+            state.selection,
+            vec!["title".to_string(), "body".to_string()]
+        );
+    }
+
+    #[test]
     fn refresh_instance_preserves_text_range_overrides() {
         let mut state = EditorState::new(sample_doc());
 
@@ -5798,9 +6524,18 @@ mod tests {
         )
         .expect("component + instance should succeed");
 
-        let instance_id = state.selection.first().cloned().expect("instance root selected");
+        let instance_id = state
+            .selection
+            .first()
+            .cloned()
+            .expect("instance root selected");
         let instance_child_id = query_node(&state.doc, &instance_id)
-            .and_then(|root| root.children.as_ref().and_then(|children| children.first()).cloned())
+            .and_then(|root| {
+                root.children
+                    .as_ref()
+                    .and_then(|children| children.first())
+                    .cloned()
+            })
             .expect("instance child exists");
 
         dispatch_commands(
@@ -5849,4 +6584,3 @@ mod tests {
         );
     }
 }
-

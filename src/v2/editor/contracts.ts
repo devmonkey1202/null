@@ -248,6 +248,8 @@ export type EditorCommand =
       overrideKind?: InstanceOverrideKind;
       sourceNodeId?: string;
     }
+  | { kind: "group_selection" }
+  | { kind: "ungroup_selection" }
   | { kind: "reorder_node"; nodeId: string; position: ReorderNodePosition }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | { kind: "set_node_layout_sizing"; nodeId: string; layoutSizing: LayoutSizingAxis | null }

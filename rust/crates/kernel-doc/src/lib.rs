@@ -549,6 +549,8 @@ pub enum EditorCommand {
         #[serde(default, rename = "sourceNodeId", skip_serializing_if = "Option::is_none")]
         source_node_id: Option<String>,
     },
+    GroupSelection,
+    UngroupSelection,
     ReorderNode {
         #[serde(rename = "nodeId")]
         node_id: String,
