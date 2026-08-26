@@ -456,6 +456,24 @@ impl Default for SelectionSetMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionAlignment {
+    Left,
+    HorizontalCenter,
+    Right,
+    Top,
+    VerticalCenter,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DistributionAxis {
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EditorCommand {
@@ -551,6 +569,12 @@ pub enum EditorCommand {
     },
     GroupSelection,
     UngroupSelection,
+    AlignSelection {
+        alignment: SelectionAlignment,
+    },
+    DistributeSelection {
+        axis: DistributionAxis,
+    },
     ReorderNode {
         #[serde(rename = "nodeId")]
         node_id: String,

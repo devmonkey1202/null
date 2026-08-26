@@ -3,6 +3,7 @@ import {
   type AutoLayoutData,
   type BridgeQuery,
   type ComponentNodeData,
+  type DistributionAxis,
   type EditorApplyResult,
   type EditorBridge,
   type EditorCommand,
@@ -25,6 +26,7 @@ import {
   type InstanceShapeOverride,
   type InstanceTextOverride,
   type ReorderNodePosition,
+  type SelectionAlignment,
   type SelectionSetMode,
   type SnapGuide,
   type ShapeNodeData,
@@ -2210,6 +2212,175 @@ function moveSelection(document: SceneDoc, selection: string[], deltaX: number, 
   };
 }
 
+function positionableSelectionRoots(document: SceneDoc, selection: string[]) {
+  const page = selectionPage(document, selection);
+  if (!page) {
+    throw new Error("Cannot position layers because the current selection is empty.");
+  }
+
+  const nodeMap = new Map(page.nodes.map((node) => [node.id, node] as const));
+  if (selection.some((nodeId) => !nodeMap.has(nodeId))) {
+    throw new Error("Selection positioning requires every selected layer to be on the same page.");
+  }
+
+  const selectionSet = new Set(selection);
+  const selectedRootIds = page.nodes
+    .filter(
+      (node) =>
+        selectionSet.has(node.id) &&
+        node.id !== page.rootId &&
+        !hasSelectedAncestor(node, selectionSet, nodeMap),
+    )
+    .map((node) => node.id);
+
+  selectedRootIds.forEach((nodeId) => {
+    const parentId = nodeMap.get(nodeId)?.parentId;
+    if (parentId && nodeMap.get(parentId)?.layout) {
+      throw new Error(
+        `Layer '${nodeId}' is positioned by its parent's auto layout and cannot be aligned or distributed manually.`,
+      );
+    }
+  });
+
+  return { page, selectedRootIds };
+}
+
+function applyAbsolutePositionUpdates(
+  document: SceneDoc,
+  page: ScenePage,
+  frameMap: Map<string, EditorRect>,
+  updates: Map<string, { x: number; y: number }>,
+) {
+  const dirtyNodeIds = new Set<string>();
+  const nextNodes = page.nodes.map((node) => {
+    const update = updates.get(node.id);
+    if (!update) {
+      return node;
+    }
+
+    const parentFrame = node.parentId ? frameMap.get(node.parentId) : null;
+    const nextX = update.x - (parentFrame?.x ?? 0);
+    const nextY = update.y - (parentFrame?.y ?? 0);
+    if (Math.abs(node.frame.x - nextX) <= 0.0001 && Math.abs(node.frame.y - nextY) <= 0.0001) {
+      return node;
+    }
+
+    dirtyNodeIds.add(node.id);
+    if (node.parentId) {
+      dirtyNodeIds.add(node.parentId);
+    }
+    return {
+      ...node,
+      frame: {
+        ...node.frame,
+        x: nextX,
+        y: nextY,
+      },
+    };
+  });
+
+  if (!dirtyNodeIds.size) {
+    return { document, dirtyNodeIds: [] as string[] };
+  }
+
+  return {
+    document: {
+      ...document,
+      pages: document.pages.map((candidate) =>
+        candidate.id === page.id ? { ...candidate, nodes: nextNodes } : candidate,
+      ),
+      meta: { ...document.meta, updatedAt: new Date().toISOString() },
+    },
+    dirtyNodeIds: [...dirtyNodeIds],
+  };
+}
+
+function alignSelection(document: SceneDoc, selection: string[], alignment: SelectionAlignment) {
+  const { page, selectedRootIds } = positionableSelectionRoots(document, selection);
+  if (selectedRootIds.length < 2) {
+    throw new Error("Align requires at least two independently positioned layers.");
+  }
+
+  const frameMap = buildAbsoluteFrameMap(page.nodes);
+  const frames = selectedRootIds.map((nodeId) => frameMap.get(nodeId)!);
+  const left = Math.min(...frames.map((frame) => frame.x));
+  const top = Math.min(...frames.map((frame) => frame.y));
+  const right = Math.max(...frames.map((frame) => frame.x + frame.w));
+  const bottom = Math.max(...frames.map((frame) => frame.y + frame.h));
+  const updates = new Map<string, { x: number; y: number }>();
+
+  selectedRootIds.forEach((nodeId, index) => {
+    const frame = frames[index]!;
+    switch (alignment) {
+      case "left":
+        updates.set(nodeId, { x: left, y: frame.y });
+        break;
+      case "horizontal_center":
+        updates.set(nodeId, { x: left + (right - left - frame.w) / 2, y: frame.y });
+        break;
+      case "right":
+        updates.set(nodeId, { x: right - frame.w, y: frame.y });
+        break;
+      case "top":
+        updates.set(nodeId, { x: frame.x, y: top });
+        break;
+      case "vertical_center":
+        updates.set(nodeId, { x: frame.x, y: top + (bottom - top - frame.h) / 2 });
+        break;
+      case "bottom":
+        updates.set(nodeId, { x: frame.x, y: bottom - frame.h });
+        break;
+    }
+  });
+
+  return applyAbsolutePositionUpdates(document, page, frameMap, updates);
+}
+
+function distributeSelection(document: SceneDoc, selection: string[], axis: DistributionAxis) {
+  const { page, selectedRootIds } = positionableSelectionRoots(document, selection);
+  if (selectedRootIds.length < 3) {
+    throw new Error("Distribute requires at least three independently positioned layers.");
+  }
+
+  const frameMap = buildAbsoluteFrameMap(page.nodes);
+  const ordered = selectedRootIds
+    .map((nodeId) => ({ nodeId, frame: frameMap.get(nodeId)! }))
+    .sort((left, right) => {
+      const leftCenter =
+        axis === "horizontal"
+          ? left.frame.x + left.frame.w / 2
+          : left.frame.y + left.frame.h / 2;
+      const rightCenter =
+        axis === "horizontal"
+          ? right.frame.x + right.frame.w / 2
+          : right.frame.y + right.frame.h / 2;
+      return leftCenter - rightCenter || left.nodeId.localeCompare(right.nodeId);
+    });
+  const first = ordered[0]!.frame;
+  const last = ordered[ordered.length - 1]!.frame;
+  const totalSize = ordered.reduce(
+    (sum, item) => sum + (axis === "horizontal" ? item.frame.w : item.frame.h),
+    0,
+  );
+  const span =
+    axis === "horizontal"
+      ? last.x + last.w - first.x
+      : last.y + last.h - first.y;
+  const gap = (span - totalSize) / (ordered.length - 1);
+  let cursor = axis === "horizontal" ? first.x : first.y;
+  const updates = new Map<string, { x: number; y: number }>();
+
+  ordered.forEach(({ nodeId, frame }) => {
+    updates.set(
+      nodeId,
+      axis === "horizontal" ? { x: cursor, y: frame.y } : { x: frame.x, y: cursor },
+    );
+    cursor += (axis === "horizontal" ? frame.w : frame.h) + gap;
+  });
+
+  return applyAbsolutePositionUpdates(document, page, frameMap, updates);
+}
+
 function rotateSelection(document: SceneDoc, selection: string[], deltaDeg: number) {
   const bounds = buildSelectionBounds(document, selection);
   if (!bounds) {
@@ -2851,6 +3022,28 @@ export class NoopEditorBridge implements EditorBridge {
           }
           this.document = result.document;
           this.selection = result.selection;
+          this.version += 1;
+          dirtyNodeIds.push(...result.dirtyNodeIds);
+          this.recordHistory();
+          break;
+        }
+        case "align_selection": {
+          const result = alignSelection(this.document, this.selection, command.alignment);
+          if (!result.dirtyNodeIds.length) {
+            break;
+          }
+          this.document = normalizeDocument(result.document);
+          this.version += 1;
+          dirtyNodeIds.push(...result.dirtyNodeIds);
+          this.recordHistory();
+          break;
+        }
+        case "distribute_selection": {
+          const result = distributeSelection(this.document, this.selection, command.axis);
+          if (!result.dirtyNodeIds.length) {
+            break;
+          }
+          this.document = normalizeDocument(result.document);
           this.version += 1;
           dirtyNodeIds.push(...result.dirtyNodeIds);
           this.recordHistory();

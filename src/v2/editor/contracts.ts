@@ -219,6 +219,16 @@ export type ValidationReport = {
   issues: ValidationIssue[];
 };
 
+export type SelectionAlignment =
+  | "left"
+  | "horizontal_center"
+  | "right"
+  | "top"
+  | "vertical_center"
+  | "bottom";
+
+export type DistributionAxis = "horizontal" | "vertical";
+
 export type EditorCommand =
   | { kind: "select_nodes"; nodeIds: string[] }
   | { kind: "select_in_rect"; pageId: string; rect: EditorRect; mode?: SelectionSetMode }
@@ -250,6 +260,8 @@ export type EditorCommand =
     }
   | { kind: "group_selection" }
   | { kind: "ungroup_selection" }
+  | { kind: "align_selection"; alignment: SelectionAlignment }
+  | { kind: "distribute_selection"; axis: DistributionAxis }
   | { kind: "reorder_node"; nodeId: string; position: ReorderNodePosition }
   | { kind: "set_node_auto_layout"; nodeId: string; layout: AutoLayoutData | null }
   | { kind: "set_node_layout_sizing"; nodeId: string; layoutSizing: LayoutSizingAxis | null }

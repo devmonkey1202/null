@@ -1,12 +1,12 @@
 use core_error::CoreError;
 use kernel_doc::{
     validate_scene_doc, AutoLayoutAlign, AutoLayoutDirection, AutoLayoutGapMode, AutoLayoutJustify,
-    AutoLayoutWrapAlign, ComponentNodeData, EditorCommand, EditorRect, EditorSnapshot,
-    EditorViewport, FramePatch, GuideAxis, HorizontalConstraint, InstanceNodeData,
+    AutoLayoutWrapAlign, ComponentNodeData, DistributionAxis, EditorCommand, EditorRect,
+    EditorSnapshot, EditorViewport, FramePatch, GuideAxis, HorizontalConstraint, InstanceNodeData,
     InstanceOverrideKind, InstanceShapeOverride, InstanceTextOverride, LayoutSizing,
-    ReorderNodePosition, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionSetMode,
-    ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch, TransformHandleKind,
-    ValidationReport, VerticalConstraint,
+    ReorderNodePosition, SceneDoc, SceneGuide, SceneNode, SceneNodeKind, SelectionAlignment,
+    SelectionSetMode, ShapePathData, ShapeStylePatch, TextRange, TextSizingMode, TextStylePatch,
+    TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -349,6 +349,28 @@ pub fn dispatch_commands(
                 touch_doc(&mut state.doc);
                 applied_commands.push("ungroup_selection".to_string());
                 dirty_node_ids.extend(ungrouped.dirty_node_ids);
+            }
+            EditorCommand::AlignSelection { alignment } => {
+                let aligned = align_selection(&mut state.doc, &state.selection, alignment)?;
+                if aligned.is_empty() {
+                    continue;
+                }
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("align_selection".to_string());
+                dirty_node_ids.extend(aligned);
+            }
+            EditorCommand::DistributeSelection { axis } => {
+                let distributed = distribute_selection(&mut state.doc, &state.selection, axis)?;
+                if distributed.is_empty() {
+                    continue;
+                }
+                normalize_document(&mut state.doc);
+                state.version += 1;
+                touch_doc(&mut state.doc);
+                applied_commands.push("distribute_selection".to_string());
+                dirty_node_ids.extend(distributed);
             }
             EditorCommand::ReorderNode { node_id, position } => {
                 let parent_id = query_node(&state.doc, &node_id)
@@ -970,6 +992,249 @@ pub fn move_selection(
     }
 
     Ok(moved_ids)
+}
+
+fn positionable_selection_roots(
+    doc: &SceneDoc,
+    selection: &[String],
+) -> Result<(usize, Vec<String>), CoreError> {
+    let first_selected = selection.first().ok_or_else(|| {
+        CoreError::new(
+            "scene.selection.empty",
+            "Cannot position layers because the current selection is empty.",
+        )
+    })?;
+    let page_index = doc
+        .pages
+        .iter()
+        .position(|page| page.nodes.iter().any(|node| node.id == *first_selected))
+        .ok_or_else(|| {
+            CoreError::new(
+                "scene.node.not_found",
+                format!("Node '{}' was not found.", first_selected),
+            )
+        })?;
+    let page = &doc.pages[page_index];
+    let node_map = build_page_node_map(page.nodes.as_slice());
+    if selection
+        .iter()
+        .any(|node_id| !node_map.contains_key(node_id.as_str()))
+    {
+        return Err(CoreError::new(
+            "scene.selection.cross_page",
+            "Selection positioning requires every selected layer to be on the same page.",
+        ));
+    }
+
+    let selection_set = selection.iter().map(String::as_str).collect::<HashSet<_>>();
+    let selected_root_ids = page
+        .nodes
+        .iter()
+        .filter(|node| {
+            selection_set.contains(node.id.as_str())
+                && node.id != page.root_id
+                && !has_selected_ancestor(node, &selection_set, &node_map)
+        })
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+
+    for node_id in &selected_root_ids {
+        let parent_has_auto_layout = node_map
+            .get(node_id.as_str())
+            .and_then(|node| node.parent_id.as_deref())
+            .and_then(|parent_id| node_map.get(parent_id).copied())
+            .is_some_and(|parent| parent.layout.is_some());
+        if parent_has_auto_layout {
+            return Err(CoreError::new(
+                "scene.selection.auto_layout_position",
+                format!(
+                    "Layer '{}' is positioned by its parent's auto layout and cannot be aligned or distributed manually.",
+                    node_id
+                ),
+            ));
+        }
+    }
+
+    Ok((page_index, selected_root_ids))
+}
+
+fn apply_absolute_position_updates(
+    doc: &mut SceneDoc,
+    frame_map: &HashMap<String, EditorRect>,
+    updates: Vec<(String, f32, f32)>,
+) -> Result<Vec<String>, CoreError> {
+    const POSITION_EPSILON: f32 = 0.0001;
+    let mut dirty_node_ids = Vec::new();
+
+    for (node_id, absolute_x, absolute_y) in updates {
+        let parent_id = query_node(doc, &node_id)
+            .ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", node_id),
+                )
+            })?
+            .parent_id
+            .clone();
+        let parent_frame = parent_id
+            .as_deref()
+            .and_then(|id| frame_map.get(id))
+            .cloned();
+        let next_x = absolute_x - parent_frame.as_ref().map_or(0.0, |frame| frame.x);
+        let next_y = absolute_y - parent_frame.as_ref().map_or(0.0, |frame| frame.y);
+        let node = find_node_mut(doc, &node_id)?;
+        if (node.frame.x - next_x).abs() <= POSITION_EPSILON
+            && (node.frame.y - next_y).abs() <= POSITION_EPSILON
+        {
+            continue;
+        }
+
+        node.frame.x = next_x;
+        node.frame.y = next_y;
+        dirty_node_ids.push(node_id);
+        if let Some(parent_id) = parent_id {
+            dirty_node_ids.push(parent_id);
+        }
+    }
+
+    Ok(dedupe_ids(dirty_node_ids))
+}
+
+pub fn align_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+    alignment: SelectionAlignment,
+) -> Result<Vec<String>, CoreError> {
+    let (page_index, selected_root_ids) = positionable_selection_roots(doc, selection)?;
+    if selected_root_ids.len() < 2 {
+        return Err(CoreError::new(
+            "scene.selection.align.minimum",
+            "Align requires at least two independently positioned layers.",
+        ));
+    }
+
+    let frame_map = build_absolute_frame_map(doc.pages[page_index].nodes.as_slice());
+    let selected_frames = selected_root_ids
+        .iter()
+        .map(|node_id| {
+            frame_map.get(node_id).cloned().ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", node_id),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let left = selected_frames
+        .iter()
+        .map(|frame| frame.x)
+        .fold(f32::INFINITY, f32::min);
+    let top = selected_frames
+        .iter()
+        .map(|frame| frame.y)
+        .fold(f32::INFINITY, f32::min);
+    let right = selected_frames
+        .iter()
+        .map(|frame| frame.x + frame.w)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = selected_frames
+        .iter()
+        .map(|frame| frame.y + frame.h)
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    let updates = selected_root_ids
+        .iter()
+        .zip(selected_frames.iter())
+        .map(|(node_id, frame)| {
+            let (x, y) = match alignment {
+                SelectionAlignment::Left => (left, frame.y),
+                SelectionAlignment::HorizontalCenter => {
+                    (left + (right - left - frame.w) / 2.0, frame.y)
+                }
+                SelectionAlignment::Right => (right - frame.w, frame.y),
+                SelectionAlignment::Top => (frame.x, top),
+                SelectionAlignment::VerticalCenter => {
+                    (frame.x, top + (bottom - top - frame.h) / 2.0)
+                }
+                SelectionAlignment::Bottom => (frame.x, bottom - frame.h),
+            };
+            (node_id.clone(), x, y)
+        })
+        .collect::<Vec<_>>();
+
+    apply_absolute_position_updates(doc, &frame_map, updates)
+}
+
+pub fn distribute_selection(
+    doc: &mut SceneDoc,
+    selection: &[String],
+    axis: DistributionAxis,
+) -> Result<Vec<String>, CoreError> {
+    let (page_index, selected_root_ids) = positionable_selection_roots(doc, selection)?;
+    if selected_root_ids.len() < 3 {
+        return Err(CoreError::new(
+            "scene.selection.distribute.minimum",
+            "Distribute requires at least three independently positioned layers.",
+        ));
+    }
+
+    let frame_map = build_absolute_frame_map(doc.pages[page_index].nodes.as_slice());
+    let mut ordered = selected_root_ids
+        .iter()
+        .map(|node_id| {
+            let frame = frame_map.get(node_id).cloned().ok_or_else(|| {
+                CoreError::new(
+                    "scene.node.not_found",
+                    format!("Node '{}' was not found.", node_id),
+                )
+            })?;
+            Ok((node_id.clone(), frame))
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+
+    ordered.sort_by(|left, right| {
+        let left_center = match axis {
+            DistributionAxis::Horizontal => left.1.x + left.1.w / 2.0,
+            DistributionAxis::Vertical => left.1.y + left.1.h / 2.0,
+        };
+        let right_center = match axis {
+            DistributionAxis::Horizontal => right.1.x + right.1.w / 2.0,
+            DistributionAxis::Vertical => right.1.y + right.1.h / 2.0,
+        };
+        left_center
+            .total_cmp(&right_center)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let first = &ordered[0].1;
+    let last = &ordered[ordered.len() - 1].1;
+    let total_size = ordered
+        .iter()
+        .map(|(_, frame)| match axis {
+            DistributionAxis::Horizontal => frame.w,
+            DistributionAxis::Vertical => frame.h,
+        })
+        .sum::<f32>();
+    let span = match axis {
+        DistributionAxis::Horizontal => last.x + last.w - first.x,
+        DistributionAxis::Vertical => last.y + last.h - first.y,
+    };
+    let gap = (span - total_size) / (ordered.len() - 1) as f32;
+    let mut cursor = match axis {
+        DistributionAxis::Horizontal => first.x,
+        DistributionAxis::Vertical => first.y,
+    };
+    let mut updates = Vec::with_capacity(ordered.len());
+    for (node_id, frame) in ordered {
+        let (x, y, size) = match axis {
+            DistributionAxis::Horizontal => (cursor, frame.y, frame.w),
+            DistributionAxis::Vertical => (frame.x, cursor, frame.h),
+        };
+        updates.push((node_id, x, y));
+        cursor += size + gap;
+    }
+
+    apply_absolute_position_updates(doc, &frame_map, updates)
 }
 
 pub fn rotate_selection(
@@ -4331,6 +4596,42 @@ mod tests {
         }
     }
 
+    fn add_rect_node(doc: &mut SceneDoc, id: &str, parent_id: &str, frame: EditorRect) {
+        doc.pages[0].nodes.push(SceneNode {
+            id: id.to_string(),
+            kind: SceneNodeKind::Shape,
+            name: id.to_string(),
+            parent_id: Some(parent_id.to_string()),
+            children: None,
+            frame,
+            constraints: None,
+            layout: None,
+            layout_sizing: None,
+            text: None,
+            shape: Some(ShapeNodeData {
+                primitive: ShapePrimitive::Rect,
+                fill: "#2859ff".to_string(),
+                stroke_color: "#1d4ed8".to_string(),
+                stroke_width: 1.0,
+                corner_radius: 0.0,
+                opacity: 1.0,
+                path: None,
+            }),
+            component: None,
+            instance: None,
+            instance_source_node_id: None,
+        });
+        let parent = doc.pages[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .expect("parent exists");
+        parent
+            .children
+            .get_or_insert_with(Vec::new)
+            .push(id.to_string());
+    }
+
     #[test]
     fn rename_and_move_commands_update_snapshot() {
         let mut state = EditorState::new(sample_doc());
@@ -4553,6 +4854,256 @@ mod tests {
         let node = query_node(&doc, "title").expect("node exists");
         assert_eq!(node.frame.x, 18.0);
         assert_eq!(node.frame.y, 6.0);
+    }
+
+    #[test]
+    fn align_selection_uses_shared_bounds_and_skips_noop_history_entries() {
+        let mut doc = sample_doc();
+        add_rect_node(
+            &mut doc,
+            "body",
+            "root",
+            EditorRect {
+                x: 70.0,
+                y: 45.0,
+                w: 20.0,
+                h: 30.0,
+                rotation: 0.0,
+            },
+        );
+        let mut state = EditorState::new(doc);
+        let result = dispatch_commands(
+            &mut state,
+            vec![
+                EditorCommand::SelectNodes {
+                    node_ids: vec!["title".to_string(), "body".to_string()],
+                },
+                EditorCommand::AlignSelection {
+                    alignment: SelectionAlignment::Right,
+                },
+            ],
+        )
+        .expect("right alignment should succeed");
+
+        assert_eq!(query_node(&state.doc, "title").unwrap().frame.x, 50.0);
+        assert_eq!(query_node(&state.doc, "body").unwrap().frame.x, 70.0);
+        assert_eq!(result.snapshot.version, 2);
+        assert!(result
+            .applied_commands
+            .contains(&"align_selection".to_string()));
+
+        let version = state.version;
+        let noop = dispatch_commands(
+            &mut state,
+            vec![EditorCommand::AlignSelection {
+                alignment: SelectionAlignment::Right,
+            }],
+        )
+        .expect("repeated alignment should be a no-op");
+        assert_eq!(state.version, version);
+        assert!(noop.applied_commands.is_empty());
+    }
+
+    #[test]
+    fn align_selection_converts_absolute_targets_to_parent_local_coordinates() {
+        let mut doc = sample_doc();
+        add_rect_node(
+            &mut doc,
+            "container",
+            "root",
+            EditorRect {
+                x: 100.0,
+                y: 100.0,
+                w: 80.0,
+                h: 80.0,
+                rotation: 0.0,
+            },
+        );
+        {
+            let container = doc.pages[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "container")
+                .unwrap();
+            container.kind = SceneNodeKind::Frame;
+            container.shape = None;
+        }
+        add_rect_node(
+            &mut doc,
+            "nested",
+            "container",
+            EditorRect {
+                x: 10.0,
+                y: 12.0,
+                w: 20.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+        );
+        add_rect_node(
+            &mut doc,
+            "sibling",
+            "root",
+            EditorRect {
+                x: 220.0,
+                y: 60.0,
+                w: 30.0,
+                h: 30.0,
+                rotation: 0.0,
+            },
+        );
+
+        align_selection(
+            &mut doc,
+            &["nested".to_string(), "sibling".to_string()],
+            SelectionAlignment::Left,
+        )
+        .expect("cross-parent alignment should succeed");
+
+        assert_eq!(query_node(&doc, "nested").unwrap().frame.x, 10.0);
+        assert_eq!(query_node(&doc, "sibling").unwrap().frame.x, 110.0);
+        let bounds = selection_bounds(&doc, &["nested".to_string(), "sibling".to_string()])
+            .expect("selection bounds exist");
+        assert_eq!(bounds.x, 110.0);
+    }
+
+    #[test]
+    fn distribute_selection_equalizes_edge_spacing() {
+        let mut doc = sample_doc();
+        {
+            let title = doc.pages[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "title")
+                .unwrap();
+            title.frame.w = 20.0;
+            title.text.as_mut().unwrap().sizing = TextSizingMode::Fixed;
+        }
+        add_rect_node(
+            &mut doc,
+            "middle",
+            "root",
+            EditorRect {
+                x: 80.0,
+                y: 35.0,
+                w: 10.0,
+                h: 10.0,
+                rotation: 0.0,
+            },
+        );
+        add_rect_node(
+            &mut doc,
+            "end",
+            "root",
+            EditorRect {
+                x: 150.0,
+                y: 55.0,
+                w: 20.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+        );
+
+        distribute_selection(
+            &mut doc,
+            &["title".to_string(), "middle".to_string(), "end".to_string()],
+            DistributionAxis::Horizontal,
+        )
+        .expect("horizontal distribution should succeed");
+
+        assert_eq!(query_node(&doc, "title").unwrap().frame.x, 10.0);
+        assert_eq!(query_node(&doc, "middle").unwrap().frame.x, 85.0);
+        assert_eq!(query_node(&doc, "end").unwrap().frame.x, 150.0);
+    }
+
+    #[test]
+    fn distribute_selection_equalizes_vertical_edge_spacing() {
+        let mut doc = sample_doc();
+        {
+            let title = doc.pages[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "title")
+                .unwrap();
+            title.frame.h = 20.0;
+            title.text.as_mut().unwrap().sizing = TextSizingMode::Fixed;
+        }
+        add_rect_node(
+            &mut doc,
+            "middle",
+            "root",
+            EditorRect {
+                x: 35.0,
+                y: 70.0,
+                w: 10.0,
+                h: 10.0,
+                rotation: 0.0,
+            },
+        );
+        add_rect_node(
+            &mut doc,
+            "end",
+            "root",
+            EditorRect {
+                x: 55.0,
+                y: 140.0,
+                w: 20.0,
+                h: 20.0,
+                rotation: 0.0,
+            },
+        );
+
+        distribute_selection(
+            &mut doc,
+            &["title".to_string(), "middle".to_string(), "end".to_string()],
+            DistributionAxis::Vertical,
+        )
+        .expect("vertical distribution should succeed");
+
+        assert_eq!(query_node(&doc, "title").unwrap().frame.y, 10.0);
+        assert_eq!(query_node(&doc, "middle").unwrap().frame.y, 80.0);
+        assert_eq!(query_node(&doc, "end").unwrap().frame.y, 140.0);
+    }
+
+    #[test]
+    fn align_selection_rejects_auto_layout_children() {
+        let mut doc = sample_doc();
+        add_rect_node(
+            &mut doc,
+            "body",
+            "root",
+            EditorRect {
+                x: 70.0,
+                y: 45.0,
+                w: 20.0,
+                h: 30.0,
+                rotation: 0.0,
+            },
+        );
+        doc.pages[0].nodes[0].layout = Some(kernel_doc::AutoLayoutData {
+            direction: AutoLayoutDirection::Horizontal,
+            gap: 8.0,
+            padding_x: 8.0,
+            padding_y: 8.0,
+            padding_top: None,
+            padding_right: None,
+            padding_bottom: None,
+            padding_left: None,
+            align: AutoLayoutAlign::Start,
+            justify: AutoLayoutJustify::Start,
+            gap_mode: AutoLayoutGapMode::Fixed,
+            wrap: false,
+            wrap_gap: None,
+            wrap_align: AutoLayoutWrapAlign::Start,
+        });
+
+        let error = align_selection(
+            &mut doc,
+            &["title".to_string(), "body".to_string()],
+            SelectionAlignment::Left,
+        )
+        .expect_err("auto-layout children must not accept manual alignment");
+        assert_eq!(error.code, "scene.selection.auto_layout_position");
     }
 
     #[test]

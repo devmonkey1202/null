@@ -12,6 +12,7 @@ import type {
   AutoLayoutGapMode,
   AutoLayoutJustify,
   AutoLayoutWrapAlign,
+  DistributionAxis,
   EditorCommand,
   EditorBridge,
   EditorRect,
@@ -24,6 +25,7 @@ import type {
   RuntimeGraph,
   SceneGuide,
   SceneNode,
+  SelectionAlignment,
   ResizeSnapPreview,
   SnapGuide,
   TextAlign,
@@ -129,6 +131,61 @@ const AUTO_LAYOUT_ALIGN_OPTIONS: Record<AutoLayoutDirection, AutoLayoutAlign[]> 
   horizontal: ["start", "center", "end", "stretch", "baseline"],
   vertical: ["start", "center", "end", "stretch"],
 };
+
+function SelectionAlignmentIcon({ alignment }: { alignment: SelectionAlignment }) {
+  const horizontal = alignment === "left" || alignment === "horizontal_center" || alignment === "right";
+  const barSizes = [14, 9, 12];
+
+  return (
+    <span aria-hidden="true" className="relative block h-4 w-4">
+      {barSizes.map((size, index) => {
+        if (horizontal) {
+          const left =
+            alignment === "left" ? 0 : alignment === "right" ? 16 - size : (16 - size) / 2;
+          return (
+            <span
+              key={`${alignment}-${index}`}
+              className="absolute h-[2px] rounded-full bg-current"
+              style={{ left, top: index * 5 + 1, width: size }}
+            />
+          );
+        }
+
+        const top =
+          alignment === "top" ? 0 : alignment === "bottom" ? 16 - size : (16 - size) / 2;
+        return (
+          <span
+            key={`${alignment}-${index}`}
+            className="absolute w-[2px] rounded-full bg-current"
+            style={{ left: index * 5 + 1, top, height: size }}
+          />
+        );
+      })}
+    </span>
+  );
+}
+
+function DistributionIcon({ axis }: { axis: DistributionAxis }) {
+  return (
+    <span aria-hidden="true" className="relative block h-4 w-4">
+      {[0, 1, 2].map((index) =>
+        axis === "horizontal" ? (
+          <span
+            key={`${axis}-${index}`}
+            className="absolute top-[2px] h-3 w-[2px] rounded-full bg-current"
+            style={{ left: index * 7 + 1 }}
+          />
+        ) : (
+          <span
+            key={`${axis}-${index}`}
+            className="absolute left-[2px] h-[2px] w-3 rounded-full bg-current"
+            style={{ top: index * 7 + 1 }}
+          />
+        ),
+      )}
+    </span>
+  );
+}
 const AUTO_LAYOUT_JUSTIFY_OPTIONS: AutoLayoutJustify[] = ["start", "center", "end"];
 const AUTO_LAYOUT_GAP_MODE_OPTIONS: AutoLayoutGapMode[] = ["fixed", "space_between"];
 const AUTO_LAYOUT_WRAP_ALIGN_OPTIONS: AutoLayoutWrapAlign[] = ["start", "center", "end", "space_between"];
@@ -1877,6 +1934,30 @@ export function V2EditorShell() {
     [absoluteNodeFrameMap, canvasNodeFrames, editingTextNode],
   );
   const selectionMoveSet = useMemo(() => new Set(snapshot?.selection ?? []), [snapshot?.selection]);
+  const selectedTransformRootNodes = useMemo(() => {
+    if (!currentPage) {
+      return [];
+    }
+
+    const selectionSet = new Set(snapshot?.selection ?? []);
+    return currentPage.nodes.filter(
+      (node) =>
+        selectionSet.has(node.id) &&
+        node.id !== currentPage.rootId &&
+        !hasSelectedAncestor(node, selectionSet, nodeMap),
+    );
+  }, [currentPage, nodeMap, snapshot?.selection]);
+  const selectionUsesManualPositioning = useMemo(
+    () =>
+      selectedTransformRootNodes.every(
+        (node) => !node.parentId || !nodeMap.get(node.parentId)?.layout,
+      ),
+    [nodeMap, selectedTransformRootNodes],
+  );
+  const canAlignSelection =
+    selectedTransformRootNodes.length >= 2 && selectionUsesManualPositioning;
+  const canDistributeSelection =
+    selectedTransformRootNodes.length >= 3 && selectionUsesManualPositioning;
   const canGroupSelection = useMemo(() => {
     if (!currentPage || (snapshot?.selection.length ?? 0) < 2) {
       return false;
@@ -2886,6 +2967,28 @@ export function V2EditorShell() {
 
     await applyAndSync([{ kind: "ungroup_selection" }]);
   }, [canUngroupSelection, syncBridgeState]);
+
+  const runAlignSelection = useCallback(
+    async (alignment: SelectionAlignment) => {
+      if (!canAlignSelection) {
+        return;
+      }
+
+      await applyAndSync([{ kind: "align_selection", alignment }]);
+    },
+    [canAlignSelection, syncBridgeState],
+  );
+
+  const runDistributeSelection = useCallback(
+    async (axis: DistributionAxis) => {
+      if (!canDistributeSelection) {
+        return;
+      }
+
+      await applyAndSync([{ kind: "distribute_selection", axis }]);
+    },
+    [canDistributeSelection, syncBridgeState],
+  );
 
   const runUndo = useCallback(async () => {
     await applyAndSync([{ kind: "undo" }]);
@@ -4170,6 +4273,7 @@ export function V2EditorShell() {
                     <button
                       key={node.id}
                       type="button"
+                      data-editor-node-id={node.id}
                       onPointerDown={(event) => void handleNodePointerDown(event, node.id)}
                       onDoubleClick={(event) => handleNodeDoubleClick(event, node)}
                       style={{
@@ -4823,6 +4927,66 @@ export function V2EditorShell() {
                         Ungroup
                       </button>
                     </div>
+                    {selectedTransformRootNodes.length > 1 ? (
+                      <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Align and distribute</div>
+                          <div className="text-xs text-slate-500">
+                            Position selected layers against shared bounds.
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-6 gap-1.5">
+                          {(
+                            [
+                              ["left", "Align left"],
+                              ["horizontal_center", "Align horizontal centers"],
+                              ["right", "Align right"],
+                              ["top", "Align top"],
+                              ["vertical_center", "Align vertical centers"],
+                              ["bottom", "Align bottom"],
+                            ] as const
+                          ).map(([alignment, label]) => (
+                            <button
+                              key={alignment}
+                              type="button"
+                              title={label}
+                              aria-label={label}
+                              disabled={!canAlignSelection}
+                              onClick={() => void runAlignSelection(alignment)}
+                              className="flex h-9 w-full items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-300"
+                            >
+                              <SelectionAlignmentIcon alignment={alignment} />
+                            </button>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {(
+                            [
+                              ["horizontal", "Distribute horizontal spacing"],
+                              ["vertical", "Distribute vertical spacing"],
+                            ] as const
+                          ).map(([axis, label]) => (
+                            <button
+                              key={axis}
+                              type="button"
+                              title={label}
+                              aria-label={label}
+                              disabled={!canDistributeSelection}
+                              onClick={() => void runDistributeSelection(axis)}
+                              className="flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-300"
+                            >
+                              <DistributionIcon axis={axis} />
+                              <span>{axis === "horizontal" ? "Horizontal" : "Vertical"}</span>
+                            </button>
+                          ))}
+                        </div>
+                        {!selectionUsesManualPositioning ? (
+                          <div className="text-xs leading-5 text-amber-700">
+                            Auto layout controls this selection. Disable it on the parent before manual alignment.
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {activeNode.parentId ? (
                       <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
                         <div className="flex items-center justify-between">
