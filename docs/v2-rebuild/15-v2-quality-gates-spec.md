@@ -25,6 +25,11 @@
 - autosave / recovery tests
 - component / instance / override tests
 - text input / IME / caret tests
+- actual font load/hash/license verification
+- OpenType shaping/kerning and variable weight/italic tests
+- UTF-16 cluster, combining sequence, unsupported glyph, mixed fallback tests
+- CJK fallback-chain and bidi visual-order caret tests
+- DOM preview / render-command / publish text parity visual tests
 - vector boolean / path edit tests
 
 ## 4. 런타임 보조 게이트
@@ -97,3 +102,21 @@
 
 이 여섯이 동시에 기준을 넘을 때만 가능하며,  
 이중 **에디터 품질 게이트 미통과는 단독 release blocker**입니다.
+
+## 11. Text Engine checkpoint 판정
+
+2026-10-09 Phase 2A에서 통과한 항목:
+
+- Rust native font parse/shaping tests
+- Inter kerning, variable weight, italic face test
+- Unicode grapheme/UTF-16 cluster geometry test
+- missing family와 missing glyph 진단 test
+- real browser WASM load, mixed fallback, auto-height, undo E2E
+
+아직 release blocker인 항목:
+
+- CJK bundled/streamed fallback font
+- bidi paragraph visual order와 caret/selection
+- glyph atlas/render command renderer
+- large document shaping benchmark와 cache hit/memory profile
+- editor/preview/publish pixel parity

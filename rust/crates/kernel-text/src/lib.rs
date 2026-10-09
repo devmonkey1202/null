@@ -1,11 +1,18 @@
 use core_error::CoreError;
+use rustybuzz::{shape, Face as ShapingFace, UnicodeBuffer, Variation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use ttf_parser::{Face as ParsedFace, Tag};
+use unicode_bidi::{bidi_class, BidiClass};
 use unicode_linebreak::linebreaks;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 1;
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 2;
+
+const INTER_REGULAR_BYTES: &[u8] = include_bytes!("../../../../public/v2/fonts/InterVariable.ttf");
+const INTER_ITALIC_BYTES: &[u8] =
+    include_bytes!("../../../../public/v2/fonts/InterVariable-Italic.ttf");
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +37,8 @@ pub enum TextTransform {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TextMeasurementMode {
+    Shaped,
+    Mixed,
     DeterministicFallback,
 }
 
@@ -109,6 +118,21 @@ pub struct TextGraphemeBox {
     pub height: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextGlyph {
+    pub glyph_id: u32,
+    pub cluster_start: usize,
+    pub cluster_end: usize,
+    pub line_index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub advance_x: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub font_family: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CaretAffinity {
@@ -147,7 +171,11 @@ pub struct TextLayout {
     pub lines: Vec<TextLine>,
     pub graphemes: Vec<TextGraphemeBox>,
     pub carets: Vec<TextCaret>,
+    pub glyphs: Vec<TextGlyph>,
+    pub resolved_fonts: Vec<String>,
     pub font_fallbacks: Vec<String>,
+    pub shaped_run_count: usize,
+    pub fallback_grapheme_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -175,11 +203,64 @@ impl TextLayoutHandle {
 struct Cluster {
     start: usize,
     end: usize,
+    shaping_text: String,
+    style: TextStyleMetrics,
     advance: f32,
     line_height: f32,
     font_size: f32,
     whitespace: bool,
     break_after: bool,
+    glyphs: Vec<ClusterGlyph>,
+}
+
+#[derive(Debug, Clone)]
+struct ClusterGlyph {
+    glyph_id: u32,
+    cluster_start: usize,
+    cluster_end: usize,
+    local_x: f32,
+    advance_x: f32,
+    offset_x: f32,
+    offset_y: f32,
+    font_family: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RegisteredFont {
+    family: &'static str,
+    data: &'static [u8],
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FontRegistry;
+
+impl FontRegistry {
+    pub fn bundled() -> Self {
+        Self
+    }
+
+    fn resolve(&self, style: &TextStyleMetrics) -> Option<RegisteredFont> {
+        let requests_inter = style.font_family.split(',').any(|family| {
+            let normalized = family.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
+            normalized == "inter" || normalized == "inter variable"
+        });
+        requests_inter.then_some(RegisteredFont {
+            family: "Inter",
+            data: if style.italic {
+                INTER_ITALIC_BYTES
+            } else {
+                INTER_REGULAR_BYTES
+            },
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct LayoutDiagnostics {
+    resolved_fonts: Vec<String>,
+    font_fallbacks: Vec<String>,
+    shaped_run_count: usize,
+    fallback_grapheme_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,15 +274,24 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
     validate_request(request)?;
 
     let width = request.width.max(1.0);
+    let registry = FontRegistry::bundled();
+    let mut diagnostics = LayoutDiagnostics::default();
     let paragraphs = request.content.split('\n').collect::<Vec<_>>();
     let mut global_utf16_offset = 0usize;
     let mut y = 0.0f32;
     let mut lines = Vec::new();
     let mut graphemes = Vec::new();
     let mut carets = Vec::new();
+    let mut glyphs = Vec::new();
 
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
-        let paragraph_clusters = build_clusters(request, paragraph, global_utf16_offset);
+        let paragraph_clusters = build_clusters(
+            request,
+            paragraph,
+            global_utf16_offset,
+            &registry,
+            &mut diagnostics,
+        );
         let slices = wrap_paragraph(&paragraph_clusters, width);
         let has_newline_after = paragraph_index + 1 < paragraphs.len();
 
@@ -290,6 +380,18 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
                     width: cluster_width,
                     height: line_height,
                 });
+                glyphs.extend(cluster.glyphs.iter().map(|glyph| TextGlyph {
+                    glyph_id: glyph.glyph_id,
+                    cluster_start: glyph.cluster_start,
+                    cluster_end: glyph.cluster_end,
+                    line_index,
+                    x: cursor_x + glyph.local_x + glyph.offset_x,
+                    y: baseline - glyph.offset_y,
+                    advance_x: glyph.advance_x,
+                    offset_x: glyph.offset_x,
+                    offset_y: glyph.offset_y,
+                    font_family: glyph.font_family.clone(),
+                }));
                 cursor_x += cluster_width;
                 carets.push(TextCaret {
                     offset: cluster.end,
@@ -329,25 +431,27 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
         }
     }
 
-    let mut font_fallbacks = Vec::new();
-    let mut seen_fonts = HashSet::new();
-    for family in std::iter::once(&request.base_style.font_family)
-        .chain(request.runs.iter().map(|run| &run.style.font_family))
-    {
-        if seen_fonts.insert(family.as_str()) {
-            font_fallbacks.push(family.clone());
-        }
-    }
+    let measurement_mode = if diagnostics.shaped_run_count == 0 {
+        TextMeasurementMode::DeterministicFallback
+    } else if diagnostics.fallback_grapheme_count > 0 {
+        TextMeasurementMode::Mixed
+    } else {
+        TextMeasurementMode::Shaped
+    };
 
     Ok(TextLayout {
         engine_version: TEXT_LAYOUT_ENGINE_VERSION,
-        measurement_mode: TextMeasurementMode::DeterministicFallback,
+        measurement_mode,
         width,
         height: y.max(request.base_style.line_height.max(1.0)),
         lines,
         graphemes,
         carets,
-        font_fallbacks,
+        glyphs,
+        resolved_fonts: diagnostics.resolved_fonts,
+        font_fallbacks: diagnostics.font_fallbacks,
+        shaped_run_count: diagnostics.shaped_run_count,
+        fallback_grapheme_count: diagnostics.fallback_grapheme_count,
     })
 }
 
@@ -439,6 +543,8 @@ fn build_clusters(
     request: &TextLayoutRequest,
     paragraph: &str,
     global_utf16_offset: usize,
+    registry: &FontRegistry,
+    diagnostics: &mut LayoutDiagnostics,
 ) -> Vec<Cluster> {
     let break_offsets = linebreaks(paragraph)
         .map(|(offset, _)| offset)
@@ -446,7 +552,7 @@ fn build_clusters(
     let mut utf16_offset = global_utf16_offset;
     let mut word_start = true;
 
-    paragraph
+    let mut clusters = paragraph
         .grapheme_indices(true)
         .map(|(byte_start, grapheme)| {
             let utf16_len = grapheme.encode_utf16().count();
@@ -465,14 +571,256 @@ fn build_clusters(
             Cluster {
                 start,
                 end,
+                shaping_text: measured.clone(),
+                style: style.clone(),
                 advance: measure_grapheme(&measured, style),
                 line_height: style.line_height,
                 font_size: style.font_size,
                 whitespace,
                 break_after: break_offsets.contains(&byte_end),
+                glyphs: Vec::new(),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    if paragraph_requires_bidi(paragraph) {
+        diagnostics.fallback_grapheme_count += clusters.len();
+        push_unique(
+            &mut diagnostics.font_fallbacks,
+            "bidi paragraph layout pending".to_string(),
+        );
+    } else {
+        shape_clusters(&mut clusters, registry, diagnostics);
+    }
+    clusters
+}
+
+fn paragraph_requires_bidi(paragraph: &str) -> bool {
+    paragraph.chars().any(|character| {
+        matches!(
+            bidi_class(character),
+            BidiClass::R
+                | BidiClass::AL
+                | BidiClass::AN
+                | BidiClass::RLE
+                | BidiClass::RLO
+                | BidiClass::RLI
+        )
+    })
+}
+
+fn shape_clusters(
+    clusters: &mut [Cluster],
+    registry: &FontRegistry,
+    diagnostics: &mut LayoutDiagnostics,
+) {
+    let mut start = 0usize;
+    while start < clusters.len() {
+        let style = clusters[start].style.clone();
+        let Some(font) = registry.resolve(&style) else {
+            push_unique(
+                &mut diagnostics.font_fallbacks,
+                format!("{}: family unavailable", style.font_family),
+            );
+            diagnostics.fallback_grapheme_count += 1;
+            start += 1;
+            continue;
+        };
+
+        let Ok(parsed) = ParsedFace::parse(font.data, 0) else {
+            push_unique(
+                &mut diagnostics.font_fallbacks,
+                format!("{}: invalid font data", font.family),
+            );
+            diagnostics.fallback_grapheme_count += 1;
+            start += 1;
+            continue;
+        };
+
+        if !font_covers(&parsed, &clusters[start].shaping_text) {
+            push_unique(
+                &mut diagnostics.font_fallbacks,
+                format!("{}: missing glyphs", font.family),
+            );
+            diagnostics.fallback_grapheme_count += 1;
+            start += 1;
+            continue;
+        }
+
+        let mut end = start + 1;
+        while end < clusters.len() {
+            let candidate = &clusters[end];
+            let same_style = candidate.style == style;
+            let same_font = registry.resolve(&candidate.style).is_some_and(|resolved| {
+                resolved.family == font.family && resolved.data.as_ptr() == font.data.as_ptr()
+            });
+            if !same_style || !same_font || !font_covers(&parsed, &candidate.shaping_text) {
+                break;
+            }
+            end += 1;
+        }
+
+        if shape_cluster_run(&mut clusters[start..end], font, &style) {
+            diagnostics.shaped_run_count += 1;
+            push_unique(&mut diagnostics.resolved_fonts, font.family.to_string());
+        } else {
+            let run_len = end - start;
+            diagnostics.fallback_grapheme_count += run_len;
+            push_unique(
+                &mut diagnostics.font_fallbacks,
+                format!("{}: shaping failed", font.family),
+            );
+        }
+        start = end;
+    }
+}
+
+fn shape_cluster_run(
+    clusters: &mut [Cluster],
+    font: RegisteredFont,
+    style: &TextStyleMetrics,
+) -> bool {
+    if clusters.is_empty() {
+        return false;
+    }
+
+    let Some(mut face) = ShapingFace::from_slice(font.data, 0) else {
+        return false;
+    };
+    face.set_variations(&[
+        Variation {
+            tag: Tag::from_bytes(b"wght"),
+            value: style.font_weight.clamp(100, 900) as f32,
+        },
+        Variation {
+            tag: Tag::from_bytes(b"opsz"),
+            value: style.font_size.clamp(14.0, 32.0),
+        },
+    ]);
+
+    let mut input = String::new();
+    let mut spans = Vec::with_capacity(clusters.len());
+    for (index, cluster) in clusters.iter().enumerate() {
+        let byte_start = input.len();
+        input.push_str(&cluster.shaping_text);
+        spans.push((byte_start, input.len(), index));
+    }
+    if input.is_empty() {
+        return false;
+    }
+
+    let mut buffer = UnicodeBuffer::new();
+    buffer.push_str(&input);
+    buffer.guess_segment_properties();
+    let shaped = shape(&face, &[], buffer);
+    if shaped.is_empty() {
+        return false;
+    }
+
+    let scale = style.font_size / face.units_per_em().max(1) as f32;
+    let infos = shaped.glyph_infos();
+    let positions = shaped.glyph_positions();
+    for cluster in clusters.iter_mut() {
+        cluster.advance = 0.0;
+    }
+    let mut logical_offsets = infos
+        .iter()
+        .map(|info| info.cluster as usize)
+        .collect::<Vec<_>>();
+    logical_offsets.push(input.len());
+    logical_offsets.sort_unstable();
+    logical_offsets.dedup();
+
+    let mut pending = Vec::with_capacity(infos.len());
+    for (info, position) in infos.iter().zip(positions.iter()) {
+        let glyph_start = (info.cluster as usize).min(input.len());
+        let glyph_end = logical_offsets
+            .iter()
+            .copied()
+            .find(|offset| *offset > glyph_start)
+            .unwrap_or(input.len());
+        let owners = spans
+            .iter()
+            .filter(|(start, end, _)| *start < glyph_end && *end > glyph_start)
+            .map(|(_, _, index)| *index)
+            .collect::<Vec<_>>();
+        let Some(&owner) = owners.first() else {
+            continue;
+        };
+        let advance = (position.x_advance as f32 * scale).abs();
+        let share = advance / owners.len().max(1) as f32;
+        for index in &owners {
+            clusters[*index].advance = (clusters[*index].advance + share).max(0.0);
+        }
+        let cluster_start = owners
+            .first()
+            .map(|index| clusters[*index].start)
+            .unwrap_or(clusters[owner].start);
+        let cluster_end = owners
+            .last()
+            .map(|index| clusters[*index].end)
+            .unwrap_or(clusters[owner].end);
+        pending.push((
+            owner,
+            info.glyph_id,
+            cluster_start,
+            cluster_end,
+            advance,
+            position.x_offset as f32 * scale,
+            position.y_offset as f32 * scale,
+        ));
+    }
+
+    let mut spacing_prefixes = Vec::with_capacity(clusters.len());
+    let mut accumulated_spacing = 0.0f32;
+    for cluster in clusters.iter_mut() {
+        spacing_prefixes.push(accumulated_spacing);
+        let shaped_advance = cluster.advance;
+        cluster.advance = (shaped_advance + style.letter_spacing).max(0.0);
+        accumulated_spacing += cluster.advance - shaped_advance;
+    }
+    let cluster_starts = clusters
+        .iter()
+        .scan(0.0f32, |cursor, cluster| {
+            let start = *cursor;
+            *cursor += cluster.advance;
+            Some(start)
+        })
+        .collect::<Vec<_>>();
+    let mut glyph_pen = 0.0f32;
+    for (owner, glyph_id, cluster_start, cluster_end, advance, offset_x, offset_y) in pending {
+        clusters[owner].glyphs.push(ClusterGlyph {
+            glyph_id,
+            cluster_start,
+            cluster_end,
+            local_x: glyph_pen + spacing_prefixes[owner] - cluster_starts[owner],
+            advance_x: advance,
+            offset_x,
+            offset_y,
+            font_family: font.family.to_string(),
+        });
+        glyph_pen += advance;
+    }
+    true
+}
+
+fn font_covers(face: &ParsedFace<'_>, text: &str) -> bool {
+    text.chars().all(|character| {
+        character != '\t'
+            && (character.is_whitespace()
+                || is_default_ignorable(character)
+                || face.glyph_index(character).is_some())
+    })
+}
+
+fn is_default_ignorable(character: char) -> bool {
+    matches!(character as u32, 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
 }
 
 fn resolve_style<'a>(request: &'a TextLayoutRequest, offset: usize) -> &'a TextStyleMetrics {
@@ -692,5 +1040,121 @@ mod tests {
     fn rejects_invalid_layout_metrics() {
         let error = layout_text(&request("invalid", 0.0)).expect_err("invalid width rejected");
         assert_eq!(error.code, "text.layout.width.invalid");
+    }
+
+    #[test]
+    fn shapes_bundled_inter_with_open_type_positioning_and_glyph_geometry() {
+        let mut input = request("AV a\u{301}", 300.0);
+        input.base_style.font_family = "Inter, sans-serif".to_string();
+        let layout = layout_text(&input).expect("Inter layout succeeds");
+
+        let mut left = request("A", 300.0);
+        left.base_style.font_family = "Inter".to_string();
+        let mut right = request("V", 300.0);
+        right.base_style.font_family = "Inter".to_string();
+        let mut pair = request("AV", 300.0);
+        pair.base_style.font_family = "Inter".to_string();
+        let separate_width = layout_text(&left).expect("A layout").lines[0].width
+            + layout_text(&right).expect("V layout").lines[0].width;
+        let pair_width = layout_text(&pair).expect("AV layout").lines[0].width;
+
+        assert_eq!(layout.engine_version, 2);
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(layout.resolved_fonts, vec!["Inter"]);
+        assert!(layout.font_fallbacks.is_empty());
+        assert_eq!(layout.shaped_run_count, 1);
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert!(pair_width < separate_width);
+        assert!(layout.glyphs.iter().all(|glyph| glyph.glyph_id > 0));
+        assert!(layout.glyphs.iter().all(|glyph| glyph.advance_x >= 0.0));
+        assert!(layout
+            .glyphs
+            .iter()
+            .any(|glyph| glyph.cluster_end - glyph.cluster_start > 1));
+    }
+
+    #[test]
+    fn selects_the_bundled_italic_face_and_variable_weight() {
+        let mut input = request("Variable italic", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        input.base_style.font_weight = 725;
+        input.base_style.italic = true;
+        let layout = layout_text(&input).expect("italic layout succeeds");
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert!(!layout.glyphs.is_empty());
+        assert!(layout
+            .glyphs
+            .iter()
+            .all(|glyph| glyph.font_family == "Inter"));
+    }
+
+    #[test]
+    fn reports_mixed_measurement_when_inter_lacks_hangul_glyphs() {
+        let mut input = request("Hello 한글", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_text(&input).expect("mixed layout succeeds");
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Mixed);
+        assert_eq!(layout.fallback_grapheme_count, 2);
+        assert_eq!(layout.font_fallbacks, vec!["Inter: missing glyphs"]);
+        assert!(layout.shaped_run_count >= 1);
+    }
+
+    #[test]
+    fn reports_unavailable_font_without_claiming_shaping() {
+        let mut input = request("No bundled face", 300.0);
+        input.base_style.font_family = "Unregistered Sans".to_string();
+        let layout = layout_text(&input).expect("fallback layout succeeds");
+
+        assert_eq!(
+            layout.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+        assert!(layout.glyphs.is_empty());
+        assert_eq!(layout.fallback_grapheme_count, layout.graphemes.len());
+        assert_eq!(
+            layout.font_fallbacks,
+            vec!["Unregistered Sans: family unavailable"]
+        );
+    }
+
+    #[test]
+    fn applies_letter_spacing_to_glyph_origins_and_caret_geometry() {
+        let mut compact = request("AV", 300.0);
+        compact.base_style.font_family = "Inter".to_string();
+        let compact_layout = layout_text(&compact).expect("compact layout");
+
+        let mut spaced = compact;
+        spaced.base_style.letter_spacing = 5.0;
+        let spaced_layout = layout_text(&spaced).expect("spaced layout");
+        let compact_v = compact_layout
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.cluster_start == 1)
+            .expect("compact V glyph");
+        let spaced_v = spaced_layout
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.cluster_start == 1)
+            .expect("spaced V glyph");
+
+        assert!((spaced_v.x - compact_v.x - 5.0).abs() < 0.01);
+        assert!((spaced_layout.lines[0].width - compact_layout.lines[0].width - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn does_not_claim_rtl_geometry_before_bidi_layout_is_implemented() {
+        let mut input = request("שלום", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_text(&input).expect("RTL fallback layout");
+
+        assert_eq!(
+            layout.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+        assert!(layout.glyphs.is_empty());
+        assert_eq!(layout.fallback_grapheme_count, layout.graphemes.len());
+        assert_eq!(layout.font_fallbacks, vec!["bidi paragraph layout pending"]);
     }
 }

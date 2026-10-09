@@ -5,6 +5,14 @@ test("v2 editor measures unicode text and auto height through wasm", async ({ pa
 
   await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        await document.fonts.ready;
+        return document.fonts.check("16px Inter");
+      }),
+    )
+    .toBe(true);
 
   const layerPanel = page.locator("aside").first();
   const inspector = page.locator("aside").last();
@@ -15,7 +23,7 @@ test("v2 editor measures unicode text and auto height through wasm", async ({ pa
   const summary = inspector.getByTestId("v2-text-layout-summary");
   await expect(summary).toBeVisible();
   await expect(summary).toContainText("1 line");
-  await expect(summary).toContainText("fallback metrics");
+  await expect(summary).toContainText("font shaped");
 
   const content = "가나다라마바사🙂\na\u0301";
   const contentEditor = inspector.locator("textarea").first();
@@ -24,6 +32,7 @@ test("v2 editor measures unicode text and auto height through wasm", async ({ pa
   await expect(contentEditor).toHaveValue(content);
   await expect(summary).toContainText("2 lines");
   await expect(summary).toContainText("9 graphemes");
+  await expect(summary).toContainText("8 fallback");
   await expect(summary).toContainText("104 px");
   await expect
     .poll(() =>
@@ -35,5 +44,6 @@ test("v2 editor measures unicode text and auto height through wasm", async ({ pa
   await page.keyboard.press("Control+z");
   await expect(contentEditor).toHaveValue("Design faster. Ship clearer.");
   await expect(summary).toContainText("1 line");
+  await expect(summary).toContainText("font shaped");
   await expect(summary).toContainText("52 px");
 });

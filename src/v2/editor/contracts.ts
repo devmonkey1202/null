@@ -350,7 +350,7 @@ export type ResizeSnapPreview = {
   guides: SnapGuide[];
 };
 
-export type TextMeasurementMode = "deterministic_fallback";
+export type TextMeasurementMode = "shaped" | "mixed" | "deterministic_fallback";
 
 export type TextCaretAffinity = "upstream" | "downstream";
 
@@ -387,6 +387,19 @@ export type TextCaretGeometry = {
   affinity: TextCaretAffinity;
 };
 
+export type TextGlyphGeometry = {
+  glyphId: number;
+  clusterStart: number;
+  clusterEnd: number;
+  lineIndex: number;
+  x: number;
+  y: number;
+  advanceX: number;
+  offsetX: number;
+  offsetY: number;
+  fontFamily: string;
+};
+
 export type TextLayout = {
   engineVersion: number;
   measurementMode: TextMeasurementMode;
@@ -395,7 +408,11 @@ export type TextLayout = {
   lines: TextLayoutLine[];
   graphemes: TextGraphemeBox[];
   carets: TextCaretGeometry[];
+  glyphs: TextGlyphGeometry[];
+  resolvedFonts: string[];
   fontFallbacks: string[];
+  shapedRunCount: number;
+  fallbackGraphemeCount: number;
 };
 
 export type BridgeQuery =

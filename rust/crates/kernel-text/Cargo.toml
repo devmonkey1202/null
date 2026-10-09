@@ -7,7 +7,10 @@ publish.workspace = true
 
 [dependencies]
 core-error = { path = "../core-error" }
+rustybuzz = "0.20.1"
 serde = { version = "1", features = ["derive"] }
+ttf-parser = "0.25.1"
+unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"

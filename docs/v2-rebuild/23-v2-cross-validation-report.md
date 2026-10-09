@@ -113,10 +113,20 @@
 
 ## 7. 현재 남아 있는 진짜 리스크
 
-- text / vector / render 하부 구현 선택은 코드 단계에서 다시 검증 필요
+- text Phase 2A는 bundled Inter shaping까지 검증됐지만 CJK/bidi/font streaming/glyph atlas는 미완료
+- vector / render 하부 구현 선택은 코드 단계에서 계속 검증 필요
 - 실제 self-hosted AI serving 비용/latency는 운영 실측 필요
 - B -> C 전환용 데이터 로그를 코드에서 정확히 남겨야 함
 - 현재 v2 UI 셸은 여전히 kernel 전체가 아니라 점진 구현 단계
+
+### 7.1 2026-10-09 구현 교차검증
+
+- `kernel-text` 계약과 TypeScript `TextLayout` 계약은 engine version 2로 일치
+- scene auto-height와 FFI `text_layout`은 동일 Rust layout 함수를 사용
+- browser shell은 regenerated release WASM을 사용하며 noop fallback과 측정 mode를 구분
+- bundled browser font와 Rust embedded font의 파일은 같은 Inter 4.1 자산
+- Rust workspace tests와 Playwright text-layout E2E 통과
+- 따라서 Phase 2A 구현 증거는 확보됐지만 Phase 2B/3 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
 
 ## 8. 실행 판단
 

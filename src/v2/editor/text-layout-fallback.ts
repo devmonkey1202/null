@@ -277,13 +277,15 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
   });
 
   return {
-    engineVersion: 1,
+    engineVersion: 2,
     measurementMode: "deterministic_fallback",
     width,
     height: Math.max(y, text.lineHeight, 1),
     lines,
     graphemes,
     carets,
+    glyphs: [],
+    resolvedFonts: [],
     fontFallbacks: Array.from(
       new Set([
         text.fontFamily,
@@ -291,7 +293,9 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
           range.style?.fontFamily ? [range.style.fontFamily] : [],
         ),
       ]),
-    ),
+    ).map((family) => `${family}: browser bridge fallback`),
+    shapedRunCount: 0,
+    fallbackGraphemeCount: graphemes.length,
   };
 }
 

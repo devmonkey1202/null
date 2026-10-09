@@ -5865,8 +5865,29 @@ export function V2EditorShell() {
                                 {activeTextLayout.graphemes.length}{" "}
                                 {activeTextLayout.graphemes.length === 1 ? "grapheme" : "graphemes"}
                               </span>
+                              <span>{activeTextLayout.glyphs.length} glyphs</span>
                               <span>{Math.round(activeTextLayout.height)} px</span>
-                              <span className="text-amber-700">fallback metrics</span>
+                              <span
+                                data-testid="v2-text-measurement-mode"
+                                title={
+                                  activeTextLayout.fontFallbacks.length
+                                    ? activeTextLayout.fontFallbacks.join("; ")
+                                    : activeTextLayout.resolvedFonts.join(", ")
+                                }
+                                className={
+                                  activeTextLayout.measurementMode === "shaped"
+                                    ? "text-emerald-700"
+                                    : activeTextLayout.measurementMode === "mixed"
+                                      ? "text-amber-700"
+                                      : "text-rose-700"
+                                }
+                              >
+                                {activeTextLayout.measurementMode === "shaped"
+                                  ? "font shaped"
+                                  : activeTextLayout.measurementMode === "mixed"
+                                    ? `${activeTextLayout.fallbackGraphemeCount} fallback`
+                                    : "fallback metrics"}
+                              </span>
                             </div>
                           </div>
                         ) : null}

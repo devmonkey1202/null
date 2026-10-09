@@ -21,6 +21,16 @@
 - text input latency: p95 20ms 이하
 - zoom/pan: 체감 60fps 목표
 
+### 2.1 Text Engine budget
+
+- 1,000 grapheme single-style shaping: warm p95 8ms 이하
+- 10,000 grapheme mixed-run layout: warm p95 40ms 이하
+- text edit 이후 재계산은 dirty paragraph/run 범위로 제한
+- font parse 결과와 shape plan은 font hash + face index + variation axis 기준으로 cache
+- 초기 editor WASM + 필수 font compressed transfer: 2.5 MB 이하 목표
+- 2026-10-09 Phase 2A raw WASM은 bundled Inter normal/italic과 bidi 진단 테이블 포함 `3,941,059 bytes`; compressed transfer와 parse latency를 별도 측정하기 전에는 성능 게이트 통과로 보지 않음
+- CJK/사용자 font는 Phase 2B에서 lazy fetch + content hash cache로 분리하고 WASM binary에 계속 직접 embed하지 않음
+
 ## 3. 런타임 성능 목표
 
 현재 phase에서 런타임은 **에디터 산출물 parity 검증용 최소 실행 계층**입니다.
