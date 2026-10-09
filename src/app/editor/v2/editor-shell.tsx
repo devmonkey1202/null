@@ -4339,6 +4339,7 @@ export function V2EditorShell() {
                           {richTextParagraphs?.map((paragraph, paragraphIndex) => (
                             <div
                               key={`${node.id}-paragraph-${paragraphIndex}`}
+                              dir="auto"
                               style={{
                                 textAlign: textData.align,
                                 whiteSpace: "pre-wrap",
@@ -5866,13 +5867,15 @@ export function V2EditorShell() {
                                 {activeTextLayout.graphemes.length === 1 ? "grapheme" : "graphemes"}
                               </span>
                               <span>{activeTextLayout.glyphs.length} glyphs</span>
+                              {activeTextLayout.bidiParagraphCount ? (
+                                <span>{activeTextLayout.bidiParagraphCount} bidi</span>
+                              ) : null}
                               <span>{Math.round(activeTextLayout.height)} px</span>
                               <span
                                 data-testid="v2-text-measurement-mode"
                                 title={
-                                  activeTextLayout.fontFallbacks.length
-                                    ? activeTextLayout.fontFallbacks.join("; ")
-                                    : activeTextLayout.resolvedFonts.join(", ")
+                                  [...activeTextLayout.fontFallbacks, ...activeTextLayout.layoutWarnings]
+                                    .join("; ") || activeTextLayout.resolvedFonts.join(", ")
                                 }
                                 className={
                                   activeTextLayout.measurementMode === "shaped"

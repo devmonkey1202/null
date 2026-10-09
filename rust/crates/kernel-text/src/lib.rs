@@ -3,12 +3,12 @@ use rustybuzz::{shape, Face as ShapingFace, UnicodeBuffer, Variation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use ttf_parser::{Face as ParsedFace, Tag};
-use unicode_bidi::{bidi_class, BidiClass};
+use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::linebreaks;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 2;
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 3;
 
 const INTER_REGULAR_BYTES: &[u8] = include_bytes!("../../../../public/v2/fonts/InterVariable.ttf");
 const INTER_ITALIC_BYTES: &[u8] =
@@ -40,6 +40,14 @@ pub enum TextMeasurementMode {
     Shaped,
     Mixed,
     DeterministicFallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextDirection {
+    #[default]
+    Ltr,
+    Rtl,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -104,6 +112,7 @@ pub struct TextLine {
     pub baseline: f32,
     pub hard_break: bool,
     pub soft_wrapped: bool,
+    pub base_direction: TextDirection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,6 +125,8 @@ pub struct TextGraphemeBox {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    pub direction: TextDirection,
+    pub bidi_level: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -174,8 +185,11 @@ pub struct TextLayout {
     pub glyphs: Vec<TextGlyph>,
     pub resolved_fonts: Vec<String>,
     pub font_fallbacks: Vec<String>,
+    pub layout_warnings: Vec<String>,
     pub shaped_run_count: usize,
     pub fallback_grapheme_count: usize,
+    pub bidi_paragraph_count: usize,
+    pub visual_run_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -210,6 +224,7 @@ struct Cluster {
     font_size: f32,
     whitespace: bool,
     break_after: bool,
+    bidi_level: u8,
     glyphs: Vec<ClusterGlyph>,
 }
 
@@ -259,8 +274,17 @@ impl FontRegistry {
 struct LayoutDiagnostics {
     resolved_fonts: Vec<String>,
     font_fallbacks: Vec<String>,
+    layout_warnings: Vec<String>,
     shaped_run_count: usize,
     fallback_grapheme_count: usize,
+    bidi_paragraph_count: usize,
+    visual_run_count: usize,
+}
+
+#[derive(Debug)]
+struct ParagraphClusters {
+    clusters: Vec<Cluster>,
+    base_direction: TextDirection,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -285,14 +309,15 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
     let mut glyphs = Vec::new();
 
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
-        let paragraph_clusters = build_clusters(
+        let paragraph_layout = build_clusters(
             request,
             paragraph,
             global_utf16_offset,
             &registry,
             &mut diagnostics,
         );
-        let slices = wrap_paragraph(&paragraph_clusters, width);
+        let paragraph_clusters = &paragraph_layout.clusters;
+        let slices = wrap_paragraph(paragraph_clusters, width);
         let has_newline_after = paragraph_index + 1 < paragraphs.len();
 
         for (slice_index, slice) in slices.iter().enumerate() {
@@ -353,18 +378,16 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
                 .unwrap_or(global_utf16_offset);
             let baseline = y + ((line_height - max_font_size) / 2.0).max(0.0) + max_font_size * 0.8;
             let hard_break = has_newline_after && is_last_paragraph_line;
-
-            carets.push(TextCaret {
-                offset: start_offset,
-                line_index,
-                x,
-                y,
-                height: line_height,
-                affinity: CaretAffinity::Downstream,
-            });
+            let visual_order = visual_order(line_clusters, paragraph_layout.base_direction);
+            diagnostics.visual_run_count += visual_run_count(
+                line_clusters,
+                &visual_order,
+                paragraph_layout.base_direction,
+            );
 
             let mut cursor_x = x;
-            for cluster in line_clusters {
+            for cluster_index in visual_order {
+                let cluster = &line_clusters[cluster_index];
                 let extra = if cluster.whitespace {
                     justify_extra
                 } else {
@@ -379,6 +402,8 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
                     y,
                     width: cluster_width,
                     height: line_height,
+                    direction: direction_for_level(cluster.bidi_level),
+                    bidi_level: cluster.bidi_level,
                 });
                 glyphs.extend(cluster.glyphs.iter().map(|glyph| TextGlyph {
                     glyph_id: glyph.glyph_id,
@@ -392,18 +417,38 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
                     offset_y: glyph.offset_y,
                     font_family: glyph.font_family.clone(),
                 }));
-                cursor_x += cluster_width;
+                let direction = direction_for_level(cluster.bidi_level);
+                let (start_x, end_x) = match direction {
+                    TextDirection::Ltr => (cursor_x, cursor_x + cluster_width),
+                    TextDirection::Rtl => (cursor_x + cluster_width, cursor_x),
+                };
+                carets.push(TextCaret {
+                    offset: cluster.start,
+                    line_index,
+                    x: start_x,
+                    y,
+                    height: line_height,
+                    affinity: CaretAffinity::Downstream,
+                });
                 carets.push(TextCaret {
                     offset: cluster.end,
                     line_index,
-                    x: cursor_x,
+                    x: end_x,
                     y,
                     height: line_height,
-                    affinity: if slice.soft_wrapped && cluster.end == end_offset {
-                        CaretAffinity::Upstream
-                    } else {
-                        CaretAffinity::Downstream
-                    },
+                    affinity: CaretAffinity::Upstream,
+                });
+                cursor_x += cluster_width;
+            }
+
+            if line_clusters.is_empty() {
+                carets.push(TextCaret {
+                    offset: start_offset,
+                    line_index,
+                    x,
+                    y,
+                    height: line_height,
+                    affinity: CaretAffinity::Downstream,
                 });
             }
 
@@ -419,6 +464,7 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
                 baseline,
                 hard_break,
                 soft_wrapped: slice.soft_wrapped,
+                base_direction: paragraph_layout.base_direction,
             });
             y += line_height;
         }
@@ -450,8 +496,11 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
         glyphs,
         resolved_fonts: diagnostics.resolved_fonts,
         font_fallbacks: diagnostics.font_fallbacks,
+        layout_warnings: diagnostics.layout_warnings,
         shaped_run_count: diagnostics.shaped_run_count,
         fallback_grapheme_count: diagnostics.fallback_grapheme_count,
+        bidi_paragraph_count: diagnostics.bidi_paragraph_count,
+        visual_run_count: diagnostics.visual_run_count,
     })
 }
 
@@ -483,27 +532,44 @@ pub fn selection_rects(layout: &TextLayout, start: usize, end: usize) -> Vec<Tex
         return Vec::new();
     }
 
-    layout
-        .lines
-        .iter()
-        .filter_map(|line| {
-            let start_offset = selection_start.max(line.start).min(line.end);
-            let end_offset = selection_end.max(line.start).min(line.end);
-            if start_offset >= end_offset {
-                return None;
-            }
-
-            let start_x = caret_x(layout, line.index, start_offset, line.x);
-            let end_x = caret_x(layout, line.index, end_offset, line.x + line.width);
-            Some(TextSelectionRect {
-                line_index: line.index,
-                x: start_x.min(end_x),
-                y: line.y,
-                width: (end_x - start_x).abs().max(1.0),
-                height: line.height,
+    let mut rectangles = Vec::new();
+    for line in &layout.lines {
+        let mut selected = layout
+            .graphemes
+            .iter()
+            .filter(|grapheme| {
+                grapheme.line_index == line.index
+                    && grapheme.start < selection_end
+                    && grapheme.end > selection_start
             })
-        })
-        .collect()
+            .collect::<Vec<_>>();
+        selected.sort_by(|left, right| left.x.total_cmp(&right.x));
+
+        let mut current: Option<TextSelectionRect> = None;
+        for grapheme in selected {
+            let next = TextSelectionRect {
+                line_index: line.index,
+                x: grapheme.x,
+                y: grapheme.y,
+                width: grapheme.width.max(1.0),
+                height: grapheme.height,
+            };
+            if let Some(rectangle) = current.as_mut() {
+                let current_end = rectangle.x + rectangle.width;
+                if next.x <= current_end + 0.5 {
+                    rectangle.width = (next.x + next.width - rectangle.x).max(rectangle.width);
+                    rectangle.height = rectangle.height.max(next.height);
+                    continue;
+                }
+                rectangles.push(rectangle.clone());
+            }
+            current = Some(next);
+        }
+        if let Some(rectangle) = current {
+            rectangles.push(rectangle);
+        }
+    }
+    rectangles
 }
 
 fn validate_request(request: &TextLayoutRequest) -> Result<(), CoreError> {
@@ -545,7 +611,17 @@ fn build_clusters(
     global_utf16_offset: usize,
     registry: &FontRegistry,
     diagnostics: &mut LayoutDiagnostics,
-) -> Vec<Cluster> {
+) -> ParagraphClusters {
+    let bidi = BidiInfo::new(paragraph, None);
+    let paragraph_level = bidi
+        .paragraphs
+        .first()
+        .map(|info| info.level)
+        .unwrap_or_else(Level::ltr);
+    let base_direction = direction_for_level(paragraph_level.number());
+    if bidi.has_rtl() {
+        diagnostics.bidi_paragraph_count += 1;
+    }
     let break_offsets = linebreaks(paragraph)
         .map(|(offset, _)| offset)
         .collect::<HashSet<_>>();
@@ -578,35 +654,22 @@ fn build_clusters(
                 font_size: style.font_size,
                 whitespace,
                 break_after: break_offsets.contains(&byte_end),
+                bidi_level: bidi
+                    .levels
+                    .get(byte_start)
+                    .copied()
+                    .unwrap_or(paragraph_level)
+                    .number(),
                 glyphs: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
 
-    if paragraph_requires_bidi(paragraph) {
-        diagnostics.fallback_grapheme_count += clusters.len();
-        push_unique(
-            &mut diagnostics.font_fallbacks,
-            "bidi paragraph layout pending".to_string(),
-        );
-    } else {
-        shape_clusters(&mut clusters, registry, diagnostics);
+    shape_clusters(&mut clusters, registry, diagnostics);
+    ParagraphClusters {
+        clusters,
+        base_direction,
     }
-    clusters
-}
-
-fn paragraph_requires_bidi(paragraph: &str) -> bool {
-    paragraph.chars().any(|character| {
-        matches!(
-            bidi_class(character),
-            BidiClass::R
-                | BidiClass::AL
-                | BidiClass::AN
-                | BidiClass::RLE
-                | BidiClass::RLO
-                | BidiClass::RLI
-        )
-    })
 }
 
 fn shape_clusters(
@@ -616,7 +679,18 @@ fn shape_clusters(
 ) {
     let mut start = 0usize;
     while start < clusters.len() {
+        if clusters[start].bidi_level % 2 == 1 {
+            diagnostics.fallback_grapheme_count += 1;
+            push_unique(
+                &mut diagnostics.layout_warnings,
+                "RTL glyph shaping/render integration pending".to_string(),
+            );
+            start += 1;
+            continue;
+        }
+
         let style = clusters[start].style.clone();
+        let bidi_level = clusters[start].bidi_level;
         let Some(font) = registry.resolve(&style) else {
             push_unique(
                 &mut diagnostics.font_fallbacks,
@@ -654,7 +728,11 @@ fn shape_clusters(
             let same_font = registry.resolve(&candidate.style).is_some_and(|resolved| {
                 resolved.family == font.family && resolved.data.as_ptr() == font.data.as_ptr()
             });
-            if !same_style || !same_font || !font_covers(&parsed, &candidate.shaping_text) {
+            if !same_style
+                || !same_font
+                || candidate.bidi_level != bidi_level
+                || !font_covers(&parsed, &candidate.shaping_text)
+            {
                 break;
             }
             end += 1;
@@ -673,6 +751,55 @@ fn shape_clusters(
         }
         start = end;
     }
+}
+
+fn direction_for_level(level: u8) -> TextDirection {
+    if level % 2 == 1 {
+        TextDirection::Rtl
+    } else {
+        TextDirection::Ltr
+    }
+}
+
+fn visual_order(clusters: &[Cluster], base_direction: TextDirection) -> Vec<usize> {
+    if clusters.is_empty() {
+        return Vec::new();
+    }
+
+    let base_level = match base_direction {
+        TextDirection::Ltr => 0,
+        TextDirection::Rtl => 1,
+    };
+    let mut levels = clusters
+        .iter()
+        .map(|cluster| Level::new(cluster.bidi_level).unwrap_or_else(|_| Level::ltr()))
+        .collect::<Vec<_>>();
+
+    // UAX #9 rule L1 resets trailing whitespace to the paragraph embedding level.
+    for (cluster, level) in clusters.iter().zip(levels.iter_mut()).rev() {
+        if !cluster.whitespace {
+            break;
+        }
+        *level = Level::new(base_level).unwrap_or_else(|_| Level::ltr());
+    }
+
+    BidiInfo::reorder_visual(&levels)
+}
+
+fn visual_run_count(clusters: &[Cluster], order: &[usize], base_direction: TextDirection) -> usize {
+    let mut previous = None;
+    let mut count = 0;
+    for index in order {
+        let direction = clusters
+            .get(*index)
+            .map(|cluster| direction_for_level(cluster.bidi_level))
+            .unwrap_or(base_direction);
+        if previous != Some(direction) {
+            count += 1;
+            previous = Some(direction);
+        }
+    }
+    count
 }
 
 fn shape_cluster_run(
@@ -925,15 +1052,6 @@ fn wrap_paragraph(clusters: &[Cluster], width: f32) -> Vec<LineSlice> {
     slices
 }
 
-fn caret_x(layout: &TextLayout, line_index: usize, offset: usize, fallback: f32) -> f32 {
-    layout
-        .carets
-        .iter()
-        .find(|caret| caret.line_index == line_index && caret.offset == offset)
-        .map(|caret| caret.x)
-        .unwrap_or(fallback)
-}
-
 fn distance_to_range(value: f32, start: f32, end: f32) -> f32 {
     if value < start {
         start - value
@@ -1058,7 +1176,7 @@ mod tests {
             + layout_text(&right).expect("V layout").lines[0].width;
         let pair_width = layout_text(&pair).expect("AV layout").lines[0].width;
 
-        assert_eq!(layout.engine_version, 2);
+        assert_eq!(layout.engine_version, 3);
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert_eq!(layout.resolved_fonts, vec!["Inter"]);
         assert!(layout.font_fallbacks.is_empty());
@@ -1144,10 +1262,11 @@ mod tests {
     }
 
     #[test]
-    fn does_not_claim_rtl_geometry_before_bidi_layout_is_implemented() {
-        let mut input = request("שלום", 300.0);
+    fn resolves_rtl_visual_order_carets_and_hit_testing() {
+        let mut input = request("אבג", 300.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("RTL fallback layout");
+        let layout = layout_text(&input).expect("RTL layout");
+        let line = &layout.lines[0];
 
         assert_eq!(
             layout.measurement_mode,
@@ -1155,6 +1274,49 @@ mod tests {
         );
         assert!(layout.glyphs.is_empty());
         assert_eq!(layout.fallback_grapheme_count, layout.graphemes.len());
-        assert_eq!(layout.font_fallbacks, vec!["bidi paragraph layout pending"]);
+        assert!(layout.font_fallbacks.is_empty());
+        assert_eq!(
+            layout.layout_warnings,
+            vec!["RTL glyph shaping/render integration pending"]
+        );
+        assert_eq!(layout.bidi_paragraph_count, 1);
+        assert_eq!(layout.visual_run_count, 1);
+        assert_eq!(line.base_direction, TextDirection::Rtl);
+        assert_eq!(
+            layout
+                .graphemes
+                .iter()
+                .map(|grapheme| grapheme.start)
+                .collect::<Vec<_>>(),
+            vec![2, 1, 0]
+        );
+        assert_eq!(
+            hit_test_text(&layout, line.x, line.y)
+                .expect("left-edge hit")
+                .offset,
+            3
+        );
+        assert_eq!(
+            hit_test_text(&layout, line.x + line.width, line.y)
+                .expect("right-edge hit")
+                .offset,
+            0
+        );
+    }
+
+    #[test]
+    fn splits_discontiguous_mixed_direction_selection_geometry() {
+        let mut input = request("abc אבג def", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_text(&input).expect("mixed bidi layout");
+        let selection = selection_rects(&layout, 2, 5);
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Mixed);
+        assert_eq!(layout.bidi_paragraph_count, 1);
+        assert_eq!(layout.visual_run_count, 3);
+        assert_eq!(layout.lines[0].base_direction, TextDirection::Ltr);
+        assert_eq!(selection.len(), 2);
+        assert!(selection[0].x < selection[1].x);
+        assert!(selection[0].x + selection[0].width < selection[1].x);
     }
 }

@@ -354,6 +354,8 @@ export type TextMeasurementMode = "shaped" | "mixed" | "deterministic_fallback";
 
 export type TextCaretAffinity = "upstream" | "downstream";
 
+export type TextDirection = "ltr" | "rtl";
+
 export type TextLayoutLine = {
   index: number;
   paragraphIndex: number;
@@ -366,6 +368,7 @@ export type TextLayoutLine = {
   baseline: number;
   hardBreak: boolean;
   softWrapped: boolean;
+  baseDirection: TextDirection;
 };
 
 export type TextGraphemeBox = {
@@ -376,6 +379,8 @@ export type TextGraphemeBox = {
   y: number;
   width: number;
   height: number;
+  direction: TextDirection;
+  bidiLevel: number;
 };
 
 export type TextCaretGeometry = {
@@ -411,8 +416,11 @@ export type TextLayout = {
   glyphs: TextGlyphGeometry[];
   resolvedFonts: string[];
   fontFallbacks: string[];
+  layoutWarnings: string[];
   shapedRunCount: number;
   fallbackGraphemeCount: number;
+  bidiParagraphCount: number;
+  visualRunCount: number;
 };
 
 export type BridgeQuery =

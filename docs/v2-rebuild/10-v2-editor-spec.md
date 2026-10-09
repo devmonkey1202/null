@@ -190,7 +190,7 @@ v2 편집기는 다음을 동시에 만족해야 합니다.
 
 - Phase 1: Unicode grapheme, UAX#14 line-break opportunity, wrapping, alignment, baseline, caret/selection geometry, multi-style metrics, auto-height
 - Phase 2A: bundled font registry, Regular/Italic variable font loading, `ttf-parser` glyph coverage, `rustybuzz` shaping/positioning, glyph/cluster geometry, shaped/mixed/fallback diagnostics
-- Phase 2B: user font registration/streaming, CJK font set, fallback chain, bidi paragraph resolution, script itemization, shaping/measurement cache
+- Phase 2B: user font registration/streaming, CJK font set, fallback chain, bidi paragraph/visual-order geometry, RTL shaping, script itemization, shaping/measurement cache
 - Phase 3: glyph raster/atlas, render-command integration, editor/preview/publish text parity
 - Phase 1의 `deterministic_fallback`과 Phase 2A의 unsupported-glyph fallback은 계약과 편집 흐름을 보존하기 위한 경로이며 상용 텍스트 엔진 완료 판정이 아니다.
 - 모든 텍스트 offset 계약은 browser-compatible UTF-16 code unit으로 고정한다.
@@ -200,15 +200,23 @@ Phase 2A 구현 checkpoint (`TextLayout.engineVersion = 2`):
 - `measurementMode`: `shaped | mixed | deterministic_fallback`
 - `glyphs`: glyph id, UTF-16 cluster range, line index, baseline 위치, advance/offset, resolved family
 - `resolvedFonts`: 실제 shaping에 사용한 family만 기록
-- `fontFallbacks`: family unavailable / missing glyph / shaping failure / bidi layout pending을 구분
+- `fontFallbacks`: family unavailable / missing glyph / shaping failure를 구분
 - `shapedRunCount`, `fallbackGraphemeCount`: inspector와 acceptance test가 사용하는 수치
 - bundled Inter 4.1의 normal/italic variable face와 `wght`, `opsz` axis 적용
 
-Phase 2A의 명시적 한계:
+Phase 2B bidi geometry checkpoint (`TextLayout.engineVersion = 3`):
+
+- UAX #9 resolved embedding level을 grapheme cluster에 보존하고 line 단위 visual order를 생성
+- `baseDirection`, `direction`, `bidiLevel`을 line/grapheme geometry에 명시
+- RTL 논리 start/end를 시각 좌표에 매핑한 caret과 hit-test 제공
+- 혼합 방향 선택이 시각적으로 분리될 때 여러 selection rectangle을 반환
+- `bidiParagraphCount`, `visualRunCount`, `layoutWarnings`를 inspector/acceptance test에 노출
+
+현재 명시적 한계:
 
 - 현재 bundled registry는 Inter만 resolve한다.
 - 한글/이모지 등 Inter 미지원 glyph는 추정 폭 fallback이며 숨기지 않고 `mixed`로 표시한다.
-- bidi/script itemization과 visual-order caret은 아직 완료되지 않았으며, RTL 문단은 잘못된 shaped geometry를 반환하지 않고 명시적 fallback으로 내린다.
+- bidi visual-order/caret/selection geometry는 구현됐지만 RTL glyph shaping/render와 script itemization은 아직 완료되지 않았다. 해당 grapheme은 추정 폭 fallback이며 `layoutWarnings`로 숨김없이 표시한다.
 - DOM/CSS canvas text와 Rust geometry는 같은 font asset을 사용하지만 glyph atlas 기반 단일 renderer parity는 Phase 3 게이트다.
 
 ### 4.8 Vector Engine

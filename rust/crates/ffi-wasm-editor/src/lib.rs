@@ -561,7 +561,7 @@ mod tests {
 
         let text_layout = bridge.text_layout("title").expect("text layout should serialize");
         assert!(text_layout.contains("\"measurementMode\":\"shaped\""));
-        assert!(text_layout.contains("\"engineVersion\":2"));
+        assert!(text_layout.contains("\"engineVersion\":3"));
         assert!(text_layout.contains("\"resolvedFonts\":[\"Inter\"]"));
         assert!(text_layout.contains("\"fallbackGraphemeCount\":0"));
         assert!(text_layout.contains("\"height\":24.0"));

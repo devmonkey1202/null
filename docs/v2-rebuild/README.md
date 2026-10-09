@@ -132,14 +132,14 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - SceneDoc load/query/validation 및 command 기반 변경
 - selection, hit test, move, rotate, resize, align, distribute, snapping, guide, ruler, history
 - auto layout, group, component/instance, rich-text range 기초
-- Unicode grapheme/line-break/caret geometry와 bundled Inter shaping을 제공하는 `kernel-text` Phase 2A
+- Unicode grapheme/line-break/caret geometry, bundled Inter shaping, bidi visual-order geometry를 제공하는 `kernel-text` Phase 2B 일부
 - Inter 4.1 Regular/Italic variable font registry, `ttf-parser` coverage 확인, `rustybuzz` OpenType positioning
-- `TextLayout` v2 glyph/cluster geometry와 shaped/mixed/fallback 진단
+- `TextLayout` v3 glyph/cluster/bidi geometry와 shaped/mixed/fallback 진단
 - Playwright 기반 실제 Rust/WASM 편집 흐름 검증
 
 아직 상용 수준 완료로 간주할 수 없는 핵심 범위:
 
-- 동적 폰트 등록/스트리밍, CJK 폰트 세트, bidi/script run 재배치, 완전한 fallback chain
+- 동적 폰트 등록/스트리밍, CJK 폰트 세트, RTL glyph shaping, script itemization, 완전한 fallback chain
 - glyph raster/atlas와 GPU render list 기반 캔버스
 - 완성형 vector boolean/tessellation
 - editor collaboration document ops
@@ -148,13 +148,15 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 
 따라서 현재 상태는 **실제 v2 구현 진행 중**이며 **제품 완성이나 교체 준비 완료 상태는 아닙니다.**
 
-### 2026-10-09 Text Engine Checkpoint
+### 2026-10-09 Text Engine Phase 2B Partial Checkpoint
 
 - bundled Inter 파일과 OFL 원문/해시를 `public/v2/fonts`에 고정
 - Rust native workspace test와 browser WASM text-layout E2E 통과
 - 지원 glyph는 실제 shaping하고 미지원 한글/이모지는 `mixed`로 계측
-- 현재 WASM raw 크기는 폰트와 bidi 진단 테이블 포함 약 3.94 MB이며, 동적 font loading 전까지 성능 추적 대상
-- 이 checkpoint는 Text Engine Phase 2A 완료를 뜻하며 상용 텍스트 엔진 전체 완료를 뜻하지 않음
+- UAX #9 resolved level 기반 line visual order, RTL caret/hit-test, 혼합 방향 분리 selection geometry 구현
+- RTL glyph shaping/render는 아직 fallback이며 `layoutWarnings`로 별도 노출
+- 현재 WASM raw 크기는 `3,977,576 bytes`이며, 동적 font loading 전까지 성능 추적 대상
+- 이 checkpoint는 Text Engine Phase 2B의 bidi geometry 구간 완료를 뜻하며 상용 텍스트 엔진 전체 완료를 뜻하지 않음
 
 ## 10. 한 줄 요약
 

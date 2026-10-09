@@ -105,18 +105,20 @@
 
 ## 11. Text Engine checkpoint 판정
 
-2026-10-09 Phase 2A에서 통과한 항목:
+2026-10-09 Phase 2B partial까지 통과한 항목:
 
 - Rust native font parse/shaping tests
 - Inter kerning, variable weight, italic face test
 - Unicode grapheme/UTF-16 cluster geometry test
 - missing family와 missing glyph 진단 test
 - real browser WASM load, mixed fallback, auto-height, undo E2E
+- UAX #9 bidi visual order, RTL caret/hit-test, mixed-direction split selection Rust test
+- real browser WASM bidi diagnostics와 DOM `dir=auto` E2E
 
 아직 release blocker인 항목:
 
 - CJK bundled/streamed fallback font
-- bidi paragraph visual order와 caret/selection
+- RTL glyph shaping/render와 script itemization
 - glyph atlas/render command renderer
 - large document shaping benchmark와 cache hit/memory profile
 - editor/preview/publish pixel parity

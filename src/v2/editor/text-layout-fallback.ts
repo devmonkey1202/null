@@ -22,7 +22,15 @@ type Cluster = {
   fontSize: number;
   whitespace: boolean;
   breakAfter: boolean;
+  direction: "ltr" | "rtl";
+  bidiLevel: number;
 };
+
+const RTL_CHARACTER = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]/u;
+
+function textDirection(value: string): "ltr" | "rtl" {
+  return RTL_CHARACTER.test(value) ? "rtl" : "ltr";
+}
 
 function baseMeasuredStyle(text: TextNodeData): MeasuredStyle {
   return {
@@ -138,6 +146,8 @@ function buildClusters(text: TextNodeData) {
       fontSize: Math.max(style.fontSize, 1),
       whitespace,
       breakAfter,
+      direction: textDirection(segment.text),
+      bidiLevel: textDirection(segment.text) === "rtl" ? 1 : 0,
     };
   });
 }
@@ -230,6 +240,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
       const start = slice.clusters[0]?.start ?? emptyParagraphOffset;
       const end = slice.clusters.at(-1)?.end ?? start;
       const hardBreak = paragraphIndex < paragraphs.length - 1 && isLastParagraphLine;
+      const baseDirection = textDirection(paragraph.map((cluster) => cluster.text).join(""));
 
       carets.push({ offset: start, lineIndex, x, y, height: lineHeight, affinity: "downstream" });
       let cursorX = x;
@@ -243,6 +254,8 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
           y,
           width: clusterWidth,
           height: lineHeight,
+          direction: cluster.direction,
+          bidiLevel: cluster.bidiLevel,
         });
         cursorX += clusterWidth;
         carets.push({
@@ -267,6 +280,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
         baseline: y + Math.max((lineHeight - maxFontSize) / 2, 0) + maxFontSize * 0.8,
         hardBreak,
         softWrapped: slice.softWrapped,
+        baseDirection,
       });
       y += lineHeight;
     });
@@ -277,7 +291,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
   });
 
   return {
-    engineVersion: 2,
+    engineVersion: 3,
     measurementMode: "deterministic_fallback",
     width,
     height: Math.max(y, text.lineHeight, 1),
@@ -294,8 +308,15 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
         ),
       ]),
     ).map((family) => `${family}: browser bridge fallback`),
+    layoutWarnings: RTL_CHARACTER.test(text.content)
+      ? ["Browser bridge fallback does not resolve bidi visual order"]
+      : [],
     shapedRunCount: 0,
     fallbackGraphemeCount: graphemes.length,
+    bidiParagraphCount: paragraphs.filter((paragraph) =>
+      RTL_CHARACTER.test(paragraph.map((cluster) => cluster.text).join("")),
+    ).length,
+    visualRunCount: 0,
   };
 }
 

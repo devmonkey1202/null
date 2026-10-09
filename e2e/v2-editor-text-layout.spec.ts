@@ -47,3 +47,27 @@ test("v2 editor measures unicode text and auto height through wasm", async ({ pa
   await expect(summary).toContainText("font shaped");
   await expect(summary).toContainText("52 px");
 });
+
+test("v2 editor exposes bidi layout diagnostics from wasm", async ({ page }) => {
+  await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
+
+  const layerPanel = page.locator("aside").first();
+  const inspector = page.locator("aside").last();
+  await layerPanel.getByRole("button", { name: /Title/ }).first().click();
+
+  const summary = inspector.getByTestId("v2-text-layout-summary");
+  const contentEditor = inspector.locator("textarea").first();
+  await contentEditor.fill("abc אבג def");
+
+  await expect(contentEditor).toHaveValue("abc אבג def");
+  await expect(summary).toContainText("1 bidi");
+  await expect(summary).toContainText("fallback");
+  await expect(inspector.getByTestId("v2-text-measurement-mode")).toHaveAttribute(
+    "title",
+    /RTL glyph shaping\/render integration pending/,
+  );
+  await expect(
+    page.locator('[data-editor-node-id="hero-title"] [dir="auto"]').first(),
+  ).toBeVisible();
+});
