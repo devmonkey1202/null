@@ -114,6 +114,7 @@
 - real browser WASM load, mixed fallback, auto-height, undo E2E
 - UAX #9 bidi visual order, RTL caret/hit-test, mixed-direction split selection Rust test
 - real browser WASM bidi diagnostics와 DOM `dir=auto` E2E
+- exact-request cache hit, changed-metric miss, bounded eviction Rust test와 browser WASM cache reuse E2E
 
 아직 release blocker인 항목:
 
@@ -121,4 +122,5 @@
 - RTL glyph shaping/render와 script itemization
 - glyph atlas/render command renderer
 - large document shaping benchmark와 cache hit/memory profile
+- paragraph/run 단위 incremental invalidation
 - editor/preview/publish pixel parity

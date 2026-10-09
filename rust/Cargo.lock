@@ -52,6 +52,7 @@ dependencies = [
  "kernel-history",
  "kernel-layout",
  "kernel-scene",
+ "kernel-text",
  "serde",
  "serde_json",
  "wasm-bindgen",

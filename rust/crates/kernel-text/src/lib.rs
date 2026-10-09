@@ -1,7 +1,7 @@
 use core_error::CoreError;
 use rustybuzz::{shape, Face as ShapingFace, UnicodeBuffer, Variation};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use ttf_parser::{Face as ParsedFace, Tag};
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::linebreaks;
@@ -190,6 +190,7 @@ pub struct TextLayout {
     pub fallback_grapheme_count: usize,
     pub bidi_paragraph_count: usize,
     pub visual_run_count: usize,
+    pub cache_hit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -200,16 +201,80 @@ pub struct TextHitTest {
     pub affinity: CaretAffinity,
 }
 
-#[derive(Debug, Clone, Default)]
+const DEFAULT_LAYOUT_CACHE_CAPACITY: usize = 32;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayoutCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub entries: usize,
+    pub capacity: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct TextLayoutHandle {
     pub revision: u64,
+    cache: VecDeque<(TextLayoutRequest, TextLayout)>,
+    capacity: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl Default for TextLayoutHandle {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_LAYOUT_CACHE_CAPACITY)
+    }
 }
 
 impl TextLayoutHandle {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            revision: 0,
+            cache: VecDeque::new(),
+            capacity,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
     pub fn layout(&mut self, request: &TextLayoutRequest) -> Result<TextLayout, CoreError> {
+        validate_request(request)?;
+        if let Some(index) = self
+            .cache
+            .iter()
+            .position(|(cached_request, _)| cached_request == request)
+        {
+            let (_, mut layout) = self.cache.remove(index).expect("cache index must exist");
+            layout.cache_hit = true;
+            self.cache.push_back((request.clone(), layout.clone()));
+            self.hits += 1;
+            return Ok(layout);
+        }
+
         let layout = layout_text(request)?;
         self.revision += 1;
+        self.misses += 1;
+        if self.capacity > 0 {
+            while self.cache.len() >= self.capacity {
+                self.cache.pop_front();
+            }
+            self.cache.push_back((request.clone(), layout.clone()));
+        }
         Ok(layout)
+    }
+
+    pub fn clear(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn stats(&self) -> TextLayoutCacheStats {
+        TextLayoutCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+            entries: self.cache.len(),
+            capacity: self.capacity,
+        }
     }
 }
 
@@ -501,6 +566,7 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
         fallback_grapheme_count: diagnostics.fallback_grapheme_count,
         bidi_paragraph_count: diagnostics.bidi_paragraph_count,
         visual_run_count: diagnostics.visual_run_count,
+        cache_hit: false,
     })
 }
 
@@ -1318,5 +1384,47 @@ mod tests {
         assert_eq!(selection.len(), 2);
         assert!(selection[0].x < selection[1].x);
         assert!(selection[0].x + selection[0].width < selection[1].x);
+    }
+
+    #[test]
+    fn reuses_exact_layout_requests_without_advancing_revision() {
+        let mut handle = TextLayoutHandle::with_capacity(2);
+        let input = request("cached text", 300.0);
+
+        let first = handle.layout(&input).expect("first layout");
+        let second = handle.layout(&input).expect("cached layout");
+
+        assert!(!first.cache_hit);
+        assert!(second.cache_hit);
+        assert_eq!(handle.revision, 1);
+        assert_eq!(
+            handle.stats(),
+            TextLayoutCacheStats {
+                hits: 1,
+                misses: 1,
+                entries: 1,
+                capacity: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn bounds_layout_cache_and_never_reuses_changed_metrics() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        let first_request = request("same content", 300.0);
+        let mut changed_request = first_request.clone();
+        changed_request.width = 40.0;
+
+        let first = handle.layout(&first_request).expect("first layout");
+        let changed = handle.layout(&changed_request).expect("changed layout");
+        let first_again = handle.layout(&first_request).expect("evicted layout");
+
+        assert!(!first.cache_hit);
+        assert!(!changed.cache_hit);
+        assert!(!first_again.cache_hit);
+        assert_ne!(first.lines.len(), changed.lines.len());
+        assert_eq!(handle.revision, 3);
+        assert_eq!(handle.stats().entries, 1);
+        assert_eq!(handle.stats().misses, 3);
     }
 }

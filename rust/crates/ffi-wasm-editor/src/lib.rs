@@ -3,8 +3,9 @@ use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, TransformH
 use kernel_history::HistoryStore;
 use kernel_scene::{
     dispatch_commands, hit_test, move_snap_preview, query_node, resize_snap_preview,
-    selection_bounds, selection_handles, text_layout_for_node, EditorState, HitTestMode,
+    selection_bounds, selection_handles, text_layout_for_node_with_handle, EditorState, HitTestMode,
 };
+use kernel_text::TextLayoutHandle;
 use serde_json::json;
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
@@ -14,6 +15,7 @@ use wasm_bindgen::prelude::*;
 pub struct EditorBridgeHandle {
     state: RefCell<Option<EditorState>>,
     history: RefCell<HistoryStore>,
+    text_layout: RefCell<TextLayoutHandle>,
 }
 
 impl EditorBridgeHandle {
@@ -30,6 +32,7 @@ impl EditorBridgeHandle {
         let state = EditorState::new(doc);
         let snapshot = state.snapshot();
         self.history.borrow_mut().seed(snapshot.clone());
+        self.text_layout.borrow_mut().clear();
         *self.state.borrow_mut() = Some(state);
 
         serde_json::to_string(&snapshot)
@@ -187,7 +190,11 @@ impl EditorBridgeHandle {
         let editor_state = state
             .as_ref()
             .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
-        let layout = text_layout_for_node(&editor_state.doc, node_id)?;
+        let layout = text_layout_for_node_with_handle(
+            &editor_state.doc,
+            node_id,
+            &mut self.text_layout.borrow_mut(),
+        )?;
 
         serde_json::to_string(&layout)
             .map_err(|error| CoreError::new("editor.text_layout.serialize_failed", error.to_string()))
@@ -564,7 +571,11 @@ mod tests {
         assert!(text_layout.contains("\"engineVersion\":3"));
         assert!(text_layout.contains("\"resolvedFonts\":[\"Inter\"]"));
         assert!(text_layout.contains("\"fallbackGraphemeCount\":0"));
+        assert!(text_layout.contains("\"cacheHit\":false"));
         assert!(text_layout.contains("\"height\":24.0"));
+
+        let cached_text_layout = bridge.text_layout("title").expect("cached text layout");
+        assert!(cached_text_layout.contains("\"cacheHit\":true"));
 
         let handles = bridge
             .transform_handles()

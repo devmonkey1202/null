@@ -9,8 +9,8 @@ use kernel_doc::{
     TransformHandleKind, ValidationReport, VerticalConstraint,
 };
 use kernel_text::{
-    layout_text, TextAlignment, TextLayout, TextLayoutRequest, TextLayoutRun, TextStyleMetrics,
-    TextTransform,
+    layout_text, TextAlignment, TextLayout, TextLayoutHandle, TextLayoutRequest, TextLayoutRun,
+    TextStyleMetrics, TextTransform,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -598,6 +598,23 @@ pub fn query_node<'a>(doc: &'a SceneDoc, node_id: &str) -> Option<&'a SceneNode>
 }
 
 pub fn text_layout_for_node(doc: &SceneDoc, node_id: &str) -> Result<TextLayout, CoreError> {
+    let request = text_layout_request_for_node(doc, node_id)?;
+    layout_text(&request)
+}
+
+pub fn text_layout_for_node_with_handle(
+    doc: &SceneDoc,
+    node_id: &str,
+    handle: &mut TextLayoutHandle,
+) -> Result<TextLayout, CoreError> {
+    let request = text_layout_request_for_node(doc, node_id)?;
+    handle.layout(&request)
+}
+
+fn text_layout_request_for_node(
+    doc: &SceneDoc,
+    node_id: &str,
+) -> Result<TextLayoutRequest, CoreError> {
     let node = query_node(doc, node_id).ok_or_else(|| {
         CoreError::new(
             "scene.node.not_found",
@@ -617,7 +634,7 @@ pub fn text_layout_for_node(doc: &SceneDoc, node_id: &str) -> Result<TextLayout,
         )
     })?;
 
-    layout_text(&build_text_layout_request(node.frame.w, text))
+    Ok(build_text_layout_request(node.frame.w, text))
 }
 
 fn build_page_node_map<'a>(nodes: &'a [SceneNode]) -> HashMap<&'a str, &'a SceneNode> {

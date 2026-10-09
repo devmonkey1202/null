@@ -5867,6 +5867,7 @@ export function V2EditorShell() {
                                 {activeTextLayout.graphemes.length === 1 ? "grapheme" : "graphemes"}
                               </span>
                               <span>{activeTextLayout.glyphs.length} glyphs</span>
+                              {activeTextLayout.cacheHit ? <span>cached</span> : null}
                               {activeTextLayout.bidiParagraphCount ? (
                                 <span>{activeTextLayout.bidiParagraphCount} bidi</span>
                               ) : null}

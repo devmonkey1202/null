@@ -71,3 +71,22 @@ test("v2 editor exposes bidi layout diagnostics from wasm", async ({ page }) => 
     page.locator('[data-editor-node-id="hero-title"] [dir="auto"]').first(),
   ).toBeVisible();
 });
+
+test("v2 editor reuses exact text layouts through the wasm cache", async ({ page }) => {
+  await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
+
+  const layerPanel = page.locator("aside").first();
+  const inspector = page.locator("aside").last();
+  const summary = inspector.getByTestId("v2-text-layout-summary");
+  const titleLayer = layerPanel.getByRole("button", { name: /Title/ }).first();
+  const descriptionLayer = layerPanel.getByRole("button", { name: /Description/ }).first();
+
+  await titleLayer.click();
+  await expect(summary).toBeVisible();
+  await descriptionLayer.click();
+  await expect(inspector.locator("textarea").first()).toHaveValue(/NULL v2 editor rebuild/);
+  await titleLayer.click();
+
+  await expect(summary).toContainText("cached");
+});

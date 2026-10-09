@@ -211,6 +211,7 @@ Phase 2B bidi geometry checkpoint (`TextLayout.engineVersion = 3`):
 - RTL 논리 start/end를 시각 좌표에 매핑한 caret과 hit-test 제공
 - 혼합 방향 선택이 시각적으로 분리될 때 여러 selection rectangle을 반환
 - `bidiParagraphCount`, `visualRunCount`, `layoutWarnings`를 inspector/acceptance test에 노출
+- content/width/alignment/spacing/style runs 전체가 동일할 때만 재사용하는 bounded Rust LRU layout cache를 FFI 경로에 적용하고 `cacheHit`을 진단에 노출
 
 현재 명시적 한계:
 

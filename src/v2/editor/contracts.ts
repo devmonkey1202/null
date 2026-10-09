@@ -421,6 +421,7 @@ export type TextLayout = {
   fallbackGraphemeCount: number;
   bidiParagraphCount: number;
   visualRunCount: number;
+  cacheHit: boolean;
 };
 
 export type BridgeQuery =

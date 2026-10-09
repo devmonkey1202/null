@@ -317,6 +317,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
       RTL_CHARACTER.test(paragraph.map((cluster) => cluster.text).join("")),
     ).length,
     visualRunCount: 0,
+    cacheHit: false,
   };
 }
 

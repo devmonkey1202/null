@@ -127,6 +127,7 @@
 - bundled browser font와 Rust embedded font의 파일은 같은 Inter 4.1 자산
 - Rust workspace tests와 Playwright text-layout E2E 통과
 - UAX #9 visual order, RTL caret/hit-test, 혼합 방향 split selection은 Rust test로 검증하고 browser inspector bidi 진단은 Playwright로 검증
+- `TextLayoutHandle`의 bounded exact-request LRU를 browser FFI가 직접 사용하며 hit/miss/eviction과 browser cache reuse를 검증
 - 따라서 Phase 2B의 bidi geometry 구현 증거는 확보됐지만 RTL glyph shaping, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
 
 ## 8. 실행 판단

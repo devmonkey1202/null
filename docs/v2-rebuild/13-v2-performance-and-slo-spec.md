@@ -28,7 +28,8 @@
 - text edit 이후 재계산은 dirty paragraph/run 범위로 제한
 - font parse 결과와 shape plan은 font hash + face index + variation axis 기준으로 cache
 - 초기 editor WASM + 필수 font compressed transfer: 2.5 MB 이하 목표
-- 2026-10-09 Phase 2B partial raw WASM은 bundled Inter normal/italic과 bidi visual-order geometry 포함 `3,977,576 bytes`; compressed transfer와 parse latency를 별도 측정하기 전에는 성능 게이트 통과로 보지 않음
+- 2026-10-09 Phase 2B partial raw WASM은 bundled Inter normal/italic, bidi visual-order geometry, 32-entry exact-request LRU cache 포함 `3,989,668 bytes`; compressed transfer와 parse latency를 별도 측정하기 전에는 성능 게이트 통과로 보지 않음
+- 현재 cache는 stale geometry 방지를 위해 `TextLayoutRequest` 전체 동등성을 key로 사용하며, paragraph/run 단위 incremental shaping cache는 별도 release blocker
 - CJK/사용자 font는 Phase 2B에서 lazy fetch + content hash cache로 분리하고 WASM binary에 계속 직접 embed하지 않음
 
 ## 3. 런타임 성능 목표

@@ -155,7 +155,8 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - 지원 glyph는 실제 shaping하고 미지원 한글/이모지는 `mixed`로 계측
 - UAX #9 resolved level 기반 line visual order, RTL caret/hit-test, 혼합 방향 분리 selection geometry 구현
 - RTL glyph shaping/render는 아직 fallback이며 `layoutWarnings`로 별도 노출
-- 현재 WASM raw 크기는 `3,977,576 bytes`이며, 동적 font loading 전까지 성능 추적 대상
+- request 전체 동등성 기반 32-entry Rust LRU layout cache와 browser FFI cache-hit 경로 구현
+- 현재 WASM raw 크기는 `3,989,668 bytes`이며, 동적 font loading 전까지 성능 추적 대상
 - 이 checkpoint는 Text Engine Phase 2B의 bidi geometry 구간 완료를 뜻하며 상용 텍스트 엔진 전체 완료를 뜻하지 않음
 
 ## 10. 한 줄 요약
