@@ -10,6 +10,9 @@ export const wasmeditorbridgehandle_hit_test: (a: number, b: number, c: number, 
 export const wasmeditorbridgehandle_selection_bounds: (a: number) => [number, number, number, number];
 export const wasmeditorbridgehandle_transform_handles: (a: number) => [number, number, number, number];
 export const wasmeditorbridgehandle_text_layout: (a: number, b: number, c: number) => [number, number, number, number];
+export const wasmeditorbridgehandle_register_font: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const wasmeditorbridgehandle_unregister_font: (a: number, b: number, c: number, d: number) => number;
+export const wasmeditorbridgehandle_font_registry: (a: number) => [number, number, number, number];
 export const wasmeditorbridgehandle_move_snap: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const wasmeditorbridgehandle_resize_snap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const wasmeditorbridgehandle_run_validation: (a: number) => [number, number, number, number];

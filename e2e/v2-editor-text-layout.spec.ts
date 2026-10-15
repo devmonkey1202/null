@@ -2,9 +2,19 @@ import { expect, test } from "@playwright/test";
 
 test("v2 editor measures unicode text and auto height through wasm", async ({ page }) => {
   page.on("pageerror", (error) => console.log(`[browser error] ${error.message}`));
+  const loadedEditorFonts = new Set<string>();
+  page.on("response", (response) => {
+    const pathname = new URL(response.url()).pathname;
+    if (pathname.startsWith("/v2/fonts/") && pathname.endsWith(".ttf") && response.ok()) {
+      loadedEditorFonts.add(pathname);
+    }
+  });
 
   await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
+  await expect
+    .poll(() => loadedEditorFonts.size)
+    .toBe(4);
   await expect
     .poll(() =>
       page.evaluate(async () => {
@@ -103,7 +113,7 @@ test("v2 editor reuses exact text layouts through the wasm cache", async ({ page
   await expect(summary).toContainText("cached");
 });
 
-test("v2 editor shapes Arabic with the bundled script fallback", async ({ page }) => {
+test("v2 editor shapes Arabic with a dynamically registered script fallback", async ({ page }) => {
   await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
 

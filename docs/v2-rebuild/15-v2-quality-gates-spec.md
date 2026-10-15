@@ -118,6 +118,9 @@
 - Noto Sans Hebrew RTL glyph shaping/origin Rust test와 browser font loading/family parity E2E
 - Unicode 17 script itemization, Common/Inherited 문맥 해소, mixed-script shaping-run 분리 Rust test와 browser `scriptRunCount` E2E
 - Noto Sans Arabic script fallback, RTL shaping, browser font loading/family parity E2E
+- dynamic font parse/size/count validation, replacement/removal, cache invalidation Rust test
+- browser startup font fetch -> WASM registration -> scene auto-height/query shared-handle parity test
+- `npm run verify:v2:assets`로 font SHA-256, raw WASM 3 MB, WASM+기본 font gzip 2.5 MB 상한을 CI에서 차단
 
 아직 release blocker인 항목:
 

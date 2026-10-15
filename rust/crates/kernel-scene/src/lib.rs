@@ -3119,12 +3119,44 @@ fn normalize_auto_height_nodes(doc: &mut SceneDoc) {
     }
 }
 
+fn normalize_auto_height_nodes_with_handle(doc: &mut SceneDoc, handle: &mut TextLayoutHandle) {
+    for page in &mut doc.pages {
+        for node in &mut page.nodes {
+            if !matches!(node.kind, kernel_doc::SceneNodeKind::Text) {
+                continue;
+            }
+            let Some(text) = &node.text else {
+                continue;
+            };
+            if !matches!(text.sizing, TextSizingMode::AutoHeight) {
+                continue;
+            }
+            if let Ok(layout) = handle.layout(&build_text_layout_request(node.frame.w, text)) {
+                node.frame.h = layout.height.max(1.0);
+            }
+        }
+    }
+}
+
 fn normalize_document(doc: &mut SceneDoc) {
     const MAX_LAYOUT_NORMALIZE_PASSES: usize = 4;
 
     for _ in 0..MAX_LAYOUT_NORMALIZE_PASSES {
         let before = capture_frame_signature(doc);
         normalize_auto_height_nodes(doc);
+        normalize_auto_layout_nodes(doc);
+        if capture_frame_signature(doc) == before {
+            break;
+        }
+    }
+}
+
+pub fn normalize_document_with_text_handle(doc: &mut SceneDoc, handle: &mut TextLayoutHandle) {
+    const MAX_LAYOUT_NORMALIZE_PASSES: usize = 4;
+
+    for _ in 0..MAX_LAYOUT_NORMALIZE_PASSES {
+        let before = capture_frame_signature(doc);
+        normalize_auto_height_nodes_with_handle(doc, handle);
         normalize_auto_layout_nodes(doc);
         if capture_frame_signature(doc) == before {
             break;

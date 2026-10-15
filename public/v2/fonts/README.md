@@ -1,6 +1,6 @@
-# V2 bundled fonts
+# V2 editor fonts
 
-NULL V2 bundles Inter 4.1, Noto Sans Hebrew, and Noto Sans Arabic for deterministic editor text shaping and browser preview parity.
+NULL V2 loads Inter 4.1, Noto Sans Hebrew, and Noto Sans Arabic from these public assets during editor bridge startup. The browser and Rust text kernel therefore shape against the same files without duplicating font bytes inside the WASM binary.
 
 Sources:
 
@@ -20,4 +20,4 @@ License: SIL Open Font License 1.1. The unmodified license texts are stored besi
 | `NotoSansArabic-Variable.ttf` | `63111B5B2E074DD48CC67692E0A2726D86EE94C1C37FE8598257B7B4E87E869E` |
 | `OFL-NotoSansArabic.txt` | `07FC70BFEB985CC1A87A8587D0A0C80BAB11C86C9DC3FD95B6F0CB332F983E96` |
 
-The bundled registry resolves these three families. Missing families and glyphs stay on the explicitly reported deterministic fallback path; they must not be presented as shaped output.
+The dynamic registry validates OpenType data before registration and limits each face to 16 MiB, the registry to 32 faces, and total registered bytes to 32 MiB. Missing or failed script assets stay on the explicitly reported deterministic fallback path; they must not be presented as shaped output. End-user font upload, persistence, and project-level font manifests are separate unfinished work.

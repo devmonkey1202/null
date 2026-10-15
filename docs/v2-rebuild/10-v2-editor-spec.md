@@ -202,7 +202,7 @@ Phase 2A 구현 checkpoint (`TextLayout.engineVersion = 2`):
 - `resolvedFonts`: 실제 shaping에 사용한 family만 기록
 - `fontFallbacks`: family unavailable / missing glyph / shaping failure를 구분
 - `shapedRunCount`, `fallbackGraphemeCount`: inspector와 acceptance test가 사용하는 수치
-- bundled Inter 4.1의 normal/italic variable face와 `wght`, `opsz` axis 적용
+- 동적 등록 Inter 4.1 normal/italic variable face와 `wght`, `opsz` axis 적용
 
 Phase 2B bidi geometry checkpoint (`TextLayout.engineVersion = 3`):
 
@@ -233,11 +233,14 @@ Phase 2B Arabic shaping checkpoint (`TextLayout.engineVersion = 5` 계약 유지
 - OFL Noto Sans Arabic variable face를 Rust와 browser가 같은 파일로 사용
 - `Arab` script run은 요청 family가 glyph를 제공하지 않을 때 Noto Sans Arabic으로 해소하고 Rustybuzz `RightToLeft` shaping 적용
 - Arabic glyph family, script 진단, browser font loading을 Rust test와 Playwright acceptance test로 검증
-- 아직 font streaming bridge가 없으므로 Arabic font가 raw WASM 크기에 포함되는 한계를 성능 게이트에 기록
+- Inter normal/italic과 Noto Sans Hebrew/Arabic은 browser startup에서 병렬 fetch한 뒤 WASM font registry에 `Uint8Array`로 등록하며, 자산 하나가 실패해도 editor bridge 전체를 noop으로 강등하지 않음
+- registry는 OpenType parse 검증, family/style 교체, 해제, layout cache invalidation, face당 16 MiB/총 32 MiB/32 faces 제한을 적용
+- scene auto-height와 `text_layout` query는 같은 `TextLayoutHandle` registry/cache를 사용하여 command snapshot과 inspector geometry 불일치를 막음
 
 현재 명시적 한계:
 
-- 현재 bundled registry는 Inter, Noto Sans Hebrew, Noto Sans Arabic만 resolve한다.
+- 현재 기본 face 4개(Inter regular/italic, Noto Sans Hebrew/Arabic)는 같은 origin의 public asset을 동적 등록하며 WASM binary에 font bytes를 내장하지 않는다.
+- 동적 registry/FFI는 구현됐지만 end-user font upload UI, project font manifest, 영속 저장, content-hash persistent cache는 아직 구현되지 않았다.
 - 한글/이모지 등 Inter 미지원 glyph는 추정 폭 fallback이며 숨기지 않고 `mixed`로 표시한다.
 - 기본 script itemization과 Hebrew/Arabic bidi visual-order/caret/selection/shaping은 구현됐지만 Script_Extensions 교집합 기반 정밀 itemization과 Syriac 등 기타 RTL shaping은 아직 완료되지 않았다. 미지원 grapheme은 추정 폭 fallback이며 `fontFallbacks`로 숨김없이 표시한다.
 - DOM/CSS canvas text와 Rust geometry는 같은 font asset을 사용하지만 glyph atlas 기반 단일 renderer parity는 Phase 3 게이트다.

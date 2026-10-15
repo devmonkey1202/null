@@ -14,13 +14,9 @@ use unicode_width::UnicodeWidthStr;
 
 pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 5;
 
-const INTER_REGULAR_BYTES: &[u8] = include_bytes!("../../../../public/v2/fonts/InterVariable.ttf");
-const INTER_ITALIC_BYTES: &[u8] =
-    include_bytes!("../../../../public/v2/fonts/InterVariable-Italic.ttf");
-const NOTO_SANS_HEBREW_BYTES: &[u8] =
-    include_bytes!("../../../../public/v2/fonts/NotoSansHebrew-Variable.ttf");
-const NOTO_SANS_ARABIC_BYTES: &[u8] =
-    include_bytes!("../../../../public/v2/fonts/NotoSansArabic-Variable.ttf");
+const MAX_REGISTERED_FONT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FONT_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_REGISTERED_FONTS: usize = 32;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -222,13 +218,23 @@ pub struct TextLayoutCacheStats {
     pub capacity: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredFontInfo {
+    pub family: String,
+    pub italic: bool,
+    pub byte_length: usize,
+    pub glyph_count: u16,
+}
+
+#[derive(Debug)]
 pub struct TextLayoutHandle {
     pub revision: u64,
     cache: VecDeque<(TextLayoutRequest, TextLayout)>,
     capacity: usize,
     hits: u64,
     misses: u64,
+    fonts: FontRegistry,
 }
 
 impl Default for TextLayoutHandle {
@@ -245,6 +251,7 @@ impl TextLayoutHandle {
             capacity,
             hits: 0,
             misses: 0,
+            fonts: FontRegistry::default(),
         }
     }
 
@@ -262,7 +269,7 @@ impl TextLayoutHandle {
             return Ok(layout);
         }
 
-        let layout = layout_text(request)?;
+        let layout = layout_text_with_registry(request, &self.fonts)?;
         self.revision += 1;
         self.misses += 1;
         if self.capacity > 0 {
@@ -285,6 +292,29 @@ impl TextLayoutHandle {
             entries: self.cache.len(),
             capacity: self.capacity,
         }
+    }
+
+    pub fn register_font(
+        &mut self,
+        family: &str,
+        data: Vec<u8>,
+        italic: bool,
+    ) -> Result<RegisteredFontInfo, CoreError> {
+        let info = self.fonts.register(family, data, italic)?;
+        self.clear();
+        Ok(info)
+    }
+
+    pub fn unregister_font(&mut self, family: &str, italic: bool) -> bool {
+        let removed = self.fonts.unregister(family, italic);
+        if removed {
+            self.clear();
+        }
+        removed
+    }
+
+    pub fn registered_fonts(&self) -> Vec<RegisteredFontInfo> {
+        self.fonts.registered_fonts()
     }
 }
 
@@ -316,41 +346,170 @@ struct ClusterGlyph {
     font_family: String,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct RegisteredFont {
-    family: &'static str,
-    data: &'static [u8],
+#[derive(Debug, Clone)]
+struct OwnedFont {
+    family: String,
+    normalized_family: String,
+    data: Vec<u8>,
+    italic: bool,
+    glyph_count: u16,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FontRegistry;
+#[derive(Debug, Clone, Copy)]
+struct RegisteredFont<'a> {
+    family: &'a str,
+    data: &'a [u8],
+}
+
+#[derive(Debug, Default)]
+struct FontRegistry {
+    registered: Vec<OwnedFont>,
+}
 
 impl FontRegistry {
-    pub fn bundled() -> Self {
-        Self
+    fn register(
+        &mut self,
+        family: &str,
+        data: Vec<u8>,
+        italic: bool,
+    ) -> Result<RegisteredFontInfo, CoreError> {
+        let family = family.trim().trim_matches(['\'', '"']);
+        if family.is_empty() {
+            return Err(CoreError::new(
+                "text.font.family.invalid",
+                "Font family must not be empty.",
+            ));
+        }
+        if data.is_empty() {
+            return Err(CoreError::new(
+                "text.font.bytes.invalid",
+                "Font data must not be empty.",
+            ));
+        }
+        if data.len() > MAX_REGISTERED_FONT_BYTES {
+            return Err(CoreError::new(
+                "text.font.bytes.limit",
+                format!(
+                    "Font '{}' is {} bytes; the per-font limit is {} bytes.",
+                    family,
+                    data.len(),
+                    MAX_REGISTERED_FONT_BYTES
+                ),
+            ));
+        }
+
+        let face = ParsedFace::parse(&data, 0).map_err(|_| {
+            CoreError::new(
+                "text.font.parse_failed",
+                format!("Font '{}' is not a supported OpenType face.", family),
+            )
+        })?;
+        let glyph_count = face.number_of_glyphs();
+        drop(face);
+
+        let normalized_family = normalize_font_family(family);
+        let existing = self
+            .registered
+            .iter()
+            .position(|font| font.normalized_family == normalized_family && font.italic == italic);
+        if existing.is_none() && self.registered.len() >= MAX_REGISTERED_FONTS {
+            return Err(CoreError::new(
+                "text.font.registry.count_limit",
+                format!(
+                    "The font registry is limited to {} faces.",
+                    MAX_REGISTERED_FONTS
+                ),
+            ));
+        }
+
+        let replaced_bytes = existing
+            .map(|index| self.registered[index].data.len())
+            .unwrap_or(0);
+        let next_bytes = self
+            .registered
+            .iter()
+            .map(|font| font.data.len())
+            .sum::<usize>()
+            .saturating_sub(replaced_bytes)
+            .saturating_add(data.len());
+        if next_bytes > MAX_FONT_REGISTRY_BYTES {
+            return Err(CoreError::new(
+                "text.font.registry.bytes_limit",
+                format!(
+                    "Registering '{}' would exceed the {} byte font registry limit.",
+                    family, MAX_FONT_REGISTRY_BYTES
+                ),
+            ));
+        }
+
+        let byte_length = data.len();
+        let owned = OwnedFont {
+            family: family.to_string(),
+            normalized_family,
+            data,
+            italic,
+            glyph_count,
+        };
+        if let Some(index) = existing {
+            self.registered[index] = owned;
+        } else {
+            self.registered.push(owned);
+        }
+
+        Ok(RegisteredFontInfo {
+            family: family.to_string(),
+            italic,
+            byte_length,
+            glyph_count,
+        })
     }
 
-    fn resolve_family(&self, family: &str, italic: bool) -> Option<RegisteredFont> {
-        let normalized = family.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
-        match normalized.as_str() {
-            "inter" | "inter variable" => Some(RegisteredFont {
-                family: "Inter",
-                data: if italic {
-                    INTER_ITALIC_BYTES
-                } else {
-                    INTER_REGULAR_BYTES
-                },
-            }),
-            "noto sans hebrew" => Some(RegisteredFont {
-                family: "Noto Sans Hebrew",
-                data: NOTO_SANS_HEBREW_BYTES,
-            }),
-            "noto sans arabic" => Some(RegisteredFont {
-                family: "Noto Sans Arabic",
-                data: NOTO_SANS_ARABIC_BYTES,
-            }),
-            _ => None,
+    fn unregister(&mut self, family: &str, italic: bool) -> bool {
+        let normalized_family = normalize_font_family(family);
+        let previous_len = self.registered.len();
+        self.registered
+            .retain(|font| font.normalized_family != normalized_family || font.italic != italic);
+        self.registered.len() != previous_len
+    }
+
+    fn registered_fonts(&self) -> Vec<RegisteredFontInfo> {
+        self.registered
+            .iter()
+            .map(|font| RegisteredFontInfo {
+                family: font.family.clone(),
+                italic: font.italic,
+                byte_length: font.data.len(),
+                glyph_count: font.glyph_count,
+            })
+            .collect()
+    }
+
+    fn resolve_family(&self, family: &str, italic: bool) -> Option<RegisteredFont<'_>> {
+        let normalized = normalize_font_family(family);
+        if let Some(font) = self
+            .registered
+            .iter()
+            .find(|font| font.normalized_family == normalized && font.italic == italic)
+        {
+            return Some(RegisteredFont {
+                family: &font.family,
+                data: &font.data,
+            });
         }
+        if italic {
+            if let Some(font) = self
+                .registered
+                .iter()
+                .find(|font| font.normalized_family == normalized && !font.italic)
+            {
+                return Some(RegisteredFont {
+                    family: &font.family,
+                    data: &font.data,
+                });
+            }
+        }
+
+        None
     }
 
     fn resolve_for_text(
@@ -358,16 +517,17 @@ impl FontRegistry {
         style: &TextStyleMetrics,
         text: &str,
         script: Script,
-    ) -> Option<RegisteredFont> {
+    ) -> Option<RegisteredFont<'_>> {
         let script_fallback = match script {
             Script::Hebrew => Some("Noto Sans Hebrew"),
             Script::Arabic => Some("Noto Sans Arabic"),
             _ => None,
         };
         if let Some(family) = script_fallback {
-            let fallback = self.resolve_family(family, style.italic)?;
-            if font_data_covers(fallback.data, text) {
-                return Some(fallback);
+            if let Some(fallback) = self.resolve_family(family, style.italic) {
+                if font_data_covers(fallback.data, text) {
+                    return Some(fallback);
+                }
             }
         }
 
@@ -377,12 +537,16 @@ impl FontRegistry {
         })
     }
 
-    fn requested_font(&self, style: &TextStyleMetrics) -> Option<RegisteredFont> {
+    fn requested_font(&self, style: &TextStyleMetrics) -> Option<RegisteredFont<'_>> {
         style
             .font_family
             .split(',')
             .find_map(|family| self.resolve_family(family, style.italic))
     }
+}
+
+fn normalize_font_family(family: &str) -> String {
+    family.trim().trim_matches(['\'', '"']).to_ascii_lowercase()
 }
 
 #[derive(Debug, Default)]
@@ -411,10 +575,16 @@ struct LineSlice {
 }
 
 pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError> {
-    validate_request(request)?;
+    let registry = FontRegistry::default();
+    layout_text_with_registry(request, &registry)
+}
 
+fn layout_text_with_registry(
+    request: &TextLayoutRequest,
+    registry: &FontRegistry,
+) -> Result<TextLayout, CoreError> {
+    validate_request(request)?;
     let width = request.width.max(1.0);
-    let registry = FontRegistry::bundled();
     let mut diagnostics = LayoutDiagnostics::default();
     let paragraphs = request.content.split('\n').collect::<Vec<_>>();
     let mut global_utf16_offset = 0usize;
@@ -429,7 +599,7 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
             request,
             paragraph,
             global_utf16_offset,
-            &registry,
+            registry,
             &mut diagnostics,
         );
         let paragraph_clusters = &paragraph_layout.clusters;
@@ -1214,6 +1384,46 @@ fn distance_to_range(value: f32, start: f32, end: f32) -> f32 {
 mod tests {
     use super::*;
 
+    const TEST_INTER_REGULAR_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/InterVariable.ttf");
+    const TEST_INTER_ITALIC_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/InterVariable-Italic.ttf");
+    const TEST_NOTO_SANS_HEBREW_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/NotoSansHebrew-Variable.ttf");
+    const TEST_NOTO_SANS_ARABIC_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/NotoSansArabic-Variable.ttf");
+
+    fn editor_font_handle() -> TextLayoutHandle {
+        let mut handle = TextLayoutHandle::default();
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter regular test font should register");
+        handle
+            .register_font("Inter", TEST_INTER_ITALIC_BYTES.to_vec(), true)
+            .expect("Inter italic test font should register");
+        handle
+            .register_font(
+                "Noto Sans Hebrew",
+                TEST_NOTO_SANS_HEBREW_BYTES.to_vec(),
+                false,
+            )
+            .expect("Hebrew test font should register");
+        handle
+            .register_font(
+                "Noto Sans Arabic",
+                TEST_NOTO_SANS_ARABIC_BYTES.to_vec(),
+                false,
+            )
+            .expect("Arabic test font should register");
+        handle
+    }
+
+    fn layout_with_editor_fonts(request: &TextLayoutRequest) -> TextLayout {
+        editor_font_handle()
+            .layout(request)
+            .expect("editor font layout should succeed")
+    }
+
     fn request(content: &str, width: f32) -> TextLayoutRequest {
         TextLayoutRequest {
             content: content.to_string(),
@@ -1227,7 +1437,7 @@ mod tests {
 
     #[test]
     fn wraps_at_unicode_line_breaks_and_builds_carets() {
-        let layout = layout_text(&request("alpha beta gamma", 70.0)).expect("layout succeeds");
+        let layout = layout_with_editor_fonts(&request("alpha beta gamma", 70.0));
 
         assert!(layout.lines.len() >= 2);
         assert_eq!(layout.lines.first().unwrap().start, 0);
@@ -1237,7 +1447,7 @@ mod tests {
 
     #[test]
     fn keeps_combining_sequences_on_single_grapheme_boundary() {
-        let layout = layout_text(&request("a\u{301}🙂", 200.0)).expect("layout succeeds");
+        let layout = layout_with_editor_fonts(&request("a\u{301}🙂", 200.0));
 
         assert_eq!(layout.graphemes.len(), 2);
         assert_eq!(layout.graphemes[0].start, 0);
@@ -1250,8 +1460,8 @@ mod tests {
 
     #[test]
     fn cjk_metrics_wrap_more_conservatively_than_ascii() {
-        let ascii = layout_text(&request("abcdef", 55.0)).expect("ascii layout");
-        let cjk = layout_text(&request("가나다라마바", 55.0)).expect("cjk layout");
+        let ascii = layout_with_editor_fonts(&request("abcdef", 55.0));
+        let cjk = layout_with_editor_fonts(&request("가나다라마바", 55.0));
 
         assert!(cjk.lines.len() > ascii.lines.len());
     }
@@ -1260,7 +1470,7 @@ mod tests {
     fn explicit_newlines_add_paragraph_spacing_and_empty_lines() {
         let mut input = request("first\n\nthird", 300.0);
         input.paragraph_spacing = 8.0;
-        let layout = layout_text(&input).expect("layout succeeds");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(layout.lines.len(), 3);
         assert!(layout.lines[0].hard_break);
@@ -1280,7 +1490,7 @@ mod tests {
                 ..TextStyleMetrics::default()
             },
         });
-        let layout = layout_text(&input).expect("layout succeeds");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(layout.lines[0].height, 40.0);
         assert!(layout.lines[0].baseline > 24.0);
@@ -1290,7 +1500,7 @@ mod tests {
     fn alignment_hit_test_and_selection_geometry_share_caret_positions() {
         let mut input = request("hello world", 240.0);
         input.alignment = TextAlignment::Center;
-        let layout = layout_text(&input).expect("layout succeeds");
+        let layout = layout_with_editor_fonts(&input);
         let line = &layout.lines[0];
         let hit = hit_test_text(&layout, line.x, line.y).expect("hit exists");
         let selection = selection_rects(&layout, 0, 5);
@@ -1309,10 +1519,10 @@ mod tests {
     }
 
     #[test]
-    fn shapes_bundled_inter_with_open_type_positioning_and_glyph_geometry() {
+    fn shapes_registered_inter_with_open_type_positioning_and_glyph_geometry() {
         let mut input = request("AV a\u{301}", 300.0);
         input.base_style.font_family = "Inter, sans-serif".to_string();
-        let layout = layout_text(&input).expect("Inter layout succeeds");
+        let layout = layout_with_editor_fonts(&input);
 
         let mut left = request("A", 300.0);
         left.base_style.font_family = "Inter".to_string();
@@ -1320,9 +1530,9 @@ mod tests {
         right.base_style.font_family = "Inter".to_string();
         let mut pair = request("AV", 300.0);
         pair.base_style.font_family = "Inter".to_string();
-        let separate_width = layout_text(&left).expect("A layout").lines[0].width
-            + layout_text(&right).expect("V layout").lines[0].width;
-        let pair_width = layout_text(&pair).expect("AV layout").lines[0].width;
+        let separate_width = layout_with_editor_fonts(&left).lines[0].width
+            + layout_with_editor_fonts(&right).lines[0].width;
+        let pair_width = layout_with_editor_fonts(&pair).lines[0].width;
 
         assert_eq!(layout.engine_version, 5);
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
@@ -1340,12 +1550,12 @@ mod tests {
     }
 
     #[test]
-    fn selects_the_bundled_italic_face_and_variable_weight() {
+    fn selects_the_registered_italic_face_and_variable_weight() {
         let mut input = request("Variable italic", 300.0);
         input.base_style.font_family = "Inter".to_string();
         input.base_style.font_weight = 725;
         input.base_style.italic = true;
-        let layout = layout_text(&input).expect("italic layout succeeds");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert!(!layout.glyphs.is_empty());
@@ -1359,7 +1569,7 @@ mod tests {
     fn reports_mixed_measurement_when_inter_lacks_hangul_glyphs() {
         let mut input = request("Hello 한글", 300.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("mixed layout succeeds");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Mixed);
         assert_eq!(layout.fallback_grapheme_count, 2);
@@ -1371,7 +1581,7 @@ mod tests {
     fn reports_unavailable_font_without_claiming_shaping() {
         let mut input = request("No bundled face", 300.0);
         input.base_style.font_family = "Unregistered Sans".to_string();
-        let layout = layout_text(&input).expect("fallback layout succeeds");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(
             layout.measurement_mode,
@@ -1389,11 +1599,11 @@ mod tests {
     fn applies_letter_spacing_to_glyph_origins_and_caret_geometry() {
         let mut compact = request("AV", 300.0);
         compact.base_style.font_family = "Inter".to_string();
-        let compact_layout = layout_text(&compact).expect("compact layout");
+        let compact_layout = layout_with_editor_fonts(&compact);
 
         let mut spaced = compact;
         spaced.base_style.letter_spacing = 5.0;
-        let spaced_layout = layout_text(&spaced).expect("spaced layout");
+        let spaced_layout = layout_with_editor_fonts(&spaced);
         let compact_v = compact_layout
             .glyphs
             .iter()
@@ -1413,7 +1623,7 @@ mod tests {
     fn resolves_rtl_visual_order_carets_and_hit_testing() {
         let mut input = request("אבג", 300.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("RTL layout");
+        let layout = layout_with_editor_fonts(&input);
         let line = &layout.lines[0];
 
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
@@ -1456,7 +1666,7 @@ mod tests {
     fn splits_discontiguous_mixed_direction_selection_geometry() {
         let mut input = request("abc אבג def", 300.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("mixed bidi layout");
+        let layout = layout_with_editor_fonts(&input);
         let selection = selection_rects(&layout, 2, 5);
 
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
@@ -1475,7 +1685,7 @@ mod tests {
     fn itemizes_scripts_before_shaping_mixed_ltr_text() {
         let mut input = request("Latin Ελληνικά Latin", 400.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("mixed-script layout");
+        let layout = layout_with_editor_fonts(&input);
         let scripts = layout
             .graphemes
             .iter()
@@ -1494,7 +1704,7 @@ mod tests {
     fn resolves_leading_common_characters_to_the_following_script() {
         let mut input = request("(Ελληνικά)", 300.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("leading common layout");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(layout.script_run_count, 1);
         assert!(layout
@@ -1507,7 +1717,7 @@ mod tests {
     fn shapes_arabic_with_a_script_specific_fallback_face() {
         let mut input = request("مرحبا", 300.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("Arabic layout");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert_eq!(layout.resolved_fonts, vec!["Noto Sans Arabic"]);
@@ -1527,10 +1737,98 @@ mod tests {
     }
 
     #[test]
+    fn registers_script_fonts_dynamically_and_invalidates_cached_fallbacks() {
+        let mut input = request("مرحبا", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let mut handle = TextLayoutHandle::with_capacity(4);
+
+        let fallback = handle.layout(&input).expect("fallback layout");
+        assert_eq!(
+            fallback.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+        assert!(fallback.glyphs.is_empty());
+        assert_eq!(handle.stats().entries, 1);
+
+        let registered = handle
+            .register_font(
+                "Noto Sans Arabic",
+                TEST_NOTO_SANS_ARABIC_BYTES.to_vec(),
+                false,
+            )
+            .expect("Arabic face should register");
+        assert_eq!(registered.family, "Noto Sans Arabic");
+        assert_eq!(registered.byte_length, TEST_NOTO_SANS_ARABIC_BYTES.len());
+        assert!(registered.glyph_count > 0);
+        assert_eq!(handle.stats().entries, 0);
+
+        let shaped = handle.layout(&input).expect("shaped layout");
+        assert_eq!(shaped.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(shaped.resolved_fonts, vec!["Noto Sans Arabic"]);
+        assert!(!shaped.cache_hit);
+        assert_eq!(handle.registered_fonts(), vec![registered]);
+
+        assert!(handle.unregister_font("noto sans arabic", false));
+        assert!(handle.registered_fonts().is_empty());
+        assert_eq!(handle.stats().entries, 0);
+        let fallback_again = handle
+            .layout(&input)
+            .expect("fallback layout after removal");
+        assert_eq!(
+            fallback_again.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_oversized_dynamic_font_data() {
+        let mut handle = TextLayoutHandle::default();
+        let invalid = handle
+            .register_font("Broken", vec![1, 2, 3, 4], false)
+            .expect_err("invalid font must be rejected");
+        assert_eq!(invalid.code, "text.font.parse_failed");
+
+        let oversized = handle
+            .register_font("Too Large", vec![0; MAX_REGISTERED_FONT_BYTES + 1], false)
+            .expect_err("oversized font must be rejected before parsing");
+        assert_eq!(oversized.code, "text.font.bytes.limit");
+    }
+
+    #[test]
+    fn bounds_dynamic_font_registry_face_count_and_allows_replacement() {
+        let mut handle = TextLayoutHandle::default();
+        for index in 0..MAX_REGISTERED_FONTS {
+            handle
+                .register_font(
+                    &format!("Test Hebrew {index}"),
+                    TEST_NOTO_SANS_HEBREW_BYTES.to_vec(),
+                    false,
+                )
+                .expect("face within count limit should register");
+        }
+        assert_eq!(handle.registered_fonts().len(), MAX_REGISTERED_FONTS);
+
+        let overflow = handle
+            .register_font(
+                "One Face Too Many",
+                TEST_NOTO_SANS_HEBREW_BYTES.to_vec(),
+                false,
+            )
+            .expect_err("face count limit should be enforced");
+        assert_eq!(overflow.code, "text.font.registry.count_limit");
+
+        let replacement = handle
+            .register_font("Test Hebrew 0", TEST_NOTO_SANS_ARABIC_BYTES.to_vec(), false)
+            .expect("an existing family/style may be replaced at the limit");
+        assert_eq!(replacement.byte_length, TEST_NOTO_SANS_ARABIC_BYTES.len());
+        assert_eq!(handle.registered_fonts().len(), MAX_REGISTERED_FONTS);
+    }
+
+    #[test]
     fn keeps_unbundled_rtl_scripts_on_an_explicit_fallback_path() {
         let mut input = request("ܫܠܡܐ", 300.0);
         input.base_style.font_family = "Inter".to_string();
-        let layout = layout_text(&input).expect("unsupported RTL fallback layout");
+        let layout = layout_with_editor_fonts(&input);
 
         assert_eq!(
             layout.measurement_mode,

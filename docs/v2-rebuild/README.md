@@ -132,7 +132,7 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - SceneDoc load/query/validation 및 command 기반 변경
 - selection, hit test, move, rotate, resize, align, distribute, snapping, guide, ruler, history
 - auto layout, group, component/instance, rich-text range 기초
-- Unicode grapheme/line-break/caret geometry, bundled Inter shaping, bidi visual-order geometry를 제공하는 `kernel-text` Phase 2B 일부
+- Unicode grapheme/line-break/caret geometry, 동적 등록 Inter shaping, bidi visual-order geometry를 제공하는 `kernel-text` Phase 2B 일부
 - Inter 4.1 Regular/Italic variable font registry, `ttf-parser` coverage 확인, `rustybuzz` OpenType positioning
 - `TextLayout` v5 glyph/cluster/bidi/script geometry, Hebrew RTL shaping과 shaped/mixed/fallback 진단
 - Playwright 기반 실제 Rust/WASM 편집 흐름 검증
@@ -150,17 +150,18 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 
 ### 2026-10-15 Text Engine Phase 2B Partial Checkpoint
 
-- bundled Inter 파일과 OFL 원문/해시를 `public/v2/fonts`에 고정
+- 기본 Inter 파일과 OFL 원문/해시를 `public/v2/fonts`에 고정
 - Rust native workspace test와 browser WASM text-layout E2E 통과
 - 지원 glyph는 실제 shaping하고 미지원 한글/이모지는 `mixed`로 계측
 - UAX #9 resolved level 기반 line visual order, RTL caret/hit-test, 혼합 방향 분리 selection geometry 구현
 - Noto Sans Hebrew와 Noto Sans Arabic variable font fallback을 적용하고 Rustybuzz RTL shaping을 script별로 수행
+- Inter/Noto 기본 face를 WASM에서 분리해 browser startup 시 검증된 dynamic registry로 등록하고 scene auto-height/query가 같은 font handle을 사용하도록 연결
 - Unicode 17 Script 속성으로 grapheme을 itemize하고 Common/Inherited 문자를 문단 문맥에 귀속한 뒤 script/bidi/style/font 경계별 shaping run을 생성
 - ISO 15924 script tag와 shaping direction을 Rustybuzz에 명시하고 `scriptRunCount` 및 grapheme별 `script`를 브리지 진단에 노출
 - request 전체 동등성 기반 32-entry Rust LRU layout cache와 browser FFI cache-hit 경로 구현
 - Noto Sans Hebrew 원본: Google Fonts OFL, SHA-256 `7EF36A2C3593758CDB622E1BDEF4F84523E92FBC3CCC667438DD80FF54C2DE88`
 - Noto Sans Arabic 원본: Google Fonts OFL, SHA-256 `63111B5B2E074DD48CC67692E0A2726D86EE94C1C37FE8598257B7B4E87E869E`
-- 현재 WASM raw 크기는 `4,950,594 bytes`이며, 동적 font loading 전까지 성능 추적 대상
+- 현재 WASM raw 크기는 `2,215,597 bytes`이며 최초 `4,950,594 bytes`보다 `2,734,997 bytes` 감소; WASM+기본 font 4개 자동 gzip gate 합계 `2,213,365 bytes`, production transfer와 startup font fetch/parse는 계속 성능 추적 대상
 - 전역 Space Grotesk/IBM Plex Mono도 OFL 원본을 self-host하여 production build가 Google Fonts 네트워크 상태에 의존하지 않음
 - 이 checkpoint는 Text Engine Phase 2B의 bidi geometry 구간 완료를 뜻하며 상용 텍스트 엔진 전체 완료를 뜻하지 않음
 

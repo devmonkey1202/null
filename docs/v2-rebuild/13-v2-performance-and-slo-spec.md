@@ -28,7 +28,9 @@
 - text edit 이후 재계산은 dirty paragraph/run 범위로 제한
 - font parse 결과와 shape plan은 font hash + face index + variation axis 기준으로 cache
 - 초기 editor WASM + 필수 font compressed transfer: 2.5 MB 이하 목표
-- 2026-10-15 Phase 2B partial raw WASM은 bundled Inter normal/italic, Noto Sans Hebrew, Noto Sans Arabic, bidi visual-order geometry, RTL shaping, Unicode script itemization, 32-entry exact-request LRU cache 포함 `4,950,594 bytes`; compressed transfer와 parse latency를 별도 측정하기 전에는 성능 게이트 통과로 보지 않음
+- 2026-10-15 Phase 2B partial raw WASM은 동적 font registry/FFI, bidi visual-order geometry, RTL shaping, Unicode script itemization, 32-entry exact-request LRU cache 포함 `2,215,597 bytes`; Inter normal/italic과 Noto Sans Hebrew/Arabic은 browser startup에서 병렬 fetch/등록함
+- 최초 raw WASM `4,950,594 bytes` 대비 `2,734,997 bytes`(`55.2%`) 감소
+- 자동 품질 게이트의 Node gzip level 9 측정은 WASM `700,737 bytes` + 기본 font 4개 `1,512,628 bytes` = 총 `2,213,365 bytes`로 2.5 MB 목표 이내; production HTTP compression/cache와 startup fetch/parse latency 실측 전에는 성능 release gate 최종 통과로 보지 않음
 - 현재 cache는 stale geometry 방지를 위해 `TextLayoutRequest` 전체 동등성을 key로 사용하며, paragraph/run 단위 incremental shaping cache는 별도 release blocker
 - CJK/사용자 font는 Phase 2B에서 lazy fetch + content hash cache로 분리하고 WASM binary에 계속 직접 embed하지 않음
 

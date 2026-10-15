@@ -1,9 +1,12 @@
 use core_error::CoreError;
-use kernel_doc::{parse_scene_doc, serialize_scene_doc, EditorCommand, TransformHandleKind, ValidationReport};
+use kernel_doc::{
+    parse_scene_doc, serialize_scene_doc, EditorCommand, TransformHandleKind, ValidationReport,
+};
 use kernel_history::HistoryStore;
 use kernel_scene::{
-    dispatch_commands, hit_test, move_snap_preview, query_node, resize_snap_preview,
-    selection_bounds, selection_handles, text_layout_for_node_with_handle, EditorState, HitTestMode,
+    dispatch_commands, hit_test, move_snap_preview, normalize_document_with_text_handle,
+    query_node, resize_snap_preview, selection_bounds, selection_handles,
+    text_layout_for_node_with_handle, EditorState, HitTestMode,
 };
 use kernel_text::TextLayoutHandle;
 use serde_json::json;
@@ -25,11 +28,15 @@ impl EditorBridgeHandle {
 
     pub fn load_document(&self, serialized_doc: &str) -> Result<String, CoreError> {
         if serialized_doc.is_empty() {
-            return Err(CoreError::new("editor.load.empty", "serialized_doc is empty"));
+            return Err(CoreError::new(
+                "editor.load.empty",
+                "serialized_doc is empty",
+            ));
         }
 
         let doc = parse_scene_doc(serialized_doc)?;
-        let state = EditorState::new(doc);
+        let mut state = EditorState::new(doc);
+        normalize_document_with_text_handle(&mut state.doc, &mut self.text_layout.borrow_mut());
         let snapshot = state.snapshot();
         self.history.borrow_mut().seed(snapshot.clone());
         self.text_layout.borrow_mut().clear();
@@ -41,16 +48,19 @@ impl EditorBridgeHandle {
 
     pub fn dispatch_editor_commands(&self, commands_json: &str) -> Result<String, CoreError> {
         if commands_json.is_empty() {
-            return Err(CoreError::new("editor.command.empty", "commands_json is empty"));
+            return Err(CoreError::new(
+                "editor.command.empty",
+                "commands_json is empty",
+            ));
         }
 
         let commands: Vec<EditorCommand> = serde_json::from_str(commands_json)
             .map_err(|error| CoreError::new("editor.command.parse_failed", error.to_string()))?;
 
         let mut state = self.state.borrow_mut();
-        let editor_state = state
-            .as_mut()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_mut().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
         let mut history = self.history.borrow_mut();
         let mut scene_commands = Vec::new();
@@ -67,6 +77,11 @@ impl EditorBridgeHandle {
                         viewport: snapshot.viewport.clone(),
                     };
 
+                    normalize_document_with_text_handle(
+                        &mut editor_state.doc,
+                        &mut self.text_layout.borrow_mut(),
+                    );
+                    let snapshot = editor_state.snapshot();
                     history_result = Some(json!({
                         "snapshot": snapshot,
                         "validation": editor_state.validation(),
@@ -83,6 +98,11 @@ impl EditorBridgeHandle {
                         viewport: snapshot.viewport.clone(),
                     };
 
+                    normalize_document_with_text_handle(
+                        &mut editor_state.doc,
+                        &mut self.text_layout.borrow_mut(),
+                    );
+                    let snapshot = editor_state.snapshot();
                     history_result = Some(json!({
                         "snapshot": snapshot,
                         "validation": editor_state.validation(),
@@ -102,7 +122,13 @@ impl EditorBridgeHandle {
             }
         }
 
-        let result = dispatch_commands(editor_state, scene_commands)?;
+        let mut result = dispatch_commands(editor_state, scene_commands)?;
+        normalize_document_with_text_handle(
+            &mut editor_state.doc,
+            &mut self.text_layout.borrow_mut(),
+        );
+        result.snapshot = editor_state.snapshot();
+        result.validation = editor_state.validation();
         if !result.applied_commands.is_empty() {
             history.push(result.snapshot.clone());
         }
@@ -118,12 +144,16 @@ impl EditorBridgeHandle {
 
     pub fn query_node(&self, node_id: &str) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
-        let node = query_node(&editor_state.doc, node_id)
-            .ok_or_else(|| CoreError::new("editor.node.not_found", format!("Node '{}' was not found.", node_id)))?;
+        let node = query_node(&editor_state.doc, node_id).ok_or_else(|| {
+            CoreError::new(
+                "editor.node.not_found",
+                format!("Node '{}' was not found.", node_id),
+            )
+        })?;
 
         serde_json::to_string(node)
             .map_err(|error| CoreError::new("editor.node.serialize_failed", error.to_string()))
@@ -131,9 +161,9 @@ impl EditorBridgeHandle {
 
     pub fn hit_test(&self, page_id: &str, x: f32, y: f32, mode: &str) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
         let mode = match mode {
             "all" => HitTestMode::All,
@@ -151,19 +181,27 @@ impl EditorBridgeHandle {
 
     pub fn selection_bounds(&self) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
-        serde_json::to_string(&selection_bounds(&editor_state.doc, &editor_state.selection))
-            .map_err(|error| CoreError::new("editor.selection_bounds.serialize_failed", error.to_string()))
+        serde_json::to_string(&selection_bounds(
+            &editor_state.doc,
+            &editor_state.selection,
+        ))
+        .map_err(|error| {
+            CoreError::new(
+                "editor.selection_bounds.serialize_failed",
+                error.to_string(),
+            )
+        })
     }
 
     pub fn transform_handles(&self) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
         let handles = selection_bounds(&editor_state.doc, &editor_state.selection)
             .map(|bounds| selection_handles(&bounds))
@@ -182,22 +220,55 @@ impl EditorBridgeHandle {
                 })
                 .collect::<Vec<_>>(),
         )
-        .map_err(|error| CoreError::new("editor.transform_handles.serialize_failed", error.to_string()))
+        .map_err(|error| {
+            CoreError::new(
+                "editor.transform_handles.serialize_failed",
+                error.to_string(),
+            )
+        })
     }
 
     pub fn text_layout(&self, node_id: &str) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
         let layout = text_layout_for_node_with_handle(
             &editor_state.doc,
             node_id,
             &mut self.text_layout.borrow_mut(),
         )?;
 
-        serde_json::to_string(&layout)
-            .map_err(|error| CoreError::new("editor.text_layout.serialize_failed", error.to_string()))
+        serde_json::to_string(&layout).map_err(|error| {
+            CoreError::new("editor.text_layout.serialize_failed", error.to_string())
+        })
+    }
+
+    pub fn register_font(
+        &self,
+        family: &str,
+        data: &[u8],
+        italic: bool,
+    ) -> Result<String, CoreError> {
+        let info = self
+            .text_layout
+            .borrow_mut()
+            .register_font(family, data.to_vec(), italic)?;
+
+        serde_json::to_string(&info)
+            .map_err(|error| CoreError::new("editor.font.serialize_failed", error.to_string()))
+    }
+
+    pub fn unregister_font(&self, family: &str, italic: bool) -> bool {
+        self.text_layout
+            .borrow_mut()
+            .unregister_font(family, italic)
+    }
+
+    pub fn font_registry(&self) -> Result<String, CoreError> {
+        serde_json::to_string(&self.text_layout.borrow().registered_fonts()).map_err(|error| {
+            CoreError::new("editor.font_registry.serialize_failed", error.to_string())
+        })
     }
 
     pub fn move_snap(
@@ -207,9 +278,9 @@ impl EditorBridgeHandle {
         threshold: Option<f32>,
     ) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
         let preview = move_snap_preview(
             &editor_state.doc,
@@ -244,9 +315,9 @@ impl EditorBridgeHandle {
         threshold: Option<f32>,
     ) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
         let handle = parse_transform_handle_kind(handle)?;
         let preview = resize_snap_preview(
@@ -278,18 +349,18 @@ impl EditorBridgeHandle {
 
     pub fn run_validation(&self) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
         serialize_validation(editor_state.validation())
     }
 
     pub fn export_document(&self) -> Result<String, CoreError> {
         let state = self.state.borrow();
-        let editor_state = state
-            .as_ref()
-            .ok_or_else(|| CoreError::new("editor.state.missing", "No document has been loaded."))?;
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
 
         serialize_scene_doc(&editor_state.doc)
     }
@@ -354,7 +425,9 @@ impl WasmEditorBridgeHandle {
     }
 
     pub fn load_document(&self, serialized_doc: &str) -> Result<String, JsValue> {
-        self.inner.load_document(serialized_doc).map_err(map_js_error)
+        self.inner
+            .load_document(serialized_doc)
+            .map_err(map_js_error)
     }
 
     pub fn dispatch_editor_commands(&self, commands_json: &str) -> Result<String, JsValue> {
@@ -368,7 +441,9 @@ impl WasmEditorBridgeHandle {
     }
 
     pub fn hit_test(&self, page_id: &str, x: f32, y: f32, mode: &str) -> Result<String, JsValue> {
-        self.inner.hit_test(page_id, x, y, mode).map_err(map_js_error)
+        self.inner
+            .hit_test(page_id, x, y, mode)
+            .map_err(map_js_error)
     }
 
     pub fn selection_bounds(&self) -> Result<String, JsValue> {
@@ -383,8 +458,34 @@ impl WasmEditorBridgeHandle {
         self.inner.text_layout(node_id).map_err(map_js_error)
     }
 
-    pub fn move_snap(&self, delta_x: f32, delta_y: f32, threshold: Option<f32>) -> Result<String, JsValue> {
-        self.inner.move_snap(delta_x, delta_y, threshold).map_err(map_js_error)
+    pub fn register_font(
+        &self,
+        family: &str,
+        data: &[u8],
+        italic: bool,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .register_font(family, data, italic)
+            .map_err(map_js_error)
+    }
+
+    pub fn unregister_font(&self, family: &str, italic: bool) -> bool {
+        self.inner.unregister_font(family, italic)
+    }
+
+    pub fn font_registry(&self) -> Result<String, JsValue> {
+        self.inner.font_registry().map_err(map_js_error)
+    }
+
+    pub fn move_snap(
+        &self,
+        delta_x: f32,
+        delta_y: f32,
+        threshold: Option<f32>,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .move_snap(delta_x, delta_y, threshold)
+            .map_err(map_js_error)
     }
 
     pub fn resize_snap(
@@ -413,6 +514,22 @@ impl WasmEditorBridgeHandle {
 mod tests {
     use super::*;
     use kernel_doc::{SceneDoc, SceneDocMeta, SceneNode, SceneNodeKind, ScenePage, SCHEMA_VERSION};
+
+    const INTER_REGULAR_FONT: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/InterVariable.ttf");
+    const INTER_ITALIC_FONT: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/InterVariable-Italic.ttf");
+
+    fn bridge_with_editor_fonts() -> EditorBridgeHandle {
+        let bridge = EditorBridgeHandle::new();
+        bridge
+            .register_font("Inter", INTER_REGULAR_FONT, false)
+            .expect("Inter regular should register");
+        bridge
+            .register_font("Inter", INTER_ITALIC_FONT, true)
+            .expect("Inter italic should register");
+        bridge
+    }
 
     fn sample_doc_json() -> String {
         let doc = SceneDoc {
@@ -498,7 +615,7 @@ mod tests {
 
     #[test]
     fn bridge_loads_document_and_dispatches_commands() {
-        let bridge = EditorBridgeHandle::new();
+        let bridge = bridge_with_editor_fonts();
         let snapshot_raw = bridge.load_document(&sample_doc_json()).expect("load doc");
         assert!(snapshot_raw.contains("\"documentId\":\"doc-bridge\""));
 
@@ -524,7 +641,7 @@ mod tests {
 
     #[test]
     fn bridge_supports_undo_and_redo() {
-        let bridge = EditorBridgeHandle::new();
+        let bridge = bridge_with_editor_fonts();
         let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
 
         let rename_commands = serde_json::to_string(&vec![EditorCommand::RenameNode {
@@ -551,7 +668,7 @@ mod tests {
 
     #[test]
     fn bridge_supports_hit_test_and_selection_bounds() {
-        let bridge = EditorBridgeHandle::new();
+        let bridge = bridge_with_editor_fonts();
         let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
 
         let hit = bridge
@@ -562,17 +679,21 @@ mod tests {
         let _ = bridge
             .dispatch_editor_commands(r#"[{"kind":"select_nodes","nodeIds":["title"]}]"#)
             .expect("select should succeed");
-        let bounds = bridge.selection_bounds().expect("selection bounds should serialize");
+        let bounds = bridge
+            .selection_bounds()
+            .expect("selection bounds should serialize");
         assert!(bounds.contains("\"w\":50.0"));
         assert!(bounds.contains("\"h\":24.0"));
 
-        let text_layout = bridge.text_layout("title").expect("text layout should serialize");
+        let text_layout = bridge
+            .text_layout("title")
+            .expect("text layout should serialize");
         assert!(text_layout.contains("\"measurementMode\":\"shaped\""));
         assert!(text_layout.contains("\"engineVersion\":5"));
         assert!(text_layout.contains("\"scriptRunCount\":1"));
         assert!(text_layout.contains("\"resolvedFonts\":[\"Inter\"]"));
         assert!(text_layout.contains("\"fallbackGraphemeCount\":0"));
-        assert!(text_layout.contains("\"cacheHit\":false"));
+        assert!(text_layout.contains("\"cacheHit\":true"));
         assert!(text_layout.contains("\"height\":24.0"));
 
         let cached_text_layout = bridge.text_layout("title").expect("cached text layout");
@@ -586,7 +707,7 @@ mod tests {
 
     #[test]
     fn bridge_supports_resize_selection() {
-        let bridge = EditorBridgeHandle::new();
+        let bridge = bridge_with_editor_fonts();
         let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
 
         let _ = bridge
@@ -603,5 +724,44 @@ mod tests {
         assert!(resized.contains("\"w\":60.0"));
         assert!(resized.contains("\"h\":24.0"));
     }
-}
 
+    #[test]
+    fn bridge_registers_dynamic_fonts_for_commands_and_layout_queries() {
+        const ARABIC_FONT: &[u8] =
+            include_bytes!("../../../../public/v2/fonts/NotoSansArabic-Variable.ttf");
+        let bridge = bridge_with_editor_fonts();
+
+        let registered = bridge
+            .register_font("Noto Sans Arabic", ARABIC_FONT, false)
+            .expect("font should register");
+        assert!(registered.contains("\"family\":\"Noto Sans Arabic\""));
+        assert!(registered.contains("\"glyphCount\":"));
+        assert!(bridge
+            .font_registry()
+            .expect("registry should serialize")
+            .contains("Noto Sans Arabic"));
+
+        let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
+        let result = bridge
+            .dispatch_editor_commands(
+                r#"[{"kind":"set_text_content","nodeId":"title","content":"مرحبا"}]"#,
+            )
+            .expect("Arabic edit should succeed");
+        assert!(result.contains("مرحبا"));
+
+        let layout = bridge.text_layout("title").expect("Arabic layout");
+        assert!(layout.contains("\"measurementMode\":\"shaped\""));
+        assert!(layout.contains("\"resolvedFonts\":[\"Noto Sans Arabic\"]"));
+        assert!(layout.contains("\"fallbackGraphemeCount\":0"));
+
+        let result_value: serde_json::Value =
+            serde_json::from_str(&result).expect("apply result should parse");
+        let layout_value: serde_json::Value =
+            serde_json::from_str(&layout).expect("layout should parse");
+        let frame_height = result_value["snapshot"]["doc"]["pages"][0]["nodes"][1]["frame"]["h"]
+            .as_f64()
+            .expect("text frame height");
+        let layout_height = layout_value["height"].as_f64().expect("layout height");
+        assert!((frame_height - layout_height).abs() < f64::EPSILON);
+    }
+}

@@ -57,6 +57,27 @@ export class WasmEditorBridgeHandle {
         }
     }
     /**
+     * @returns {string}
+     */
+    font_registry() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.wasmeditorbridgehandle_font_registry(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * @param {string} page_id
      * @param {number} x
      * @param {number} y
@@ -161,6 +182,34 @@ export class WasmEditorBridgeHandle {
             return getStringFromWasm0(ptr2, len2);
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * @param {string} family
+     * @param {Uint8Array} data
+     * @param {boolean} italic
+     * @returns {string}
+     */
+    register_font(family, data, italic) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(family, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.wasmeditorbridgehandle_register_font(this.__wbg_ptr, ptr0, len0, ptr1, len1, italic);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
         }
     }
     /**
@@ -278,6 +327,17 @@ export class WasmEditorBridgeHandle {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
+    /**
+     * @param {string} family
+     * @param {boolean} italic
+     * @returns {boolean}
+     */
+    unregister_font(family, italic) {
+        const ptr0 = passStringToWasm0(family, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmeditorbridgehandle_unregister_font(this.__wbg_ptr, ptr0, len0, italic);
+        return ret !== 0;
+    }
 }
 if (Symbol.dispose) WasmEditorBridgeHandle.prototype[Symbol.dispose] = WasmEditorBridgeHandle.prototype.free;
 function __wbg_get_imports() {
@@ -325,6 +385,13 @@ function getUint8ArrayMemory0() {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {

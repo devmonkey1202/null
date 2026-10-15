@@ -22,6 +22,9 @@ type WasmEditorBridgeModule = {
     dispatch_editor_commands(commandsJson: string): string;
     query_node(nodeId: string): string;
     text_layout(nodeId: string): string;
+    register_font(family: string, data: Uint8Array, italic: boolean): string;
+    unregister_font(family: string, italic: boolean): boolean;
+    font_registry(): string;
     hit_test(pageId: string, x: number, y: number, mode: string): string;
     selection_bounds(): string;
     transform_handles(): string;
@@ -37,6 +40,78 @@ type WasmEditorBridgeModule = {
     export_document(): string;
   };
 };
+
+type EditorFontDefinition = {
+  family: string;
+  path: string;
+  italic: boolean;
+};
+
+type RegisteredFontInfo = {
+  family: string;
+  italic: boolean;
+  byteLength: number;
+  glyphCount: number;
+};
+
+const EDITOR_FONTS: EditorFontDefinition[] = [
+  {
+    family: "Inter",
+    path: "/v2/fonts/InterVariable.ttf",
+    italic: false,
+  },
+  {
+    family: "Inter",
+    path: "/v2/fonts/InterVariable-Italic.ttf",
+    italic: true,
+  },
+  {
+    family: "Noto Sans Hebrew",
+    path: "/v2/fonts/NotoSansHebrew-Variable.ttf",
+    italic: false,
+  },
+  {
+    family: "Noto Sans Arabic",
+    path: "/v2/fonts/NotoSansArabic-Variable.ttf",
+    italic: false,
+  },
+];
+
+async function registerEditorFonts(
+  handle: InstanceType<WasmEditorBridgeModule["WasmEditorBridgeHandle"]>,
+) {
+  const fetched = await Promise.allSettled(
+    EDITOR_FONTS.map(async (font) => {
+      const response = await fetch(font.path, { cache: "force-cache" });
+      if (!response.ok) {
+        throw new Error(`${font.path} returned HTTP ${response.status}`);
+      }
+      return {
+        font,
+        bytes: new Uint8Array(await response.arrayBuffer()),
+      };
+    }),
+  );
+
+  for (const [index, result] of fetched.entries()) {
+    const definition = EDITOR_FONTS[index];
+    if (result.status === "rejected") {
+      console.warn(`[NULL v2] Could not load ${definition.family}.`, result.reason);
+      continue;
+    }
+    try {
+      JSON.parse(
+        handle.register_font(
+          result.value.font.family,
+          result.value.bytes,
+          result.value.font.italic,
+        ),
+      ) as RegisteredFontInfo;
+    } catch (error) {
+      console.warn(`[NULL v2] Could not register ${definition.family}.`, error);
+    }
+  }
+}
 
 function buildRuntimeGraph(document: SceneDoc): RuntimeGraph {
   return {
@@ -73,7 +148,9 @@ export class BrowserWasmEditorBridge implements EditorBridge {
   static async create() {
     const wasmModule = (await import("../wasm/load-ffi-wasm-editor")) as unknown as WasmEditorBridgeModule;
     await wasmModule.default();
-    return new BrowserWasmEditorBridge(new wasmModule.WasmEditorBridgeHandle());
+    const handle = new wasmModule.WasmEditorBridgeHandle();
+    await registerEditorFonts(handle);
+    return new BrowserWasmEditorBridge(handle);
   }
 
   async info() {
