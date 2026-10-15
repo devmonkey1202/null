@@ -1,5 +1,5 @@
 import { randomBytes } from "crypto";
-import type { MessengerUser as PrismaMessengerUser } from "@prisma/client";
+import type { MessengerUser as PrismaMessengerUser, Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -9,6 +9,21 @@ import { prisma } from "@/lib/db";
 
 type Context = { params: Promise<{ path?: string[] }> };
 type AuthGate = { user: PrismaMessengerUser; response: null } | { user: null; response: NextResponse };
+type MessengerNotificationRecord = Prisma.MessengerNotificationGetPayload<Record<string, never>>;
+type MessengerMessageWithSender = Prisma.MessengerMessageGetPayload<{
+  include: { sender: true };
+}>;
+type MessengerCallWithUsers = Prisma.MessengerCallGetPayload<{
+  include: { caller: true; receiver: true };
+}>;
+type MessengerConversationWithRelations = Prisma.MessengerConversationGetPayload<{
+  include: {
+    members: { include: { user: true } };
+    messages: { include: { sender: true } };
+    calls: { include: { caller: true; receiver: true } };
+  };
+}>;
+type MessengerConversationMemberWithUser = MessengerConversationWithRelations["members"][number];
 
 const COOKIE_NAME = "null_messenger_session";
 const SESSION_DAYS = 30;
@@ -127,7 +142,7 @@ function publicUser(user: {
   };
 }
 
-function serializeNotification(item: any) {
+function serializeNotification(item: MessengerNotificationRecord) {
   return {
     id: item.id,
     type: item.type,
@@ -141,7 +156,7 @@ function serializeNotification(item: any) {
   };
 }
 
-function serializeMessage(message: any) {
+function serializeMessage(message: MessengerMessageWithSender) {
   return {
     id: message.id,
     conversationId: message.conversation_id,
@@ -156,7 +171,7 @@ function serializeMessage(message: any) {
   };
 }
 
-function serializeCall(call: any) {
+function serializeCall(call: MessengerCallWithUsers) {
   return {
     id: call.id,
     conversationId: call.conversation_id,
@@ -295,9 +310,9 @@ async function loadConversationForUser(conversationId: string, userId: string) {
   });
 }
 
-async function serializeConversation(conversation: any, userId: string) {
-  const selfMember = conversation.members.find((member: any) => member.user_id === userId);
-  const otherMembers = conversation.members.filter((member: any) => member.user_id !== userId);
+async function serializeConversation(conversation: MessengerConversationWithRelations, userId: string) {
+  const selfMember = conversation.members.find((member) => member.user_id === userId);
+  const otherMembers = conversation.members.filter((member) => member.user_id !== userId);
   const lastMessage = conversation.messages[0] ?? null;
   const unreadCount = await prisma.messengerMessage.count({
     where: {
@@ -319,7 +334,7 @@ async function serializeConversation(conversation: any, userId: string) {
     createdById: conversation.created_by_id,
     lastMessageAt: conversation.last_message_at?.toISOString?.() ?? null,
     createdAt: conversation.created_at.toISOString(),
-    members: conversation.members.map((member: any) => ({
+    members: conversation.members.map((member) => ({
       id: member.id,
       userId: member.user_id,
       role: member.role,
@@ -631,6 +646,7 @@ async function handleConversationCreate(req: Request) {
     const existing = await findExistingDirectConversation(gate.user.id, otherId);
     if (existing) {
       const loaded = await loadConversationForUser(existing.id, gate.user.id);
+      if (!loaded) return error("conversation_not_found", 404);
       return json({ ok: true, conversation: await serializeConversation(loaded, gate.user.id) });
     }
   }
@@ -796,7 +812,9 @@ async function handleCallStart(req: Request) {
   if (!parsed.success) return error("invalid_call_payload", 400);
   const conversation = await loadConversationForUser(parsed.data.conversationId, gate.user.id);
   if (!conversation) return error("conversation_not_found", 404);
-  const otherMembers = conversation.members.filter((member: any) => member.user_id !== gate.user!.id);
+  const otherMembers: MessengerConversationMemberWithUser[] = conversation.members.filter(
+    (member) => member.user_id !== gate.user!.id,
+  );
   const receiverId = parsed.data.receiverId || (conversation.type === "direct" ? otherMembers[0]?.user_id : null);
   const call = await prisma.messengerCall.create({
     data: {
@@ -809,8 +827,8 @@ async function handleCallStart(req: Request) {
   });
   await Promise.all(
     otherMembers
-      .filter((member: any) => !receiverId || member.user_id === receiverId)
-      .map((member: any) =>
+      .filter((member) => !receiverId || member.user_id === receiverId)
+      .map((member) =>
         createNotification({
           userId: member.user_id,
           type: "voice_call",
