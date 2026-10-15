@@ -102,3 +102,36 @@ test("v2 editor reuses exact text layouts through the wasm cache", async ({ page
 
   await expect(summary).toContainText("cached");
 });
+
+test("v2 editor shapes Arabic with the bundled script fallback", async ({ page }) => {
+  await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
+
+  const layerPanel = page.locator("aside").first();
+  const inspector = page.locator("aside").last();
+  await layerPanel.getByRole("button", { name: /Title/ }).first().click();
+
+  const summary = inspector.getByTestId("v2-text-layout-summary");
+  const contentEditor = inspector.locator("textarea").first();
+  await contentEditor.fill("مرحبا بالعالم");
+
+  await expect(contentEditor).toHaveValue("مرحبا بالعالم");
+  await expect(summary).toContainText("1 bidi");
+  await expect(summary).toContainText("1 scripts");
+  await expect(summary).toContainText("font shaped");
+  await expect(inspector.getByTestId("v2-text-measurement-mode")).toHaveAttribute(
+    "title",
+    /Noto Sans Arabic/,
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        await document.fonts.ready;
+        return document.fonts.check('16px "Noto Sans Arabic"', "مرحبا");
+      }),
+    )
+    .toBe(true);
+  await expect(
+    page.locator('[data-editor-node-id="hero-title"] [dir="auto"] span').first(),
+  ).toHaveCSS("font-family", /Noto Sans Arabic/);
+});

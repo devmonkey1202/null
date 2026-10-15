@@ -158,7 +158,7 @@ Implemented in `kernel-text` Phase 1:
 
 Implemented in `kernel-text` Phase 2B partial:
 
-- bundled Inter variable regular/italic and Noto Sans Hebrew registry
+- bundled Inter variable regular/italic, Noto Sans Hebrew, and Noto Sans Arabic registry
 - `ttf-parser` glyph coverage checks and `rustybuzz` OpenType shaping
 - UAX #9 bidi visual order, RTL caret/hit-test, and mixed-direction selection geometry
 - Unicode 17 script itemization with ISO 15924 tags passed to Rustybuzz
@@ -167,7 +167,7 @@ Implemented in `kernel-text` Phase 2B partial:
 Not yet implemented and still release-blocking:
 
 - dynamic user font registration/streaming and a CJK fallback set
-- Arabic/other RTL shaping, Script_Extensions refinement, and configurable OpenType features
+- other RTL shaping, Script_Extensions refinement, and configurable OpenType features
 - glyph raster/atlas and GPU render commands
 - editor/preview/publish shaped-text visual parity
 

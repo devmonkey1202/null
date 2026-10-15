@@ -19,6 +19,8 @@ const INTER_ITALIC_BYTES: &[u8] =
     include_bytes!("../../../../public/v2/fonts/InterVariable-Italic.ttf");
 const NOTO_SANS_HEBREW_BYTES: &[u8] =
     include_bytes!("../../../../public/v2/fonts/NotoSansHebrew-Variable.ttf");
+const NOTO_SANS_ARABIC_BYTES: &[u8] =
+    include_bytes!("../../../../public/v2/fonts/NotoSansArabic-Variable.ttf");
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -343,6 +345,10 @@ impl FontRegistry {
                 family: "Noto Sans Hebrew",
                 data: NOTO_SANS_HEBREW_BYTES,
             }),
+            "noto sans arabic" => Some(RegisteredFont {
+                family: "Noto Sans Arabic",
+                data: NOTO_SANS_ARABIC_BYTES,
+            }),
             _ => None,
         }
     }
@@ -351,12 +357,17 @@ impl FontRegistry {
         &self,
         style: &TextStyleMetrics,
         text: &str,
-        direction: TextDirection,
+        script: Script,
     ) -> Option<RegisteredFont> {
-        if matches!(direction, TextDirection::Rtl) {
-            let rtl_fallback = self.resolve_family("Noto Sans Hebrew", style.italic)?;
-            if font_data_covers(rtl_fallback.data, text) {
-                return Some(rtl_fallback);
+        let script_fallback = match script {
+            Script::Hebrew => Some("Noto Sans Hebrew"),
+            Script::Arabic => Some("Noto Sans Arabic"),
+            _ => None,
+        };
+        if let Some(family) = script_fallback {
+            let fallback = self.resolve_family(family, style.italic)?;
+            if font_data_covers(fallback.data, text) {
+                return Some(fallback);
             }
         }
 
@@ -794,8 +805,7 @@ fn shape_clusters(
         let bidi_level = clusters[start].bidi_level;
         let script = clusters[start].script;
         let direction = direction_for_level(bidi_level);
-        let Some(font) =
-            registry.resolve_for_text(&style, &clusters[start].shaping_text, direction)
+        let Some(font) = registry.resolve_for_text(&style, &clusters[start].shaping_text, script)
         else {
             let diagnostic = registry
                 .requested_font(&style)
@@ -812,11 +822,7 @@ fn shape_clusters(
             let candidate = &clusters[end];
             let same_style = candidate.style == style;
             let same_font = registry
-                .resolve_for_text(
-                    &candidate.style,
-                    &candidate.shaping_text,
-                    direction_for_level(candidate.bidi_level),
-                )
+                .resolve_for_text(&candidate.style, &candidate.shaping_text, candidate.script)
                 .is_some_and(|resolved| {
                     resolved.family == font.family && resolved.data.as_ptr() == font.data.as_ptr()
                 });
@@ -1498,8 +1504,31 @@ mod tests {
     }
 
     #[test]
-    fn keeps_unsupported_rtl_scripts_on_an_explicit_fallback_path() {
+    fn shapes_arabic_with_a_script_specific_fallback_face() {
         let mut input = request("مرحبا", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_text(&input).expect("Arabic layout");
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(layout.resolved_fonts, vec!["Noto Sans Arabic"]);
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert!(layout.font_fallbacks.is_empty());
+        assert_eq!(layout.script_run_count, 1);
+        assert_eq!(layout.shaped_run_count, 1);
+        assert_eq!(layout.bidi_paragraph_count, 1);
+        assert!(layout
+            .graphemes
+            .iter()
+            .all(|grapheme| grapheme.script == "Arab"));
+        assert!(layout
+            .glyphs
+            .iter()
+            .all(|glyph| glyph.font_family == "Noto Sans Arabic"));
+    }
+
+    #[test]
+    fn keeps_unbundled_rtl_scripts_on_an_explicit_fallback_path() {
+        let mut input = request("ܫܠܡܐ", 300.0);
         input.base_style.font_family = "Inter".to_string();
         let layout = layout_text(&input).expect("unsupported RTL fallback layout");
 
@@ -1511,6 +1540,10 @@ mod tests {
         assert_eq!(layout.fallback_grapheme_count, layout.graphemes.len());
         assert_eq!(layout.font_fallbacks, vec!["Inter: missing glyphs"]);
         assert_eq!(layout.bidi_paragraph_count, 1);
+        assert!(layout
+            .graphemes
+            .iter()
+            .all(|grapheme| grapheme.script == "Syrc"));
     }
 
     #[test]

@@ -117,11 +117,12 @@
 - exact-request cache hit, changed-metric miss, bounded eviction Rust test와 browser WASM cache reuse E2E
 - Noto Sans Hebrew RTL glyph shaping/origin Rust test와 browser font loading/family parity E2E
 - Unicode 17 script itemization, Common/Inherited 문맥 해소, mixed-script shaping-run 분리 Rust test와 browser `scriptRunCount` E2E
+- Noto Sans Arabic script fallback, RTL shaping, browser font loading/family parity E2E
 
 아직 release blocker인 항목:
 
 - CJK bundled/streamed fallback font
-- Arabic/기타 RTL glyph shaping과 Script_Extensions 교집합 기반 정밀 itemization
+- Syriac 등 기타 RTL glyph shaping과 Script_Extensions 교집합 기반 정밀 itemization
 - glyph atlas/render command renderer
 - large document shaping benchmark와 cache hit/memory profile
 - paragraph/run 단위 incremental invalidation

@@ -228,11 +228,18 @@ Phase 2B script itemization checkpoint (`TextLayout.engineVersion = 5`):
 - ISO 15924 tag를 Rustybuzz buffer에 명시해 같은 방향의 Latin/Greek 등 서로 다른 script가 하나의 shaping run으로 합쳐지지 않도록 보장
 - grapheme별 `script`와 문단별 run 합계인 `scriptRunCount`를 WASM/TypeScript/inspector/acceptance test에 동일하게 노출
 
+Phase 2B Arabic shaping checkpoint (`TextLayout.engineVersion = 5` 계약 유지):
+
+- OFL Noto Sans Arabic variable face를 Rust와 browser가 같은 파일로 사용
+- `Arab` script run은 요청 family가 glyph를 제공하지 않을 때 Noto Sans Arabic으로 해소하고 Rustybuzz `RightToLeft` shaping 적용
+- Arabic glyph family, script 진단, browser font loading을 Rust test와 Playwright acceptance test로 검증
+- 아직 font streaming bridge가 없으므로 Arabic font가 raw WASM 크기에 포함되는 한계를 성능 게이트에 기록
+
 현재 명시적 한계:
 
-- 현재 bundled registry는 Inter와 Noto Sans Hebrew만 resolve한다.
+- 현재 bundled registry는 Inter, Noto Sans Hebrew, Noto Sans Arabic만 resolve한다.
 - 한글/이모지 등 Inter 미지원 glyph는 추정 폭 fallback이며 숨기지 않고 `mixed`로 표시한다.
-- 기본 script itemization과 Hebrew bidi visual-order/caret/selection/shaping은 구현됐지만 Script_Extensions 교집합 기반 정밀 itemization, Arabic과 기타 RTL shaping은 아직 완료되지 않았다. 미지원 grapheme은 추정 폭 fallback이며 `fontFallbacks`로 숨김없이 표시한다.
+- 기본 script itemization과 Hebrew/Arabic bidi visual-order/caret/selection/shaping은 구현됐지만 Script_Extensions 교집합 기반 정밀 itemization과 Syriac 등 기타 RTL shaping은 아직 완료되지 않았다. 미지원 grapheme은 추정 폭 fallback이며 `fontFallbacks`로 숨김없이 표시한다.
 - DOM/CSS canvas text와 Rust geometry는 같은 font asset을 사용하지만 glyph atlas 기반 단일 renderer parity는 Phase 3 게이트다.
 
 ### 4.8 Vector Engine

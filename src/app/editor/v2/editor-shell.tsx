@@ -48,7 +48,7 @@ import { sampleSceneDoc } from "@/v2/editor/sample-doc";
 const CANVAS_PAGE_ID = sampleSceneDoc.pages[0]?.id ?? "page-home";
 
 function textRenderFontFamily(fontFamily: string) {
-  return `${fontFamily}, "Noto Sans Hebrew", ui-sans-serif, system-ui, sans-serif`;
+  return `${fontFamily}, "Noto Sans Hebrew", "Noto Sans Arabic", ui-sans-serif, system-ui, sans-serif`;
 }
 
 type DragMarquee = {

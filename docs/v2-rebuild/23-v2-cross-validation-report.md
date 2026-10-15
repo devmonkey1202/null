@@ -113,7 +113,7 @@
 
 ## 7. 현재 남아 있는 진짜 리스크
 
-- text Phase 2B 일부는 bundled Inter, Noto Sans Hebrew RTL shaping과 bidi visual-order geometry까지 검증됐지만 CJK/Arabic/기타 script/font streaming/glyph atlas는 미완료
+- text Phase 2B 일부는 bundled Inter, Noto Sans Hebrew/Arabic RTL shaping과 bidi visual-order geometry까지 검증됐지만 CJK/기타 RTL script/font streaming/glyph atlas는 미완료
 - vector / render 하부 구현 선택은 코드 단계에서 계속 검증 필요
 - 실제 self-hosted AI serving 비용/latency는 운영 실측 필요
 - B -> C 전환용 데이터 로그를 코드에서 정확히 남겨야 함
@@ -131,7 +131,7 @@
 - production build의 `next/font/google` 네트워크 실패를 제거하기 위해 Space Grotesk/IBM Plex Mono를 OFL self-host asset으로 고정
 - Hebrew RTL shaping과 bidi geometry 구현 증거를 Rust 및 browser acceptance test로 확보
 - Unicode 17 기반 script itemization, ISO 15924 Rustybuzz 전달, grapheme `script`, `scriptRunCount`는 Rust/FFI/TypeScript/Playwright 계약에서 교차검증
-- Script_Extensions 정밀 해소, Arabic/기타 RTL 폰트와 shaping, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
+- Noto Sans Arabic fallback과 RTL shaping은 Rust/browser에서 검증했지만 Script_Extensions 정밀 해소, 기타 RTL 폰트, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
 
 ## 8. 실행 판단
 
