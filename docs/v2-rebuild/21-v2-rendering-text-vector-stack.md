@@ -156,12 +156,19 @@ Implemented in `kernel-text` Phase 1:
 - line/baseline/grapheme/caret/selection geometry
 - scene auto-height and WASM `text_layout` query integration
 
+Implemented in `kernel-text` Phase 2B partial:
+
+- bundled Inter variable regular/italic and Noto Sans Hebrew registry
+- `ttf-parser` glyph coverage checks and `rustybuzz` OpenType shaping
+- UAX #9 bidi visual order, RTL caret/hit-test, and mixed-direction selection geometry
+- Unicode 17 script itemization with ISO 15924 tags passed to Rustybuzz
+- exact-request bounded LRU layout cache and WASM diagnostics
+
 Not yet implemented and still release-blocking:
 
-- bundled font registry and font-file loading
-- `ttf-parser` metrics and `rustybuzz` shaping
-- bidi/script itemization and OpenType feature handling
+- dynamic user font registration/streaming and a CJK fallback set
+- Arabic/other RTL shaping, Script_Extensions refinement, and configurable OpenType features
 - glyph raster/atlas and GPU render commands
 - editor/preview/publish shaped-text visual parity
 
-The current `deterministic_fallback` measurement mode must not be described as Figma-grade text rendering.
+Any grapheme reported through `deterministic_fallback` or `mixed` measurement must not be described as Figma-grade text rendering.

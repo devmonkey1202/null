@@ -24,12 +24,74 @@ type Cluster = {
   breakAfter: boolean;
   direction: "ltr" | "rtl";
   bidiLevel: number;
+  script: string;
 };
 
 const RTL_CHARACTER = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]/u;
 
 function textDirection(value: string): "ltr" | "rtl" {
   return RTL_CHARACTER.test(value) ? "rtl" : "ltr";
+}
+
+function unicodeScript(value: string) {
+  for (const character of value) {
+    if (/\p{Script=Latin}/u.test(character)) return "Latn";
+    if (/\p{Script=Greek}/u.test(character)) return "Grek";
+    if (/\p{Script=Hebrew}/u.test(character)) return "Hebr";
+    if (/\p{Script=Arabic}/u.test(character)) return "Arab";
+    if (/\p{Script=Cyrillic}/u.test(character)) return "Cyrl";
+    if (/\p{Script=Devanagari}/u.test(character)) return "Deva";
+    if (/\p{Script=Hangul}/u.test(character)) return "Hang";
+    if (/\p{Script=Han}/u.test(character)) return "Hani";
+    if (/\p{Script=Hiragana}/u.test(character)) return "Hira";
+    if (/\p{Script=Katakana}/u.test(character)) return "Kana";
+  }
+  return "Zyyy";
+}
+
+function resolveParagraphScripts(clusters: Cluster[]) {
+  let paragraphStart = 0;
+  for (let boundary = 0; boundary <= clusters.length; boundary += 1) {
+    if (boundary < clusters.length && clusters[boundary]!.text !== "\n") {
+      continue;
+    }
+
+    let previous: string | null = null;
+    for (let index = paragraphStart; index < boundary; index += 1) {
+      const cluster = clusters[index]!;
+      if (cluster.script === "Zyyy") {
+        if (previous) cluster.script = previous;
+      } else {
+        previous = cluster.script;
+      }
+    }
+
+    let following: string | null = null;
+    for (let index = boundary - 1; index >= paragraphStart; index -= 1) {
+      const cluster = clusters[index]!;
+      if (cluster.script === "Zyyy") {
+        cluster.script = following ?? "Latn";
+      } else {
+        following = cluster.script;
+      }
+    }
+    paragraphStart = boundary + 1;
+  }
+  return clusters;
+}
+
+function countScriptRuns(paragraphs: Cluster[][]) {
+  return paragraphs.reduce((total, paragraph) => {
+    let previous: string | null = null;
+    return (
+      total +
+      paragraph.reduce((count, cluster) => {
+        const changed = cluster.script !== previous;
+        previous = cluster.script;
+        return count + (changed ? 1 : 0);
+      }, 0)
+    );
+  }, 0);
 }
 
 function baseMeasuredStyle(text: TextNodeData): MeasuredStyle {
@@ -132,7 +194,7 @@ function measureGrapheme(value: string, style: MeasuredStyle) {
 
 function buildClusters(text: TextNodeData) {
   let wordStart = true;
-  return segmentGraphemes(text.content).map((segment): Cluster => {
+  const clusters = segmentGraphemes(text.content).map((segment): Cluster => {
     const style = styleAt(text, segment.start);
     const measured = transformForMeasurement(segment.text, style, wordStart);
     const whitespace = segment.text !== "\n" && /^\s+$/u.test(segment.text);
@@ -148,8 +210,10 @@ function buildClusters(text: TextNodeData) {
       breakAfter,
       direction: textDirection(segment.text),
       bidiLevel: textDirection(segment.text) === "rtl" ? 1 : 0,
+      script: unicodeScript(measured),
     };
   });
+  return resolveParagraphScripts(clusters);
 }
 
 function wrapParagraph(clusters: Cluster[], width: number) {
@@ -256,6 +320,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
           height: lineHeight,
           direction: cluster.direction,
           bidiLevel: cluster.bidiLevel,
+          script: cluster.script,
         });
         cursorX += clusterWidth;
         carets.push({
@@ -291,7 +356,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
   });
 
   return {
-    engineVersion: 4,
+    engineVersion: 5,
     measurementMode: "deterministic_fallback",
     width,
     height: Math.max(y, text.lineHeight, 1),
@@ -317,6 +382,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
       RTL_CHARACTER.test(paragraph.map((cluster) => cluster.text).join("")),
     ).length,
     visualRunCount: 0,
+    scriptRunCount: countScriptRuns(paragraphs),
     cacheHit: false,
   };
 }

@@ -221,11 +221,18 @@ Phase 2B Hebrew shaping checkpoint (`TextLayout.engineVersion = 4`):
 - `Inter` 요청에서도 Hebrew glyph가 필요하면 Noto Sans Hebrew로 fallback하고 `resolvedFonts`에 실제 family를 기록
 - 지원하지 않는 Arabic/기타 RTL script는 shaped로 오인하지 않고 `deterministic_fallback` 또는 `mixed`로 유지
 
+Phase 2B script itemization checkpoint (`TextLayout.engineVersion = 5`):
+
+- Unicode 17 Script 속성으로 grapheme의 strong script를 판별하고 Common/Inherited/Unknown은 문단의 인접 strong script로 해소
+- script, bidi level, text style, resolved font 중 하나라도 달라지면 shaping run을 분리
+- ISO 15924 tag를 Rustybuzz buffer에 명시해 같은 방향의 Latin/Greek 등 서로 다른 script가 하나의 shaping run으로 합쳐지지 않도록 보장
+- grapheme별 `script`와 문단별 run 합계인 `scriptRunCount`를 WASM/TypeScript/inspector/acceptance test에 동일하게 노출
+
 현재 명시적 한계:
 
-- 현재 bundled registry는 Inter만 resolve한다.
+- 현재 bundled registry는 Inter와 Noto Sans Hebrew만 resolve한다.
 - 한글/이모지 등 Inter 미지원 glyph는 추정 폭 fallback이며 숨기지 않고 `mixed`로 표시한다.
-- Hebrew bidi visual-order/caret/selection/shaping은 구현됐지만 Arabic과 기타 RTL script, 일반 script itemization은 아직 완료되지 않았다. 미지원 grapheme은 추정 폭 fallback이며 `fontFallbacks`로 숨김없이 표시한다.
+- 기본 script itemization과 Hebrew bidi visual-order/caret/selection/shaping은 구현됐지만 Script_Extensions 교집합 기반 정밀 itemization, Arabic과 기타 RTL shaping은 아직 완료되지 않았다. 미지원 grapheme은 추정 폭 fallback이며 `fontFallbacks`로 숨김없이 표시한다.
 - DOM/CSS canvas text와 Rust geometry는 같은 font asset을 사용하지만 glyph atlas 기반 단일 renderer parity는 Phase 3 게이트다.
 
 ### 4.8 Vector Engine

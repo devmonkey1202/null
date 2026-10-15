@@ -5875,6 +5875,7 @@ export function V2EditorShell() {
                               {activeTextLayout.bidiParagraphCount ? (
                                 <span>{activeTextLayout.bidiParagraphCount} bidi</span>
                               ) : null}
+                              <span>{activeTextLayout.scriptRunCount} scripts</span>
                               <span>{Math.round(activeTextLayout.height)} px</span>
                               <span
                                 data-testid="v2-text-measurement-mode"

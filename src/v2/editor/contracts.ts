@@ -381,6 +381,7 @@ export type TextGraphemeBox = {
   height: number;
   direction: TextDirection;
   bidiLevel: number;
+  script: string;
 };
 
 export type TextCaretGeometry = {
@@ -421,6 +422,7 @@ export type TextLayout = {
   fallbackGraphemeCount: number;
   bidiParagraphCount: number;
   visualRunCount: number;
+  scriptRunCount: number;
   cacheHit: boolean;
 };
 

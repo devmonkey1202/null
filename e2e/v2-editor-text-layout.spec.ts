@@ -62,6 +62,7 @@ test("v2 editor exposes bidi layout diagnostics from wasm", async ({ page }) => 
 
   await expect(contentEditor).toHaveValue("abc אבג def");
   await expect(summary).toContainText("1 bidi");
+  await expect(summary).toContainText("3 scripts");
   await expect(summary).toContainText("font shaped");
   await expect(inspector.getByTestId("v2-text-measurement-mode")).toHaveAttribute(
     "title",

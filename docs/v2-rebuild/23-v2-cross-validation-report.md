@@ -119,9 +119,9 @@
 - B -> C 전환용 데이터 로그를 코드에서 정확히 남겨야 함
 - 현재 v2 UI 셸은 여전히 kernel 전체가 아니라 점진 구현 단계
 
-### 7.1 2026-10-09 구현 교차검증
+### 7.1 2026-10-15 구현 교차검증
 
-- `kernel-text` 계약과 TypeScript `TextLayout` 계약은 engine version 4로 일치
+- `kernel-text` 계약과 TypeScript `TextLayout` 계약은 engine version 5로 일치
 - scene auto-height와 FFI `text_layout`은 동일 Rust layout 함수를 사용
 - browser shell은 regenerated release WASM을 사용하며 noop fallback과 측정 mode를 구분
 - bundled browser font와 Rust embedded font의 파일은 같은 Inter 4.1 자산
@@ -129,7 +129,9 @@
 - UAX #9 visual order, RTL caret/hit-test, 혼합 방향 split selection은 Rust test로 검증하고 browser inspector bidi 진단은 Playwright로 검증
 - `TextLayoutHandle`의 bounded exact-request LRU를 browser FFI가 직접 사용하며 hit/miss/eviction과 browser cache reuse를 검증
 - production build의 `next/font/google` 네트워크 실패를 제거하기 위해 Space Grotesk/IBM Plex Mono를 OFL self-host asset으로 고정
-- Hebrew RTL shaping과 bidi geometry 구현 증거는 확보됐지만 Arabic/기타 script, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
+- Hebrew RTL shaping과 bidi geometry 구현 증거를 Rust 및 browser acceptance test로 확보
+- Unicode 17 기반 script itemization, ISO 15924 Rustybuzz 전달, grapheme `script`, `scriptRunCount`는 Rust/FFI/TypeScript/Playwright 계약에서 교차검증
+- Script_Extensions 정밀 해소, Arabic/기타 RTL 폰트와 shaping, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
 
 ## 8. 실행 판단
 

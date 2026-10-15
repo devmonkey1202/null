@@ -1,16 +1,18 @@
 use core_error::CoreError;
 use rustybuzz::{
-    shape, Direction as ShapingDirection, Face as ShapingFace, UnicodeBuffer, Variation,
+    shape, Direction as ShapingDirection, Face as ShapingFace, Script as ShapingScript,
+    UnicodeBuffer, Variation,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use ttf_parser::{Face as ParsedFace, Tag};
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::linebreaks;
+use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 4;
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 5;
 
 const INTER_REGULAR_BYTES: &[u8] = include_bytes!("../../../../public/v2/fonts/InterVariable.ttf");
 const INTER_ITALIC_BYTES: &[u8] =
@@ -131,6 +133,7 @@ pub struct TextGraphemeBox {
     pub height: f32,
     pub direction: TextDirection,
     pub bidi_level: u8,
+    pub script: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -194,6 +197,7 @@ pub struct TextLayout {
     pub fallback_grapheme_count: usize,
     pub bidi_paragraph_count: usize,
     pub visual_run_count: usize,
+    pub script_run_count: usize,
     pub cache_hit: bool,
 }
 
@@ -294,6 +298,7 @@ struct Cluster {
     whitespace: bool,
     break_after: bool,
     bidi_level: u8,
+    script: Script,
     glyphs: Vec<ClusterGlyph>,
 }
 
@@ -378,6 +383,7 @@ struct LayoutDiagnostics {
     fallback_grapheme_count: usize,
     bidi_paragraph_count: usize,
     visual_run_count: usize,
+    script_run_count: usize,
 }
 
 #[derive(Debug)]
@@ -503,6 +509,7 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
                     height: line_height,
                     direction: direction_for_level(cluster.bidi_level),
                     bidi_level: cluster.bidi_level,
+                    script: cluster.script.short_name().to_string(),
                 });
                 glyphs.extend(cluster.glyphs.iter().map(|glyph| TextGlyph {
                     glyph_id: glyph.glyph_id,
@@ -600,6 +607,7 @@ pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError>
         fallback_grapheme_count: diagnostics.fallback_grapheme_count,
         bidi_paragraph_count: diagnostics.bidi_paragraph_count,
         visual_run_count: diagnostics.visual_run_count,
+        script_run_count: diagnostics.script_run_count,
         cache_hit: false,
     })
 }
@@ -760,11 +768,14 @@ fn build_clusters(
                     .copied()
                     .unwrap_or(paragraph_level)
                     .number(),
+                script: grapheme_script(&measured),
                 glyphs: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
 
+    resolve_cluster_scripts(&mut clusters);
+    diagnostics.script_run_count += script_run_count(&clusters);
     shape_clusters(&mut clusters, registry, diagnostics);
     ParagraphClusters {
         clusters,
@@ -781,6 +792,7 @@ fn shape_clusters(
     while start < clusters.len() {
         let style = clusters[start].style.clone();
         let bidi_level = clusters[start].bidi_level;
+        let script = clusters[start].script;
         let direction = direction_for_level(bidi_level);
         let Some(font) =
             registry.resolve_for_text(&style, &clusters[start].shaping_text, direction)
@@ -808,13 +820,17 @@ fn shape_clusters(
                 .is_some_and(|resolved| {
                     resolved.family == font.family && resolved.data.as_ptr() == font.data.as_ptr()
                 });
-            if !same_style || !same_font || candidate.bidi_level != bidi_level {
+            if !same_style
+                || !same_font
+                || candidate.bidi_level != bidi_level
+                || candidate.script != script
+            {
                 break;
             }
             end += 1;
         }
 
-        if shape_cluster_run(&mut clusters[start..end], font, &style, direction) {
+        if shape_cluster_run(&mut clusters[start..end], font, &style, direction, script) {
             diagnostics.shaped_run_count += 1;
             push_unique(&mut diagnostics.resolved_fonts, font.family.to_string());
         } else {
@@ -835,6 +851,50 @@ fn direction_for_level(level: u8) -> TextDirection {
     } else {
         TextDirection::Ltr
     }
+}
+
+fn grapheme_script(grapheme: &str) -> Script {
+    grapheme
+        .chars()
+        .map(|character| character.script())
+        .find(|script| !is_weak_script(*script))
+        .unwrap_or(Script::Common)
+}
+
+fn is_weak_script(script: Script) -> bool {
+    matches!(script, Script::Common | Script::Inherited | Script::Unknown)
+}
+
+fn resolve_cluster_scripts(clusters: &mut [Cluster]) {
+    let mut preceding = None;
+    for cluster in clusters.iter_mut() {
+        if is_weak_script(cluster.script) {
+            if let Some(script) = preceding {
+                cluster.script = script;
+            }
+        } else {
+            preceding = Some(cluster.script);
+        }
+    }
+
+    let mut following = None;
+    for cluster in clusters.iter_mut().rev() {
+        if is_weak_script(cluster.script) {
+            cluster.script = following.unwrap_or(Script::Latin);
+        } else {
+            following = Some(cluster.script);
+        }
+    }
+}
+
+fn script_run_count(clusters: &[Cluster]) -> usize {
+    clusters
+        .iter()
+        .map(|cluster| cluster.script)
+        .fold((0usize, None), |(count, previous), script| {
+            (count + usize::from(previous != Some(script)), Some(script))
+        })
+        .0
 }
 
 fn visual_order(clusters: &[Cluster], base_direction: TextDirection) -> Vec<usize> {
@@ -883,6 +943,7 @@ fn shape_cluster_run(
     font: RegisteredFont,
     style: &TextStyleMetrics,
     direction: TextDirection,
+    script: Script,
 ) -> bool {
     if clusters.is_empty() {
         return false;
@@ -920,6 +981,9 @@ fn shape_cluster_run(
         TextDirection::Ltr => ShapingDirection::LeftToRight,
         TextDirection::Rtl => ShapingDirection::RightToLeft,
     });
+    if let Ok(shaping_script) = script.short_name().parse::<ShapingScript>() {
+        buffer.set_script(shaping_script);
+    }
     let shaped = shape(&face, &[], buffer);
     if shaped.is_empty() {
         return false;
@@ -1254,7 +1318,7 @@ mod tests {
             + layout_text(&right).expect("V layout").lines[0].width;
         let pair_width = layout_text(&pair).expect("AV layout").lines[0].width;
 
-        assert_eq!(layout.engine_version, 4);
+        assert_eq!(layout.engine_version, 5);
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert_eq!(layout.resolved_fonts, vec!["Inter"]);
         assert!(layout.font_fallbacks.is_empty());
@@ -1394,10 +1458,43 @@ mod tests {
         assert_eq!(layout.resolved_fonts, vec!["Inter", "Noto Sans Hebrew"]);
         assert_eq!(layout.bidi_paragraph_count, 1);
         assert_eq!(layout.visual_run_count, 3);
+        assert_eq!(layout.script_run_count, 3);
         assert_eq!(layout.lines[0].base_direction, TextDirection::Ltr);
         assert_eq!(selection.len(), 2);
         assert!(selection[0].x < selection[1].x);
         assert!(selection[0].x + selection[0].width < selection[1].x);
+    }
+
+    #[test]
+    fn itemizes_scripts_before_shaping_mixed_ltr_text() {
+        let mut input = request("Latin Ελληνικά Latin", 400.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_text(&input).expect("mixed-script layout");
+        let scripts = layout
+            .graphemes
+            .iter()
+            .map(|grapheme| grapheme.script.as_str())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert_eq!(layout.script_run_count, 3);
+        assert_eq!(layout.shaped_run_count, 3);
+        assert!(scripts.contains("Latn"));
+        assert!(scripts.contains("Grek"));
+    }
+
+    #[test]
+    fn resolves_leading_common_characters_to_the_following_script() {
+        let mut input = request("(Ελληνικά)", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_text(&input).expect("leading common layout");
+
+        assert_eq!(layout.script_run_count, 1);
+        assert!(layout
+            .graphemes
+            .iter()
+            .all(|grapheme| grapheme.script == "Grek"));
     }
 
     #[test]
