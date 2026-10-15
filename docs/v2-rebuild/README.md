@@ -134,12 +134,12 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - auto layout, group, component/instance, rich-text range 기초
 - Unicode grapheme/line-break/caret geometry, bundled Inter shaping, bidi visual-order geometry를 제공하는 `kernel-text` Phase 2B 일부
 - Inter 4.1 Regular/Italic variable font registry, `ttf-parser` coverage 확인, `rustybuzz` OpenType positioning
-- `TextLayout` v3 glyph/cluster/bidi geometry와 shaped/mixed/fallback 진단
+- `TextLayout` v4 glyph/cluster/bidi geometry, Hebrew RTL shaping과 shaped/mixed/fallback 진단
 - Playwright 기반 실제 Rust/WASM 편집 흐름 검증
 
 아직 상용 수준 완료로 간주할 수 없는 핵심 범위:
 
-- 동적 폰트 등록/스트리밍, CJK 폰트 세트, RTL glyph shaping, script itemization, 완전한 fallback chain
+- 동적 폰트 등록/스트리밍, CJK 폰트 세트, Arabic/기타 RTL glyph shaping, script itemization, 완전한 fallback chain
 - glyph raster/atlas와 GPU render list 기반 캔버스
 - 완성형 vector boolean/tessellation
 - editor collaboration document ops
@@ -148,15 +148,17 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 
 따라서 현재 상태는 **실제 v2 구현 진행 중**이며 **제품 완성이나 교체 준비 완료 상태는 아닙니다.**
 
-### 2026-10-09 Text Engine Phase 2B Partial Checkpoint
+### 2026-10-14 Text Engine Phase 2B Partial Checkpoint
 
 - bundled Inter 파일과 OFL 원문/해시를 `public/v2/fonts`에 고정
 - Rust native workspace test와 browser WASM text-layout E2E 통과
 - 지원 glyph는 실제 shaping하고 미지원 한글/이모지는 `mixed`로 계측
 - UAX #9 resolved level 기반 line visual order, RTL caret/hit-test, 혼합 방향 분리 selection geometry 구현
-- RTL glyph shaping/render는 아직 fallback이며 `layoutWarnings`로 별도 노출
+- Noto Sans Hebrew variable font fallback과 Rustybuzz RTL shaping을 적용하고 unsupported Arabic은 명시적 fallback으로 유지
 - request 전체 동등성 기반 32-entry Rust LRU layout cache와 browser FFI cache-hit 경로 구현
-- 현재 WASM raw 크기는 `3,989,668 bytes`이며, 동적 font loading 전까지 성능 추적 대상
+- Noto Sans Hebrew 원본: Google Fonts OFL, SHA-256 `7EF36A2C3593758CDB622E1BDEF4F84523E92FBC3CCC667438DD80FF54C2DE88`
+- 현재 WASM raw 크기는 `4,102,833 bytes`이며, 동적 font loading 전까지 성능 추적 대상
+- 전역 Space Grotesk/IBM Plex Mono도 OFL 원본을 self-host하여 production build가 Google Fonts 네트워크 상태에 의존하지 않음
 - 이 checkpoint는 Text Engine Phase 2B의 bidi geometry 구간 완료를 뜻하며 상용 텍스트 엔진 전체 완료를 뜻하지 않음
 
 ## 10. 한 줄 요약

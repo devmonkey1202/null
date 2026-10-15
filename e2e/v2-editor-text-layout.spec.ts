@@ -62,14 +62,25 @@ test("v2 editor exposes bidi layout diagnostics from wasm", async ({ page }) => 
 
   await expect(contentEditor).toHaveValue("abc אבג def");
   await expect(summary).toContainText("1 bidi");
-  await expect(summary).toContainText("fallback");
+  await expect(summary).toContainText("font shaped");
   await expect(inspector.getByTestId("v2-text-measurement-mode")).toHaveAttribute(
     "title",
-    /RTL glyph shaping\/render integration pending/,
+    /Noto Sans Hebrew/,
   );
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        await document.fonts.ready;
+        return document.fonts.check('16px "Noto Sans Hebrew"', "אבג");
+      }),
+    )
+    .toBe(true);
   await expect(
     page.locator('[data-editor-node-id="hero-title"] [dir="auto"]').first(),
   ).toBeVisible();
+  await expect(
+    page.locator('[data-editor-node-id="hero-title"] [dir="auto"] span').first(),
+  ).toHaveCSS("font-family", /Noto Sans Hebrew/);
 });
 
 test("v2 editor reuses exact text layouts through the wasm cache", async ({ page }) => {

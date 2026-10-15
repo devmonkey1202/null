@@ -47,6 +47,10 @@ import { loadEditorBridge } from "@/v2/editor/bridge/load-editor-bridge";
 import { sampleSceneDoc } from "@/v2/editor/sample-doc";
 const CANVAS_PAGE_ID = sampleSceneDoc.pages[0]?.id ?? "page-home";
 
+function textRenderFontFamily(fontFamily: string) {
+  return `${fontFamily}, "Noto Sans Hebrew", ui-sans-serif, system-ui, sans-serif`;
+}
+
 type DragMarquee = {
   originX: number;
   originY: number;
@@ -4351,7 +4355,7 @@ export function V2EditorShell() {
                                   <span
                                     key={`${node.id}-run-${paragraphIndex}-${runIndex}`}
                                     style={{
-                                      fontFamily: run.style.fontFamily,
+                                      fontFamily: textRenderFontFamily(run.style.fontFamily),
                                       fontSize: run.style.fontSize,
                                       fontWeight: run.style.fontWeight,
                                       fontStyle: run.style.italic ? "italic" : "normal",
@@ -4368,7 +4372,7 @@ export function V2EditorShell() {
                               ) : (
                                 <span
                                   style={{
-                                    fontFamily: textData.fontFamily,
+                                    fontFamily: textRenderFontFamily(textData.fontFamily),
                                     fontSize: textData.fontSize,
                                     fontWeight: textData.fontWeight,
                                     fontStyle: textData.italic ? "italic" : "normal",
@@ -4638,7 +4642,7 @@ export function V2EditorShell() {
                       height: editingTextNodeFrame.h,
                       transform: `rotate(${editingTextNodeFrame.rotation}deg)`,
                       transformOrigin: "center",
-                      fontFamily: editingTextNode.text.fontFamily,
+                      fontFamily: textRenderFontFamily(editingTextNode.text.fontFamily),
                       fontSize: editingTextNode.text.fontSize,
                       fontWeight: editingTextNode.text.fontWeight,
                       fontStyle: editingTextNode.text.italic ? "italic" : "normal",

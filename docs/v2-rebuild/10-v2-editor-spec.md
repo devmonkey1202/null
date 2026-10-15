@@ -213,11 +213,19 @@ Phase 2B bidi geometry checkpoint (`TextLayout.engineVersion = 3`):
 - `bidiParagraphCount`, `visualRunCount`, `layoutWarnings`를 inspector/acceptance test에 노출
 - content/width/alignment/spacing/style runs 전체가 동일할 때만 재사용하는 bounded Rust LRU layout cache를 FFI 경로에 적용하고 `cacheHit`을 진단에 노출
 
+Phase 2B Hebrew shaping checkpoint (`TextLayout.engineVersion = 4`):
+
+- OFL Noto Sans Hebrew variable face를 Rust와 browser가 같은 파일로 사용
+- odd bidi-level run에 Rustybuzz `RightToLeft` 방향을 명시하고 실제 glyph id/advance/offset을 반환
+- logical cluster 범위와 visual cluster 좌표를 분리해 RTL glyph origin, caret, hit-test를 같은 layout에서 계산
+- `Inter` 요청에서도 Hebrew glyph가 필요하면 Noto Sans Hebrew로 fallback하고 `resolvedFonts`에 실제 family를 기록
+- 지원하지 않는 Arabic/기타 RTL script는 shaped로 오인하지 않고 `deterministic_fallback` 또는 `mixed`로 유지
+
 현재 명시적 한계:
 
 - 현재 bundled registry는 Inter만 resolve한다.
 - 한글/이모지 등 Inter 미지원 glyph는 추정 폭 fallback이며 숨기지 않고 `mixed`로 표시한다.
-- bidi visual-order/caret/selection geometry는 구현됐지만 RTL glyph shaping/render와 script itemization은 아직 완료되지 않았다. 해당 grapheme은 추정 폭 fallback이며 `layoutWarnings`로 숨김없이 표시한다.
+- Hebrew bidi visual-order/caret/selection/shaping은 구현됐지만 Arabic과 기타 RTL script, 일반 script itemization은 아직 완료되지 않았다. 미지원 grapheme은 추정 폭 fallback이며 `fontFallbacks`로 숨김없이 표시한다.
 - DOM/CSS canvas text와 Rust geometry는 같은 font asset을 사용하지만 glyph atlas 기반 단일 renderer parity는 Phase 3 게이트다.
 
 ### 4.8 Vector Engine
