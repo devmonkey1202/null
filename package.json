@@ -18,6 +18,7 @@
     "verify:e2e": "playwright test --workers=1",
     "verify:build": "npm run build",
     "verify:full": "npm run verify:prisma && npm run verify:types && npm run lint && npm run verify:mobile && npm run verify:unit && npm run verify:build && npm run verify:e2e",
+    "build:v2:editor-wasm": "powershell -ExecutionPolicy Bypass -File ./scripts/build-v2-editor-wasm.ps1",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "test": "vitest run",
