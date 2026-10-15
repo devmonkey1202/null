@@ -237,6 +237,16 @@ Phase 2B Arabic shaping checkpoint (`TextLayout.engineVersion = 5` 계약 유지
 - registry는 OpenType parse 검증, family/style 교체, 해제, layout cache invalidation, face당 16 MiB/총 32 MiB/32 faces 제한을 적용
 - scene auto-height와 `text_layout` query는 같은 `TextLayoutHandle` registry/cache를 사용하여 command snapshot과 inspector geometry 불일치를 막음
 
+Phase 2B incremental paragraph shaping checkpoint (`TextLayout.engineVersion = 6`):
+
+- exact-request layout LRU 아래에 기본 128-entry paragraph shaping LRU를 추가하고 content, base style, paragraph-relative style run을 key로 사용
+- width, alignment, paragraph spacing 변경은 glyph shaping을 무효화하지 않고 line wrapping과 geometry만 다시 계산
+- 앞 문단 길이가 바뀌어도 뒤 문단의 UTF-16 cluster/glyph offset을 재배치하여 동일 shaping 결과를 재사용
+- 문단 content 또는 해당 문단과 교차하는 style run만 바뀌면 dirty 문단만 다시 shape하고 나머지 문단은 재사용
+- font 등록, 교체, 해제 시 exact-request cache와 paragraph cache를 함께 비워 stale glyph geometry를 차단
+- `paragraphCacheHits`, `paragraphCacheMisses`를 WASM/TypeScript/inspector에 노출하고 Rust cold-layout parity test와 Playwright 편집 test로 검증
+- 한 문단 내부에서 변경되지 않은 shaping run까지 부분 재사용하는 run-level cache는 아직 구현되지 않았으며 후속 성능 게이트로 유지
+
 현재 명시적 한계:
 
 - 현재 기본 face 4개(Inter regular/italic, Noto Sans Hebrew/Arabic)는 같은 origin의 public asset을 동적 등록하며 WASM binary에 font bytes를 내장하지 않는다.

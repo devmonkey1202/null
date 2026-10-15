@@ -120,6 +120,8 @@
 - Noto Sans Arabic script fallback, RTL shaping, browser font loading/family parity E2E
 - dynamic font parse/size/count validation, replacement/removal, cache invalidation Rust test
 - browser startup font fetch -> WASM registration -> scene auto-height/query shared-handle parity test
+- 앞 문단 길이 변경, 문단별 style run 변경, width-only reflow에 대한 paragraph shaping cache hit와 cold-layout geometry parity Rust test
+- 동일 길이 문단 로컬 편집 후 unchanged paragraph shaping reuse Playwright E2E
 - `npm run verify:v2:assets`로 font SHA-256, raw WASM 3 MB, WASM+기본 font gzip 2.5 MB 상한을 CI에서 차단
 
 아직 release blocker인 항목:
@@ -128,5 +130,5 @@
 - Syriac 등 기타 RTL glyph shaping과 Script_Extensions 교집합 기반 정밀 itemization
 - glyph atlas/render command renderer
 - large document shaping benchmark와 cache hit/memory profile
-- paragraph/run 단위 incremental invalidation
+- 한 문단 내부 run 단위 incremental shaping/invalidation
 - editor/preview/publish pixel parity

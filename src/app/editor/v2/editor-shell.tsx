@@ -5872,6 +5872,12 @@ export function V2EditorShell() {
                               </span>
                               <span>{activeTextLayout.glyphs.length} glyphs</span>
                               {activeTextLayout.cacheHit ? <span>cached</span> : null}
+                              {activeTextLayout.paragraphCacheHits ? (
+                                <span>
+                                  {activeTextLayout.paragraphCacheHits} paragraph
+                                  {activeTextLayout.paragraphCacheHits === 1 ? "" : "s"} reused
+                                </span>
+                              ) : null}
                               {activeTextLayout.bidiParagraphCount ? (
                                 <span>{activeTextLayout.bidiParagraphCount} bidi</span>
                               ) : null}

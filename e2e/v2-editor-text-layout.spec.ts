@@ -113,6 +113,29 @@ test("v2 editor reuses exact text layouts through the wasm cache", async ({ page
   await expect(summary).toContainText("cached");
 });
 
+test("v2 editor reuses unchanged paragraph shaping after a local edit", async ({ page }) => {
+  await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
+
+  const layerPanel = page.locator("aside").first();
+  const inspector = page.locator("aside").last();
+  await layerPanel.getByRole("button", { name: /Title/ }).first().click();
+
+  const summary = inspector.getByTestId("v2-text-layout-summary");
+  const contentEditor = inspector.locator("textarea").first();
+  await contentEditor.fill("First paragraph\nStable paragraph\nThird paragraph");
+  await expect(contentEditor).toHaveValue("First paragraph\nStable paragraph\nThird paragraph");
+  await expect(summary).toContainText("3 lines");
+
+  await contentEditor.fill("Alter paragraph\nStable paragraph\nThird paragraph");
+
+  await expect(contentEditor).toHaveValue(
+    "Alter paragraph\nStable paragraph\nThird paragraph",
+  );
+  await expect(summary).toContainText("2 paragraphs reused");
+  await expect(summary).toContainText("font shaped");
+});
+
 test("v2 editor shapes Arabic with a dynamically registered script fallback", async ({ page }) => {
   await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();

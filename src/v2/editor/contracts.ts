@@ -424,6 +424,8 @@ export type TextLayout = {
   visualRunCount: number;
   scriptRunCount: number;
   cacheHit: boolean;
+  paragraphCacheHits: number;
+  paragraphCacheMisses: number;
 };
 
 export type BridgeQuery =

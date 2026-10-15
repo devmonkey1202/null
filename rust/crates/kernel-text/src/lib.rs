@@ -12,7 +12,7 @@ use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 5;
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 6;
 
 const MAX_REGISTERED_FONT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FONT_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
@@ -197,6 +197,8 @@ pub struct TextLayout {
     pub visual_run_count: usize,
     pub script_run_count: usize,
     pub cache_hit: bool,
+    pub paragraph_cache_hits: usize,
+    pub paragraph_cache_misses: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -208,6 +210,7 @@ pub struct TextHitTest {
 }
 
 const DEFAULT_LAYOUT_CACHE_CAPACITY: usize = 32;
+const PARAGRAPH_CACHE_MULTIPLIER: usize = 4;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -216,6 +219,10 @@ pub struct TextLayoutCacheStats {
     pub misses: u64,
     pub entries: usize,
     pub capacity: usize,
+    pub paragraph_hits: u64,
+    pub paragraph_misses: u64,
+    pub paragraph_entries: usize,
+    pub paragraph_capacity: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -234,6 +241,7 @@ pub struct TextLayoutHandle {
     capacity: usize,
     hits: u64,
     misses: u64,
+    paragraph_cache: ParagraphShapeCache,
     fonts: FontRegistry,
 }
 
@@ -251,6 +259,9 @@ impl TextLayoutHandle {
             capacity,
             hits: 0,
             misses: 0,
+            paragraph_cache: ParagraphShapeCache::with_capacity(
+                capacity.saturating_mul(PARAGRAPH_CACHE_MULTIPLIER),
+            ),
             fonts: FontRegistry::default(),
         }
     }
@@ -269,7 +280,11 @@ impl TextLayoutHandle {
             return Ok(layout);
         }
 
-        let layout = layout_text_with_registry(request, &self.fonts)?;
+        let layout = layout_text_with_registry_and_cache(
+            request,
+            &self.fonts,
+            Some(&mut self.paragraph_cache),
+        )?;
         self.revision += 1;
         self.misses += 1;
         if self.capacity > 0 {
@@ -283,6 +298,7 @@ impl TextLayoutHandle {
 
     pub fn clear(&mut self) {
         self.cache.clear();
+        self.paragraph_cache.clear();
     }
 
     pub fn stats(&self) -> TextLayoutCacheStats {
@@ -291,6 +307,10 @@ impl TextLayoutHandle {
             misses: self.misses,
             entries: self.cache.len(),
             capacity: self.capacity,
+            paragraph_hits: self.paragraph_cache.hits,
+            paragraph_misses: self.paragraph_cache.misses,
+            paragraph_entries: self.paragraph_cache.entries.len(),
+            paragraph_capacity: self.paragraph_cache.capacity,
         }
     }
 
@@ -549,7 +569,7 @@ fn normalize_font_family(family: &str) -> String {
     family.trim().trim_matches(['\'', '"']).to_ascii_lowercase()
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct LayoutDiagnostics {
     resolved_fonts: Vec<String>,
     font_fallbacks: Vec<String>,
@@ -561,10 +581,151 @@ struct LayoutDiagnostics {
     script_run_count: usize,
 }
 
-#[derive(Debug)]
+impl LayoutDiagnostics {
+    fn merge(&mut self, other: &Self) {
+        for font in &other.resolved_fonts {
+            push_unique(&mut self.resolved_fonts, font.clone());
+        }
+        for fallback in &other.font_fallbacks {
+            push_unique(&mut self.font_fallbacks, fallback.clone());
+        }
+        for warning in &other.layout_warnings {
+            push_unique(&mut self.layout_warnings, warning.clone());
+        }
+        self.shaped_run_count += other.shaped_run_count;
+        self.fallback_grapheme_count += other.fallback_grapheme_count;
+        self.bidi_paragraph_count += other.bidi_paragraph_count;
+        self.visual_run_count += other.visual_run_count;
+        self.script_run_count += other.script_run_count;
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ParagraphClusters {
     clusters: Vec<Cluster>,
     base_direction: TextDirection,
+}
+
+impl ParagraphClusters {
+    fn shift_utf16_offsets(&mut self, offset: usize) {
+        if offset == 0 {
+            return;
+        }
+        for cluster in &mut self.clusters {
+            cluster.start += offset;
+            cluster.end += offset;
+            for glyph in &mut cluster.glyphs {
+                glyph.cluster_start += offset;
+                glyph.cluster_end += offset;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ParagraphShapeKey {
+    content: String,
+    base_style: TextStyleMetrics,
+    runs: Vec<TextLayoutRun>,
+}
+
+impl ParagraphShapeKey {
+    fn from_request(
+        request: &TextLayoutRequest,
+        paragraph: &str,
+        global_utf16_offset: usize,
+    ) -> Self {
+        let paragraph_end = global_utf16_offset + paragraph.encode_utf16().count();
+        let runs = request
+            .runs
+            .iter()
+            .filter_map(|run| {
+                let start = run.start.max(global_utf16_offset);
+                let end = run.end.min(paragraph_end);
+                (start < end).then(|| TextLayoutRun {
+                    start: start - global_utf16_offset,
+                    end: end - global_utf16_offset,
+                    style: run.style.clone(),
+                })
+            })
+            .collect();
+        Self {
+            content: paragraph.to_string(),
+            base_style: request.base_style.clone(),
+            runs,
+        }
+    }
+
+    fn as_request(&self) -> TextLayoutRequest {
+        TextLayoutRequest {
+            content: self.content.clone(),
+            width: 1.0,
+            alignment: TextAlignment::Left,
+            paragraph_spacing: 0.0,
+            base_style: self.base_style.clone(),
+            runs: self.runs.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedParagraphShape {
+    layout: ParagraphClusters,
+    diagnostics: LayoutDiagnostics,
+}
+
+#[derive(Debug, Default)]
+struct ParagraphShapeCache {
+    entries: VecDeque<(ParagraphShapeKey, CachedParagraphShape)>,
+    capacity: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl ParagraphShapeCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            ..Self::default()
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn resolve(
+        &mut self,
+        key: ParagraphShapeKey,
+        registry: &FontRegistry,
+    ) -> (CachedParagraphShape, bool) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|(cached_key, _)| cached_key == &key)
+        {
+            let (cached_key, cached) = self.entries.remove(index).expect("cache index must exist");
+            self.entries.push_back((cached_key, cached.clone()));
+            self.hits += 1;
+            return (cached, true);
+        }
+
+        let request = key.as_request();
+        let mut diagnostics = LayoutDiagnostics::default();
+        let layout = build_clusters(&request, &key.content, 0, registry, &mut diagnostics);
+        let cached = CachedParagraphShape {
+            layout,
+            diagnostics,
+        };
+        self.misses += 1;
+        if self.capacity > 0 {
+            while self.entries.len() >= self.capacity {
+                self.entries.pop_front();
+            }
+            self.entries.push_back((key, cached.clone()));
+        }
+        (cached, false)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -583,6 +744,14 @@ fn layout_text_with_registry(
     request: &TextLayoutRequest,
     registry: &FontRegistry,
 ) -> Result<TextLayout, CoreError> {
+    layout_text_with_registry_and_cache(request, registry, None)
+}
+
+fn layout_text_with_registry_and_cache(
+    request: &TextLayoutRequest,
+    registry: &FontRegistry,
+    mut paragraph_cache: Option<&mut ParagraphShapeCache>,
+) -> Result<TextLayout, CoreError> {
     validate_request(request)?;
     let width = request.width.max(1.0);
     let mut diagnostics = LayoutDiagnostics::default();
@@ -593,15 +762,29 @@ fn layout_text_with_registry(
     let mut graphemes = Vec::new();
     let mut carets = Vec::new();
     let mut glyphs = Vec::new();
+    let mut paragraph_cache_hits = 0usize;
+    let mut paragraph_cache_misses = 0usize;
 
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
-        let paragraph_layout = build_clusters(
-            request,
-            paragraph,
-            global_utf16_offset,
-            registry,
-            &mut diagnostics,
-        );
+        let mut paragraph_layout = if let Some(cache) = paragraph_cache.as_deref_mut() {
+            let key = ParagraphShapeKey::from_request(request, paragraph, global_utf16_offset);
+            let (cached, hit) = cache.resolve(key, registry);
+            paragraph_cache_hits += usize::from(hit);
+            paragraph_cache_misses += usize::from(!hit);
+            diagnostics.merge(&cached.diagnostics);
+            cached.layout
+        } else {
+            build_clusters(
+                request,
+                paragraph,
+                global_utf16_offset,
+                registry,
+                &mut diagnostics,
+            )
+        };
+        if paragraph_cache.is_some() {
+            paragraph_layout.shift_utf16_offsets(global_utf16_offset);
+        }
         let paragraph_clusters = &paragraph_layout.clusters;
         let slices = wrap_paragraph(paragraph_clusters, width);
         let has_newline_after = paragraph_index + 1 < paragraphs.len();
@@ -790,6 +973,8 @@ fn layout_text_with_registry(
         visual_run_count: diagnostics.visual_run_count,
         script_run_count: diagnostics.script_run_count,
         cache_hit: false,
+        paragraph_cache_hits,
+        paragraph_cache_misses,
     })
 }
 
@@ -1534,7 +1719,7 @@ mod tests {
             + layout_with_editor_fonts(&right).lines[0].width;
         let pair_width = layout_with_editor_fonts(&pair).lines[0].width;
 
-        assert_eq!(layout.engine_version, 5);
+        assert_eq!(layout.engine_version, 6);
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert_eq!(layout.resolved_fonts, vec!["Inter"]);
         assert!(layout.font_fallbacks.is_empty());
@@ -1761,6 +1946,7 @@ mod tests {
         assert_eq!(registered.byte_length, TEST_NOTO_SANS_ARABIC_BYTES.len());
         assert!(registered.glyph_count > 0);
         assert_eq!(handle.stats().entries, 0);
+        assert_eq!(handle.stats().paragraph_entries, 0);
 
         let shaped = handle.layout(&input).expect("shaped layout");
         assert_eq!(shaped.measurement_mode, TextMeasurementMode::Shaped);
@@ -1771,6 +1957,7 @@ mod tests {
         assert!(handle.unregister_font("noto sans arabic", false));
         assert!(handle.registered_fonts().is_empty());
         assert_eq!(handle.stats().entries, 0);
+        assert_eq!(handle.stats().paragraph_entries, 0);
         let fallback_again = handle
             .layout(&input)
             .expect("fallback layout after removal");
@@ -1862,8 +2049,102 @@ mod tests {
                 misses: 1,
                 entries: 1,
                 capacity: 2,
+                paragraph_hits: 0,
+                paragraph_misses: 1,
+                paragraph_entries: 1,
+                paragraph_capacity: 8,
             }
         );
+    }
+
+    #[test]
+    fn reuses_unchanged_paragraph_shapes_after_an_earlier_paragraph_changes() {
+        let mut handle = editor_font_handle();
+        let first_request = request("alpha\nstable paragraph\nomega", 300.0);
+        let changed_request = request("alpha extended\nstable paragraph\nomega", 300.0);
+
+        let first = handle.layout(&first_request).expect("initial paragraphs");
+        let changed = handle
+            .layout(&changed_request)
+            .expect("incremental paragraphs");
+        let cold = layout_with_editor_fonts(&changed_request);
+
+        assert_eq!(first.paragraph_cache_hits, 0);
+        assert_eq!(first.paragraph_cache_misses, 3);
+        assert_eq!(changed.paragraph_cache_hits, 2);
+        assert_eq!(changed.paragraph_cache_misses, 1);
+        assert_eq!(changed.lines, cold.lines);
+        assert_eq!(changed.graphemes, cold.graphemes);
+        assert_eq!(changed.carets, cold.carets);
+        assert_eq!(changed.glyphs, cold.glyphs);
+        assert_eq!(changed.resolved_fonts, cold.resolved_fonts);
+        assert_eq!(changed.shaped_run_count, cold.shaped_run_count);
+    }
+
+    #[test]
+    fn invalidates_only_the_paragraph_affected_by_a_style_run() {
+        let mut handle = editor_font_handle();
+        let first_request = request("alpha\nstyled\nomega", 300.0);
+        let mut styled_request = first_request.clone();
+        styled_request.runs.push(TextLayoutRun {
+            start: 6,
+            end: 12,
+            style: TextStyleMetrics {
+                font_weight: 700,
+                letter_spacing: 1.5,
+                ..TextStyleMetrics::default()
+            },
+        });
+
+        handle.layout(&first_request).expect("initial paragraphs");
+        let styled = handle
+            .layout(&styled_request)
+            .expect("styled incremental paragraphs");
+        let cold = layout_with_editor_fonts(&styled_request);
+
+        assert_eq!(styled.paragraph_cache_hits, 2);
+        assert_eq!(styled.paragraph_cache_misses, 1);
+        assert_eq!(styled.lines, cold.lines);
+        assert_eq!(styled.graphemes, cold.graphemes);
+        assert_eq!(styled.glyphs, cold.glyphs);
+    }
+
+    #[test]
+    fn reflows_cached_paragraph_shapes_when_only_width_changes() {
+        let mut handle = editor_font_handle();
+        let wide_request = request("alpha beta gamma\nstable paragraph", 300.0);
+        let mut narrow_request = wide_request.clone();
+        narrow_request.width = 72.0;
+
+        let wide = handle.layout(&wide_request).expect("wide layout");
+        let narrow = handle.layout(&narrow_request).expect("narrow layout");
+        let cold = layout_with_editor_fonts(&narrow_request);
+
+        assert_eq!(wide.paragraph_cache_misses, 2);
+        assert_eq!(narrow.paragraph_cache_hits, 2);
+        assert_eq!(narrow.paragraph_cache_misses, 0);
+        assert!(narrow.lines.len() > wide.lines.len());
+        assert_eq!(narrow.lines, cold.lines);
+        assert_eq!(narrow.graphemes, cold.graphemes);
+        assert_eq!(narrow.glyphs, cold.glyphs);
+    }
+
+    #[test]
+    fn bounds_the_paragraph_shape_cache_independently_from_exact_layouts() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+
+        for index in 0..8 {
+            handle
+                .layout(&request(&format!("paragraph {index}"), 300.0))
+                .expect("paragraph layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.capacity, 1);
+        assert_eq!(stats.paragraph_entries, 4);
+        assert_eq!(stats.paragraph_capacity, 4);
+        assert_eq!(stats.paragraph_misses, 8);
     }
 
     #[test]
