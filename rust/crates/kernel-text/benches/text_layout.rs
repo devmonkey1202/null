@@ -49,7 +49,7 @@ fn main() {
     let p95 = percentile(&samples, 0.95);
     let stats = handle.stats();
     println!(
-        "kernel-text-large-document graphemes={} runs={} edits={} cold_ms={:.3} warm_p50_ms={:.3} warm_p95_ms={:.3} reused_runs={} reshaped_runs={} run_cache_entries={}/{}",
+        "kernel-text-large-document graphemes={} runs={} edits={} cold_ms={:.3} warm_p50_ms={:.3} warm_p95_ms={:.3} reused_runs={} reshaped_runs={} run_cache_entries={}/{} run_cache_bytes={}/{} evictions={}",
         RUN_COUNT * GRAPHEMES_PER_RUN,
         RUN_COUNT,
         EDIT_ITERATIONS,
@@ -60,6 +60,9 @@ fn main() {
         reshaped_runs,
         stats.shaping_run_entries,
         stats.shaping_run_capacity,
+        stats.shaping_run_bytes,
+        stats.shaping_run_byte_capacity,
+        stats.shaping_run_evictions,
     );
 }
 

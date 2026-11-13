@@ -11,6 +11,7 @@ import type {
   RuntimeGraph,
   SceneDoc,
   TextLayout,
+  TextLayoutCacheStats,
   TransformHandle,
   ValidationReport,
 } from "@/v2/editor/contracts";
@@ -22,6 +23,7 @@ type WasmEditorBridgeModule = {
     dispatch_editor_commands(commandsJson: string): string;
     query_node(nodeId: string): string;
     text_layout(nodeId: string): string;
+    text_layout_cache_stats(): string;
     register_font(family: string, data: Uint8Array, italic: boolean): string;
     unregister_font(family: string, italic: boolean): boolean;
     font_registry(): string;
@@ -190,6 +192,10 @@ export class BrowserWasmEditorBridge implements EditorBridge {
 
     if (selector.kind === "text_layout") {
       return JSON.parse(this.handle.text_layout(selector.nodeId)) as TextLayout;
+    }
+
+    if (selector.kind === "text_layout_cache_stats") {
+      return JSON.parse(this.handle.text_layout_cache_stats()) as TextLayoutCacheStats;
     }
 
     if (selector.kind === "hit_test") {

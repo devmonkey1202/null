@@ -17,6 +17,7 @@ export class WasmEditorBridgeHandle {
     run_validation(): string;
     selection_bounds(): string;
     text_layout(node_id: string): string;
+    text_layout_cache_stats(): string;
     transform_handles(): string;
     unregister_font(family: string, italic: boolean): boolean;
 }
@@ -37,6 +38,7 @@ export interface InitOutput {
     readonly wasmeditorbridgehandle_register_font: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_unregister_font: (a: number, b: number, c: number, d: number) => number;
     readonly wasmeditorbridgehandle_font_registry: (a: number) => [number, number, number, number];
+    readonly wasmeditorbridgehandle_text_layout_cache_stats: (a: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_move_snap: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_resize_snap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_run_validation: (a: number) => [number, number, number, number];

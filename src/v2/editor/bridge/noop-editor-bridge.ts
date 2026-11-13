@@ -3306,6 +3306,24 @@ export class NoopEditorBridge implements EditorBridge {
           .find((candidate) => candidate.id === selector.nodeId);
         return node ? buildFallbackTextLayout(node) : null;
       }
+      case "text_layout_cache_stats":
+        return {
+          hits: 0,
+          misses: 0,
+          entries: 0,
+          capacity: 0,
+          paragraphHits: 0,
+          paragraphMisses: 0,
+          paragraphEntries: 0,
+          paragraphCapacity: 0,
+          shapingRunHits: 0,
+          shapingRunMisses: 0,
+          shapingRunEntries: 0,
+          shapingRunCapacity: 0,
+          shapingRunEvictions: 0,
+          shapingRunBytes: 0,
+          shapingRunByteCapacity: 0,
+        };
       case "hit_test":
         return runHitTest(
           this.document,

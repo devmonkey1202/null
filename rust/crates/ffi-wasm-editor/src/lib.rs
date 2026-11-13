@@ -271,6 +271,15 @@ impl EditorBridgeHandle {
         })
     }
 
+    pub fn text_layout_cache_stats(&self) -> Result<String, CoreError> {
+        serde_json::to_string(&self.text_layout.borrow().stats()).map_err(|error| {
+            CoreError::new(
+                "editor.text_layout_cache_stats.serialize_failed",
+                error.to_string(),
+            )
+        })
+    }
+
     pub fn move_snap(
         &self,
         delta_x: f32,
@@ -475,6 +484,10 @@ impl WasmEditorBridgeHandle {
 
     pub fn font_registry(&self) -> Result<String, JsValue> {
         self.inner.font_registry().map_err(map_js_error)
+    }
+
+    pub fn text_layout_cache_stats(&self) -> Result<String, JsValue> {
+        self.inner.text_layout_cache_stats().map_err(map_js_error)
     }
 
     pub fn move_snap(
@@ -689,7 +702,7 @@ mod tests {
             .text_layout("title")
             .expect("text layout should serialize");
         assert!(text_layout.contains("\"measurementMode\":\"shaped\""));
-        assert!(text_layout.contains("\"engineVersion\":7"));
+        assert!(text_layout.contains("\"engineVersion\":8"));
         assert!(text_layout.contains("\"scriptRunCount\":1"));
         assert!(text_layout.contains("\"resolvedFonts\":[\"Inter\"]"));
         assert!(text_layout.contains("\"fallbackGraphemeCount\":0"));
@@ -698,6 +711,11 @@ mod tests {
 
         let cached_text_layout = bridge.text_layout("title").expect("cached text layout");
         assert!(cached_text_layout.contains("\"cacheHit\":true"));
+        let cache_stats = bridge
+            .text_layout_cache_stats()
+            .expect("text layout cache stats should serialize");
+        assert!(cache_stats.contains("\"shapingRunByteCapacity\":8388608"));
+        assert!(cache_stats.contains("\"shapingRunBytes\":"));
 
         let handles = bridge
             .transform_handles()

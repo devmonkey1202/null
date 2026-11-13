@@ -4,7 +4,10 @@ use rustybuzz::{
     UnicodeBuffer, Variation,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashSet, VecDeque},
+    mem::size_of,
+};
 use ttf_parser::{Face as ParsedFace, Tag};
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::linebreaks;
@@ -12,7 +15,7 @@ use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 7;
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 8;
 
 const MAX_REGISTERED_FONT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FONT_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
@@ -214,6 +217,7 @@ pub struct TextHitTest {
 const DEFAULT_LAYOUT_CACHE_CAPACITY: usize = 32;
 const PARAGRAPH_CACHE_MULTIPLIER: usize = 4;
 const SHAPING_RUN_CACHE_MULTIPLIER: usize = 4;
+const SHAPING_RUN_CACHE_BYTES_PER_ENTRY: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -230,6 +234,9 @@ pub struct TextLayoutCacheStats {
     pub shaping_run_misses: u64,
     pub shaping_run_entries: usize,
     pub shaping_run_capacity: usize,
+    pub shaping_run_evictions: u64,
+    pub shaping_run_bytes: usize,
+    pub shaping_run_byte_capacity: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -322,6 +329,9 @@ impl TextLayoutHandle {
             shaping_run_misses: self.paragraph_cache.shaping_runs.misses,
             shaping_run_entries: self.paragraph_cache.shaping_runs.entries.len(),
             shaping_run_capacity: self.paragraph_cache.shaping_runs.capacity,
+            shaping_run_evictions: self.paragraph_cache.shaping_runs.evictions,
+            shaping_run_bytes: self.paragraph_cache.shaping_runs.retained_bytes,
+            shaping_run_byte_capacity: self.paragraph_cache.shaping_runs.byte_capacity,
         }
     }
 
@@ -708,6 +718,18 @@ impl ShapingRunKey {
             font_family: font_family.to_string(),
         })
     }
+
+    fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.graphemes
+                    .capacity()
+                    .saturating_mul(size_of::<String>()),
+            )
+            .saturating_add(self.graphemes.iter().map(String::capacity).sum::<usize>())
+            .saturating_add(self.style.font_family.capacity())
+            .saturating_add(self.font_family.capacity())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -764,6 +786,27 @@ impl CachedShapingRun {
         }
         true
     }
+
+    fn retained_bytes(&self) -> usize {
+        self.clusters.iter().fold(
+            size_of::<Self>().saturating_add(
+                self.clusters
+                    .capacity()
+                    .saturating_mul(size_of::<CachedClusterShape>()),
+            ),
+            |total, cluster| {
+                cluster.glyphs.iter().fold(
+                    total.saturating_add(
+                        cluster
+                            .glyphs
+                            .capacity()
+                            .saturating_mul(size_of::<ClusterGlyph>()),
+                    ),
+                    |glyph_total, glyph| glyph_total.saturating_add(glyph.font_family.capacity()),
+                )
+            },
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -776,20 +819,34 @@ struct ShapingRunCacheActivity {
 struct ShapingRunCache {
     entries: VecDeque<(ShapingRunKey, CachedShapingRun)>,
     capacity: usize,
+    byte_capacity: usize,
+    retained_bytes: usize,
     hits: u64,
     misses: u64,
+    evictions: u64,
 }
 
 impl ShapingRunCache {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             capacity,
+            byte_capacity: capacity.saturating_mul(SHAPING_RUN_CACHE_BYTES_PER_ENTRY),
             ..Self::default()
         }
     }
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.retained_bytes = 0;
+    }
+
+    fn pop_front(&mut self) {
+        if let Some((key, cached)) = self.entries.pop_front() {
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(shaping_run_entry_bytes(&key, &cached));
+            self.evictions += 1;
+        }
     }
 
     fn shape_or_reuse(
@@ -816,6 +873,9 @@ impl ShapingRunCache {
                 activity.hits += 1;
                 return true;
             }
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(shaping_run_entry_bytes(&cached_key, &cached));
         }
 
         self.misses += 1;
@@ -823,16 +883,26 @@ impl ShapingRunCache {
         if !shape_cluster_run(clusters, font, style, direction, script) {
             return false;
         }
-        if self.capacity > 0 {
-            while self.entries.len() >= self.capacity {
-                self.entries.pop_front();
-            }
+        if self.capacity > 0 && self.byte_capacity > 0 {
             if let Some(cached) = CachedShapingRun::capture(clusters) {
-                self.entries.push_back((key, cached));
+                let entry_bytes = shaping_run_entry_bytes(&key, &cached);
+                if entry_bytes <= self.byte_capacity {
+                    while self.entries.len() >= self.capacity
+                        || self.retained_bytes.saturating_add(entry_bytes) > self.byte_capacity
+                    {
+                        self.pop_front();
+                    }
+                    self.retained_bytes = self.retained_bytes.saturating_add(entry_bytes);
+                    self.entries.push_back((key, cached));
+                }
             }
         }
         true
     }
+}
+
+fn shaping_run_entry_bytes(key: &ShapingRunKey, cached: &CachedShapingRun) -> usize {
+    key.retained_bytes().saturating_add(cached.retained_bytes())
 }
 
 #[derive(Debug, Default)]
@@ -1941,7 +2011,7 @@ mod tests {
             + layout_with_editor_fonts(&right).lines[0].width;
         let pair_width = layout_with_editor_fonts(&pair).lines[0].width;
 
-        assert_eq!(layout.engine_version, 7);
+        assert_eq!(layout.engine_version, 8);
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert_eq!(layout.resolved_fonts, vec!["Inter"]);
         assert!(layout.font_fallbacks.is_empty());
@@ -2279,6 +2349,9 @@ mod tests {
                 shaping_run_misses: 0,
                 shaping_run_entries: 0,
                 shaping_run_capacity: 32,
+                shaping_run_evictions: 0,
+                shaping_run_bytes: 0,
+                shaping_run_byte_capacity: 32 * SHAPING_RUN_CACHE_BYTES_PER_ENTRY,
             }
         );
     }
@@ -2447,6 +2520,33 @@ mod tests {
         assert_eq!(stats.shaping_run_entries, 16);
         assert_eq!(stats.shaping_run_capacity, 16);
         assert_eq!(stats.shaping_run_misses, 20);
+        assert!(stats.shaping_run_bytes <= stats.shaping_run_byte_capacity);
+    }
+
+    #[test]
+    fn bounds_the_shaping_run_cache_by_retained_bytes() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+
+        for index in 0..10 {
+            let content = format!("{index:02}{}", "x".repeat(400));
+            let mut input = request(&content, 10_000.0);
+            input.base_style.font_family = "Inter".to_string();
+            handle.layout(&input).expect("shaping run layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(
+            stats.shaping_run_byte_capacity,
+            16 * SHAPING_RUN_CACHE_BYTES_PER_ENTRY
+        );
+        assert!(stats.shaping_run_entries > 0);
+        assert!(stats.shaping_run_entries < 10);
+        assert!(stats.shaping_run_evictions > 0);
+        assert!(stats.shaping_run_bytes > 0);
+        assert!(stats.shaping_run_bytes <= stats.shaping_run_byte_capacity);
     }
 
     #[test]

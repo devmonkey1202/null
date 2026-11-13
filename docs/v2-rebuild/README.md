@@ -134,7 +134,7 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - auto layout, group, component/instance, rich-text range 기초
 - Unicode grapheme/line-break/caret geometry, 동적 등록 Inter shaping, bidi visual-order geometry를 제공하는 `kernel-text` Phase 2B 일부
 - Inter 4.1 Regular/Italic variable font registry, `ttf-parser` coverage 확인, `rustybuzz` OpenType positioning
-- `TextLayout` v7 glyph/cluster/bidi/script geometry, Hebrew/Arabic RTL shaping, paragraph/run incremental cache와 shaped/mixed/fallback 진단
+- `TextLayout` v8 glyph/cluster/bidi/script geometry, Hebrew/Arabic RTL shaping, paragraph/run incremental cache와 byte-budget 진단
 - Playwright 기반 실제 Rust/WASM 편집 흐름 검증
 
 아직 상용 수준 완료로 간주할 수 없는 핵심 범위:
@@ -148,7 +148,7 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 
 따라서 현재 상태는 **실제 v2 구현 진행 중**이며 **제품 완성이나 교체 준비 완료 상태는 아닙니다.**
 
-### 2026-11-13 Text Engine Phase 2B Partial Checkpoint
+### 2026-11-14 Text Engine Phase 2B Partial Checkpoint
 
 - 기본 Inter 파일과 OFL 원문/해시를 `public/v2/fonts`에 고정
 - Rust native workspace test와 browser WASM text-layout E2E 통과
@@ -160,10 +160,11 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - ISO 15924 script tag와 shaping direction을 Rustybuzz에 명시하고 `scriptRunCount` 및 grapheme별 `script`를 브리지 진단에 노출
 - request 전체 동등성 기반 32-entry Rust LRU layout cache와 browser FFI cache-hit 경로 구현
 - 128-entry paragraph shaping LRU와 512-entry shaping-run LRU를 적용하고 paragraph/style-run 편집을 Rust cold-layout parity와 browser selection E2E로 검증
+- shaping-run cache에 기본 8 MiB retained-payload 상한을 적용하고 bytes/capacity/eviction을 Rust와 WASM 진단으로 노출
 - Noto Sans Hebrew 원본: Google Fonts OFL, SHA-256 `7EF36A2C3593758CDB622E1BDEF4F84523E92FBC3CCC667438DD80FF54C2DE88`
 - Noto Sans Arabic 원본: Google Fonts OFL, SHA-256 `63111B5B2E074DD48CC67692E0A2726D86EE94C1C37FE8598257B7B4E87E869E`
-- 현재 WASM raw 크기는 `2,240,131 bytes`이며 최초 `4,950,594 bytes`보다 `2,710,463 bytes` 감소; WASM+기본 font 4개 자동 gzip gate 합계 `2,220,604 bytes`, production transfer와 startup font fetch/parse는 계속 성능 추적 대상
-- 10k grapheme/100-run/50-edit release benchmark는 로컬 warm p95 `29.543ms`, unchanged run 재사용 `4,950/5,000`을 기록했으나 CI runner 보정 전에는 전 환경 SLO 통과로 판정하지 않음
+- 현재 WASM raw 크기는 `2,244,373 bytes`이며 최초 `4,950,594 bytes`보다 `2,706,221 bytes` 감소; WASM+기본 font 4개 자동 gzip gate 합계 `2,221,422 bytes`, production transfer와 startup font fetch/parse는 계속 성능 추적 대상
+- 10k grapheme/100-run/50-edit release benchmark는 로컬 warm p95 `27.357ms`, unchanged run 재사용 `4,950/5,000`, retained run payload `1,909,500/8,388,608 bytes`를 기록했으나 CI runner 보정 전에는 전 환경 SLO 통과로 판정하지 않음
 - 전역 Space Grotesk/IBM Plex Mono도 OFL 원본을 self-host하여 production build가 Google Fonts 네트워크 상태에 의존하지 않음
 - 이 checkpoint는 Text Engine Phase 2B의 incremental shaping cache 구간 완료를 뜻하며 상용 텍스트 엔진 전체 완료를 뜻하지 않음
 

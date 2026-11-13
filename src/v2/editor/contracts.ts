@@ -430,11 +430,30 @@ export type TextLayout = {
   shapingRunCacheMisses: number;
 };
 
+export type TextLayoutCacheStats = {
+  hits: number;
+  misses: number;
+  entries: number;
+  capacity: number;
+  paragraphHits: number;
+  paragraphMisses: number;
+  paragraphEntries: number;
+  paragraphCapacity: number;
+  shapingRunHits: number;
+  shapingRunMisses: number;
+  shapingRunEntries: number;
+  shapingRunCapacity: number;
+  shapingRunEvictions: number;
+  shapingRunBytes: number;
+  shapingRunByteCapacity: number;
+};
+
 export type BridgeQuery =
   | { kind: "selection" }
   | { kind: "document" }
   | { kind: "node"; nodeId: string }
   | { kind: "text_layout"; nodeId: string }
+  | { kind: "text_layout_cache_stats" }
   | { kind: "hit_test"; pageId: string; x: number; y: number; mode?: HitTestMode }
   | { kind: "selection_bounds" }
   | { kind: "transform_handles" }

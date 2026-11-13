@@ -123,6 +123,7 @@
 - 앞 문단 길이 변경, 문단별 style run 변경, width-only reflow에 대한 paragraph shaping cache hit와 cold-layout geometry parity Rust test
 - 동일 길이 문단 로컬 편집 후 unchanged paragraph shaping reuse Playwright E2E
 - dirty paragraph 내부 style-run 변경 시 unchanged shaping-run reuse와 cold-layout glyph/caret parity Rust test
+- long shaping-run sequence에서 retained-payload byte budget, LRU eviction, stats serialization Rust/FFI test
 - selection style edit -> WASM run-cache reuse -> inspector diagnostics Playwright E2E
 - `cargo bench -p kernel-text --bench text_layout` 10k grapheme/100-run incremental release benchmark
 - `npm run verify:v2:assets`로 font SHA-256, raw WASM 3 MB, WASM+기본 font gzip 2.5 MB 상한을 CI에서 차단
@@ -132,5 +133,5 @@
 - CJK bundled/streamed fallback font
 - Syriac 등 기타 RTL glyph shaping과 Script_Extensions 교집합 기반 정밀 itemization
 - glyph atlas/render command renderer
-- multi-script/very-large document benchmark, byte-accurate cache memory profile, calibrated CI performance gate
+- multi-script/very-large document benchmark, allocator overhead/fragmentation을 포함한 process-memory profile, calibrated CI performance gate
 - editor/preview/publish pixel parity

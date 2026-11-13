@@ -167,13 +167,14 @@ Implemented in `kernel-text` Phase 2B partial:
 - exact-request bounded LRU layout cache and WASM diagnostics
 - paragraph-relative bounded shaping LRU with UTF-16 offset relocation, width-only reflow reuse, WASM diagnostics, and cold-layout parity tests
 - script/bidi/font/style/text-keyed shaping-run LRU with relative glyph relocation, selection-style-edit browser coverage, and a reproducible 10k-grapheme release benchmark
+- shaping-run key/glyph retained-payload accounting, 8 MiB byte budget, oversize insertion rejection, and LRU eviction diagnostics
 
 Not yet implemented and still release-blocking:
 
 - end-user font ingestion UI, project font manifest/persistence, content-hash persistent cache, and a CJK fallback set
 - other RTL shaping, Script_Extensions refinement, and configurable OpenType features
 - glyph raster/atlas and GPU render commands
-- multi-script/very-large-document cache profiling and a byte-accurate cache memory budget
+- multi-script/very-large-document profiling and allocator overhead/fragmentation을 포함한 process-memory budget 검증
 - editor/preview/publish shaped-text visual parity
 
 Any grapheme reported through `deterministic_fallback` or `mixed` measurement must not be described as Figma-grade text rendering.

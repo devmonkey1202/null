@@ -31,6 +31,7 @@ test("v2 editor measures unicode text and auto height through wasm", async ({ pa
 
   await titleLayer.click();
   const summary = inspector.getByTestId("v2-text-layout-summary");
+  await expect(inspector.getByTestId("v2-text-cache-memory")).toContainText("/ 8.0 MB cache");
   await expect(summary).toBeVisible();
   await expect(summary).toContainText("1 line");
   await expect(summary).toContainText("font shaped");

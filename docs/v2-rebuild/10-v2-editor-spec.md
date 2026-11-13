@@ -255,6 +255,14 @@ Phase 2B incremental shaping-run checkpoint (`TextLayout.engineVersion = 7`):
 - `shapingRunCacheHits`, `shapingRunCacheMisses`를 WASM/TypeScript/inspector에 노출하고 selection style edit Playwright E2E로 실제 브리지 경로 검증
 - 10,000 grapheme, 100 style-run, 50 incremental edit native release benchmark를 `cargo bench -p kernel-text --bench text_layout`로 재현
 
+Phase 2B byte-bounded shaping cache checkpoint (`TextLayout.engineVersion = 8`):
+
+- shaping-run LRU에 entry 상한과 별도로 기본 `8 MiB` retained-payload 상한을 적용
+- key의 grapheme/style/font 문자열 capacity와 cached cluster/glyph vector 및 glyph font-family capacity를 항목별로 추적
+- 단일 run이 byte budget보다 크면 cache insertion을 생략하고, 누적 budget을 넘으면 oldest run부터 제거
+- `shapingRunBytes`, `shapingRunByteCapacity`, `shapingRunEvictions`를 `TextLayoutCacheStats`와 WASM FFI에 노출
+- allocator metadata와 fragmentation까지 포함한 process-memory profiling은 별도 calibrated benchmark release blocker로 유지
+
 현재 명시적 한계:
 
 - 현재 기본 face 4개(Inter regular/italic, Noto Sans Hebrew/Arabic)는 같은 origin의 public asset을 동적 등록하며 WASM binary에 font bytes를 내장하지 않는다.

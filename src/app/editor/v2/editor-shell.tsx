@@ -31,6 +31,7 @@ import type {
   TextAlign,
   TextCase,
   TextLayout,
+  TextLayoutCacheStats,
   TextSizingMode,
   TextRange,
   TextStylePatch,
@@ -1663,6 +1664,7 @@ export function V2EditorShell() {
   const [inspectorTextSelection, setInspectorTextSelection] = useState<{ start: number; end: number } | null>(null);
   const [activeTextRangeIndex, setActiveTextRangeIndex] = useState<number | null>(null);
   const [activeTextLayout, setActiveTextLayout] = useState<TextLayout | null>(null);
+  const [activeTextCacheStats, setActiveTextCacheStats] = useState<TextLayoutCacheStats | null>(null);
   const [activePathPointIndex, setActivePathPointIndex] = useState<number | null>(null);
   const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
@@ -1865,20 +1867,25 @@ export function V2EditorShell() {
     if (!bridge || activeNode?.kind !== "text" || !activeNode.text) {
       textLayoutQuerySeqRef.current += 1;
       setActiveTextLayout(null);
+      setActiveTextCacheStats(null);
       return;
     }
 
     const sequence = ++textLayoutQuerySeqRef.current;
-    void bridge
-      .query({ kind: "text_layout", nodeId: activeNode.id })
-      .then((result) => {
+    void Promise.all([
+      bridge.query({ kind: "text_layout", nodeId: activeNode.id }),
+      bridge.query({ kind: "text_layout_cache_stats" }),
+    ])
+      .then(([result, cacheStats]) => {
         if (textLayoutQuerySeqRef.current === sequence) {
           setActiveTextLayout((result as TextLayout | null) ?? null);
+          setActiveTextCacheStats((cacheStats as TextLayoutCacheStats | null) ?? null);
         }
       })
       .catch(() => {
         if (textLayoutQuerySeqRef.current === sequence) {
           setActiveTextLayout(null);
+          setActiveTextCacheStats(null);
         }
       });
   }, [activeNode, bridgeInfo?.kernel, snapshot?.version]);
@@ -5882,6 +5889,12 @@ export function V2EditorShell() {
                                 <span>
                                   {activeTextLayout.shapingRunCacheHits} shaping run
                                   {activeTextLayout.shapingRunCacheHits === 1 ? "" : "s"} reused
+                                </span>
+                              ) : null}
+                              {activeTextCacheStats?.shapingRunByteCapacity ? (
+                                <span data-testid="v2-text-cache-memory">
+                                  {(activeTextCacheStats.shapingRunBytes / 1024 / 1024).toFixed(1)} /{" "}
+                                  {(activeTextCacheStats.shapingRunByteCapacity / 1024 / 1024).toFixed(1)} MB cache
                                 </span>
                               ) : null}
                               {activeTextLayout.bidiParagraphCount ? (
