@@ -356,7 +356,7 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
   });
 
   return {
-    engineVersion: 6,
+    engineVersion: 7,
     measurementMode: "deterministic_fallback",
     width,
     height: Math.max(y, text.lineHeight, 1),
@@ -386,6 +386,8 @@ export function buildFallbackTextLayout(node: SceneNode): TextLayout | null {
     cacheHit: false,
     paragraphCacheHits: 0,
     paragraphCacheMisses: 0,
+    shapingRunCacheHits: 0,
+    shapingRunCacheMisses: 0,
   };
 }
 

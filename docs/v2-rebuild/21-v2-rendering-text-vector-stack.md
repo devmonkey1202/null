@@ -166,13 +166,14 @@ Implemented in `kernel-text` Phase 2B partial:
 - Unicode 17 script itemization with ISO 15924 tags passed to Rustybuzz
 - exact-request bounded LRU layout cache and WASM diagnostics
 - paragraph-relative bounded shaping LRU with UTF-16 offset relocation, width-only reflow reuse, WASM diagnostics, and cold-layout parity tests
+- script/bidi/font/style/text-keyed shaping-run LRU with relative glyph relocation, selection-style-edit browser coverage, and a reproducible 10k-grapheme release benchmark
 
 Not yet implemented and still release-blocking:
 
 - end-user font ingestion UI, project font manifest/persistence, content-hash persistent cache, and a CJK fallback set
 - other RTL shaping, Script_Extensions refinement, and configurable OpenType features
 - glyph raster/atlas and GPU render commands
-- run-level incremental shaping inside a dirty paragraph and large-document cache profiling
+- multi-script/very-large-document cache profiling and a byte-accurate cache memory budget
 - editor/preview/publish shaped-text visual parity
 
 Any grapheme reported through `deterministic_fallback` or `mixed` measurement must not be described as Figma-grade text rendering.

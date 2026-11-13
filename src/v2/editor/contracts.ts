@@ -426,6 +426,8 @@ export type TextLayout = {
   cacheHit: boolean;
   paragraphCacheHits: number;
   paragraphCacheMisses: number;
+  shapingRunCacheHits: number;
+  shapingRunCacheMisses: number;
 };
 
 export type BridgeQuery =

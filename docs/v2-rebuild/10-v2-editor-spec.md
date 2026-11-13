@@ -245,7 +245,15 @@ Phase 2B incremental paragraph shaping checkpoint (`TextLayout.engineVersion = 6
 - 문단 content 또는 해당 문단과 교차하는 style run만 바뀌면 dirty 문단만 다시 shape하고 나머지 문단은 재사용
 - font 등록, 교체, 해제 시 exact-request cache와 paragraph cache를 함께 비워 stale glyph geometry를 차단
 - `paragraphCacheHits`, `paragraphCacheMisses`를 WASM/TypeScript/inspector에 노출하고 Rust cold-layout parity test와 Playwright 편집 test로 검증
-- 한 문단 내부에서 변경되지 않은 shaping run까지 부분 재사용하는 run-level cache는 아직 구현되지 않았으며 후속 성능 게이트로 유지
+
+Phase 2B incremental shaping-run checkpoint (`TextLayout.engineVersion = 7`):
+
+- paragraph miss 내부에서 script, bidi level, resolved font, full text style, grapheme sequence가 모두 같은 shaping run만 재사용하는 기본 512-entry LRU 적용
+- cache에는 line-break metadata가 아니라 상대 UTF-16 glyph cluster, advance, OpenType positioning만 저장하여 문단 줄바꿈 문맥은 항상 다시 계산
+- 한 style run만 변경되면 dirty run만 Rustybuzz로 다시 shape하고 같은 문단의 나머지 run geometry는 상대 offset을 재배치해 재사용
+- font 등록, 교체, 해제 시 paragraph/run cache를 함께 비우고 cache별 entry/capacity/hit/miss를 `TextLayoutCacheStats`에 노출
+- `shapingRunCacheHits`, `shapingRunCacheMisses`를 WASM/TypeScript/inspector에 노출하고 selection style edit Playwright E2E로 실제 브리지 경로 검증
+- 10,000 grapheme, 100 style-run, 50 incremental edit native release benchmark를 `cargo bench -p kernel-text --bench text_layout`로 재현
 
 현재 명시적 한계:
 

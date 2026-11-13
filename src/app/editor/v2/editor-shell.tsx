@@ -5878,6 +5878,12 @@ export function V2EditorShell() {
                                   {activeTextLayout.paragraphCacheHits === 1 ? "" : "s"} reused
                                 </span>
                               ) : null}
+                              {activeTextLayout.shapingRunCacheHits ? (
+                                <span>
+                                  {activeTextLayout.shapingRunCacheHits} shaping run
+                                  {activeTextLayout.shapingRunCacheHits === 1 ? "" : "s"} reused
+                                </span>
+                              ) : null}
                               {activeTextLayout.bidiParagraphCount ? (
                                 <span>{activeTextLayout.bidiParagraphCount} bidi</span>
                               ) : null}

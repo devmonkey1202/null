@@ -119,21 +119,23 @@
 - B -> C 전환용 데이터 로그를 코드에서 정확히 남겨야 함
 - 현재 v2 UI 셸은 여전히 kernel 전체가 아니라 점진 구현 단계
 
-### 7.1 2026-10-15 구현 교차검증
+### 7.1 2026-11-13 구현 교차검증
 
-- `kernel-text` 계약과 TypeScript `TextLayout` 계약은 engine version 5로 일치
+- `kernel-text` 계약과 TypeScript `TextLayout` 계약은 engine version 7로 일치
 - scene auto-height와 FFI `text_layout`은 동일 Rust layout 함수를 사용
 - browser shell은 regenerated release WASM을 사용하며 noop fallback과 측정 mode를 구분
 - browser CSS와 Rust shaping은 동일 Inter/Noto 파일을 사용하며, 기본 face 4개 모두 startup fetch 후 registry에 등록하고 WASM에는 font bytes를 중복 내장하지 않음
 - Rust workspace tests와 Playwright text-layout E2E 통과
 - UAX #9 visual order, RTL caret/hit-test, 혼합 방향 split selection은 Rust test로 검증하고 browser inspector bidi 진단은 Playwright로 검증
 - `TextLayoutHandle`의 bounded exact-request LRU를 browser FFI가 직접 사용하며 hit/miss/eviction과 browser cache reuse를 검증
+- paragraph-relative 128-entry cache와 shaping-run 512-entry cache의 hit/miss/eviction, UTF-16 offset relocation, cold-layout geometry parity를 Rust test로 검증
+- browser selection style edit에서 unchanged shaping run reuse가 WASM/TypeScript/inspector까지 전달됨을 Playwright로 검증
 - production build의 `next/font/google` 네트워크 실패를 제거하기 위해 Space Grotesk/IBM Plex Mono를 OFL self-host asset으로 고정
 - Hebrew RTL shaping과 bidi geometry 구현 증거를 Rust 및 browser acceptance test로 확보
 - Unicode 17 기반 script itemization, ISO 15924 Rustybuzz 전달, grapheme `script`, `scriptRunCount`는 Rust/FFI/TypeScript/Playwright 계약에서 교차검증
 - Noto Sans Arabic fallback과 RTL shaping은 Rust/browser에서 검증했지만 Script_Extensions 정밀 해소, 기타 RTL 폰트, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
 - dynamic registry의 invalid/oversized face 거부, 등록/해제, cache invalidation과 FFI 전달을 Rust test로 검증
-- raw editor WASM은 `2,215,597 bytes`, WASM+기본 font 4개 자동 gzip gate 합계는 `2,213,365 bytes`; production transport와 font fetch/parse SLO는 아직 미측정
+- raw editor WASM은 `2,240,131 bytes`, WASM+기본 font 4개 자동 gzip gate 합계는 `2,220,604 bytes`; 10k/100-run local warm p95는 `29.543ms`지만 calibrated CI, production transport, font fetch/parse SLO는 아직 미측정
 
 ## 8. 실행 판단
 

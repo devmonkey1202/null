@@ -136,6 +136,39 @@ test("v2 editor reuses unchanged paragraph shaping after a local edit", async ({
   await expect(summary).toContainText("font shaped");
 });
 
+test("v2 editor reuses unchanged shaping runs after a selection style edit", async ({ page }) => {
+  await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();
+
+  const layerPanel = page.locator("aside").first();
+  const inspector = page.locator("aside").last();
+  await layerPanel.getByRole("button", { name: /Title/ }).first().click();
+
+  const summary = inspector.getByTestId("v2-text-layout-summary");
+  const contentEditor = inspector.locator("textarea").first();
+  await contentEditor.fill("alphabetagamma");
+  await expect(contentEditor).toHaveValue("alphabetagamma");
+  await expect(summary).toContainText("font shaped");
+
+  await contentEditor.evaluate((element: HTMLTextAreaElement) => {
+    element.focus();
+    element.setSelectionRange(0, 6);
+    element.dispatchEvent(new Event("select", { bubbles: true }));
+    element.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+  const selectedTextScope = inspector.getByRole("button", {
+    name: "Selected text",
+    exact: true,
+  });
+  await expect(selectedTextScope).toBeVisible();
+  await selectedTextScope.click();
+  await inspector.getByRole("button", { name: "Bold", exact: true }).click();
+
+  await expect(summary).toContainText("1 shaping run reused");
+  await expect(summary).toContainText("font shaped");
+});
+
 test("v2 editor shapes Arabic with a dynamically registered script fallback", async ({ page }) => {
   await page.goto("/editor/v2", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("kernel: rust-wasm", { exact: true })).toBeVisible();

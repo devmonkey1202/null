@@ -12,7 +12,7 @@ use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 6;
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 7;
 
 const MAX_REGISTERED_FONT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FONT_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
@@ -199,6 +199,8 @@ pub struct TextLayout {
     pub cache_hit: bool,
     pub paragraph_cache_hits: usize,
     pub paragraph_cache_misses: usize,
+    pub shaping_run_cache_hits: usize,
+    pub shaping_run_cache_misses: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -211,6 +213,7 @@ pub struct TextHitTest {
 
 const DEFAULT_LAYOUT_CACHE_CAPACITY: usize = 32;
 const PARAGRAPH_CACHE_MULTIPLIER: usize = 4;
+const SHAPING_RUN_CACHE_MULTIPLIER: usize = 4;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +226,10 @@ pub struct TextLayoutCacheStats {
     pub paragraph_misses: u64,
     pub paragraph_entries: usize,
     pub paragraph_capacity: usize,
+    pub shaping_run_hits: u64,
+    pub shaping_run_misses: u64,
+    pub shaping_run_entries: usize,
+    pub shaping_run_capacity: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -311,6 +318,10 @@ impl TextLayoutHandle {
             paragraph_misses: self.paragraph_cache.misses,
             paragraph_entries: self.paragraph_cache.entries.len(),
             paragraph_capacity: self.paragraph_cache.capacity,
+            shaping_run_hits: self.paragraph_cache.shaping_runs.hits,
+            shaping_run_misses: self.paragraph_cache.shaping_runs.misses,
+            shaping_run_entries: self.paragraph_cache.shaping_runs.entries.len(),
+            shaping_run_capacity: self.paragraph_cache.shaping_runs.capacity,
         }
     }
 
@@ -674,15 +685,102 @@ struct CachedParagraphShape {
     diagnostics: LayoutDiagnostics,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct ShapingRunKey {
+    graphemes: Vec<String>,
+    style: TextStyleMetrics,
+    bidi_level: u8,
+    script: Script,
+    font_family: String,
+}
+
+impl ShapingRunKey {
+    fn new(clusters: &[Cluster], font_family: &str) -> Option<Self> {
+        let first = clusters.first()?;
+        Some(Self {
+            graphemes: clusters
+                .iter()
+                .map(|cluster| cluster.shaping_text.clone())
+                .collect(),
+            style: first.style.clone(),
+            bidi_level: first.bidi_level,
+            script: first.script,
+            font_family: font_family.to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedClusterShape {
+    advance: f32,
+    glyphs: Vec<ClusterGlyph>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedShapingRun {
+    clusters: Vec<CachedClusterShape>,
+}
+
+impl CachedShapingRun {
+    fn capture(clusters: &[Cluster]) -> Option<Self> {
+        let origin = clusters.first()?.start;
+        Some(Self {
+            clusters: clusters
+                .iter()
+                .map(|cluster| CachedClusterShape {
+                    advance: cluster.advance,
+                    glyphs: cluster
+                        .glyphs
+                        .iter()
+                        .cloned()
+                        .map(|mut glyph| {
+                            glyph.cluster_start = glyph.cluster_start.saturating_sub(origin);
+                            glyph.cluster_end = glyph.cluster_end.saturating_sub(origin);
+                            glyph
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    fn apply(&self, clusters: &mut [Cluster]) -> bool {
+        if self.clusters.len() != clusters.len() || clusters.is_empty() {
+            return false;
+        }
+        let origin = clusters[0].start;
+        for (cluster, cached) in clusters.iter_mut().zip(&self.clusters) {
+            cluster.advance = cached.advance;
+            cluster.glyphs = cached
+                .glyphs
+                .iter()
+                .cloned()
+                .map(|mut glyph| {
+                    glyph.cluster_start += origin;
+                    glyph.cluster_end += origin;
+                    glyph
+                })
+                .collect();
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ShapingRunCacheActivity {
+    hits: usize,
+    misses: usize,
+}
+
 #[derive(Debug, Default)]
-struct ParagraphShapeCache {
-    entries: VecDeque<(ParagraphShapeKey, CachedParagraphShape)>,
+struct ShapingRunCache {
+    entries: VecDeque<(ShapingRunKey, CachedShapingRun)>,
     capacity: usize,
     hits: u64,
     misses: u64,
 }
 
-impl ParagraphShapeCache {
+impl ShapingRunCache {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             capacity,
@@ -694,11 +792,79 @@ impl ParagraphShapeCache {
         self.entries.clear();
     }
 
+    fn shape_or_reuse(
+        &mut self,
+        clusters: &mut [Cluster],
+        font: RegisteredFont<'_>,
+        style: &TextStyleMetrics,
+        direction: TextDirection,
+        script: Script,
+        activity: &mut ShapingRunCacheActivity,
+    ) -> bool {
+        let Some(key) = ShapingRunKey::new(clusters, font.family) else {
+            return false;
+        };
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|(cached_key, _)| cached_key == &key)
+        {
+            let (cached_key, cached) = self.entries.remove(index).expect("cache index must exist");
+            if cached.apply(clusters) {
+                self.entries.push_back((cached_key, cached));
+                self.hits += 1;
+                activity.hits += 1;
+                return true;
+            }
+        }
+
+        self.misses += 1;
+        activity.misses += 1;
+        if !shape_cluster_run(clusters, font, style, direction, script) {
+            return false;
+        }
+        if self.capacity > 0 {
+            while self.entries.len() >= self.capacity {
+                self.entries.pop_front();
+            }
+            if let Some(cached) = CachedShapingRun::capture(clusters) {
+                self.entries.push_back((key, cached));
+            }
+        }
+        true
+    }
+}
+
+#[derive(Debug, Default)]
+struct ParagraphShapeCache {
+    entries: VecDeque<(ParagraphShapeKey, CachedParagraphShape)>,
+    capacity: usize,
+    hits: u64,
+    misses: u64,
+    shaping_runs: ShapingRunCache,
+}
+
+impl ParagraphShapeCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            shaping_runs: ShapingRunCache::with_capacity(
+                capacity.saturating_mul(SHAPING_RUN_CACHE_MULTIPLIER),
+            ),
+            ..Self::default()
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.shaping_runs.clear();
+    }
+
     fn resolve(
         &mut self,
         key: ParagraphShapeKey,
         registry: &FontRegistry,
-    ) -> (CachedParagraphShape, bool) {
+    ) -> (CachedParagraphShape, bool, ShapingRunCacheActivity) {
         if let Some(index) = self
             .entries
             .iter()
@@ -707,12 +873,21 @@ impl ParagraphShapeCache {
             let (cached_key, cached) = self.entries.remove(index).expect("cache index must exist");
             self.entries.push_back((cached_key, cached.clone()));
             self.hits += 1;
-            return (cached, true);
+            return (cached, true, ShapingRunCacheActivity::default());
         }
 
         let request = key.as_request();
         let mut diagnostics = LayoutDiagnostics::default();
-        let layout = build_clusters(&request, &key.content, 0, registry, &mut diagnostics);
+        let mut activity = ShapingRunCacheActivity::default();
+        let layout = build_clusters_with_run_cache(
+            &request,
+            &key.content,
+            0,
+            registry,
+            &mut diagnostics,
+            Some(&mut self.shaping_runs),
+            &mut activity,
+        );
         let cached = CachedParagraphShape {
             layout,
             diagnostics,
@@ -724,7 +899,7 @@ impl ParagraphShapeCache {
             }
             self.entries.push_back((key, cached.clone()));
         }
-        (cached, false)
+        (cached, false, activity)
     }
 }
 
@@ -764,13 +939,17 @@ fn layout_text_with_registry_and_cache(
     let mut glyphs = Vec::new();
     let mut paragraph_cache_hits = 0usize;
     let mut paragraph_cache_misses = 0usize;
+    let mut shaping_run_cache_hits = 0usize;
+    let mut shaping_run_cache_misses = 0usize;
 
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
         let mut paragraph_layout = if let Some(cache) = paragraph_cache.as_deref_mut() {
             let key = ParagraphShapeKey::from_request(request, paragraph, global_utf16_offset);
-            let (cached, hit) = cache.resolve(key, registry);
+            let (cached, hit, run_activity) = cache.resolve(key, registry);
             paragraph_cache_hits += usize::from(hit);
             paragraph_cache_misses += usize::from(!hit);
+            shaping_run_cache_hits += run_activity.hits;
+            shaping_run_cache_misses += run_activity.misses;
             diagnostics.merge(&cached.diagnostics);
             cached.layout
         } else {
@@ -975,6 +1154,8 @@ fn layout_text_with_registry_and_cache(
         cache_hit: false,
         paragraph_cache_hits,
         paragraph_cache_misses,
+        shaping_run_cache_hits,
+        shaping_run_cache_misses,
     })
 }
 
@@ -1086,6 +1267,27 @@ fn build_clusters(
     registry: &FontRegistry,
     diagnostics: &mut LayoutDiagnostics,
 ) -> ParagraphClusters {
+    let mut activity = ShapingRunCacheActivity::default();
+    build_clusters_with_run_cache(
+        request,
+        paragraph,
+        global_utf16_offset,
+        registry,
+        diagnostics,
+        None,
+        &mut activity,
+    )
+}
+
+fn build_clusters_with_run_cache(
+    request: &TextLayoutRequest,
+    paragraph: &str,
+    global_utf16_offset: usize,
+    registry: &FontRegistry,
+    diagnostics: &mut LayoutDiagnostics,
+    run_cache: Option<&mut ShapingRunCache>,
+    run_activity: &mut ShapingRunCacheActivity,
+) -> ParagraphClusters {
     let bidi = BidiInfo::new(paragraph, None);
     let paragraph_level = bidi
         .paragraphs
@@ -1142,7 +1344,13 @@ fn build_clusters(
 
     resolve_cluster_scripts(&mut clusters);
     diagnostics.script_run_count += script_run_count(&clusters);
-    shape_clusters(&mut clusters, registry, diagnostics);
+    shape_clusters(
+        &mut clusters,
+        registry,
+        diagnostics,
+        run_cache,
+        run_activity,
+    );
     ParagraphClusters {
         clusters,
         base_direction,
@@ -1153,6 +1361,8 @@ fn shape_clusters(
     clusters: &mut [Cluster],
     registry: &FontRegistry,
     diagnostics: &mut LayoutDiagnostics,
+    mut run_cache: Option<&mut ShapingRunCache>,
+    run_activity: &mut ShapingRunCacheActivity,
 ) {
     let mut start = 0usize;
     while start < clusters.len() {
@@ -1191,7 +1401,19 @@ fn shape_clusters(
             end += 1;
         }
 
-        if shape_cluster_run(&mut clusters[start..end], font, &style, direction, script) {
+        let shaped = if let Some(cache) = run_cache.as_deref_mut() {
+            cache.shape_or_reuse(
+                &mut clusters[start..end],
+                font,
+                &style,
+                direction,
+                script,
+                run_activity,
+            )
+        } else {
+            shape_cluster_run(&mut clusters[start..end], font, &style, direction, script)
+        };
+        if shaped {
             diagnostics.shaped_run_count += 1;
             push_unique(&mut diagnostics.resolved_fonts, font.family.to_string());
         } else {
@@ -1719,7 +1941,7 @@ mod tests {
             + layout_with_editor_fonts(&right).lines[0].width;
         let pair_width = layout_with_editor_fonts(&pair).lines[0].width;
 
-        assert_eq!(layout.engine_version, 6);
+        assert_eq!(layout.engine_version, 7);
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert_eq!(layout.resolved_fonts, vec!["Inter"]);
         assert!(layout.font_fallbacks.is_empty());
@@ -2053,6 +2275,10 @@ mod tests {
                 paragraph_misses: 1,
                 paragraph_entries: 1,
                 paragraph_capacity: 8,
+                shaping_run_hits: 0,
+                shaping_run_misses: 0,
+                shaping_run_entries: 0,
+                shaping_run_capacity: 32,
             }
         );
     }
@@ -2110,6 +2336,62 @@ mod tests {
     }
 
     #[test]
+    fn reuses_unchanged_shaping_runs_inside_a_dirty_paragraph() {
+        let mut handle = editor_font_handle();
+        let mut first_request = request("alphabetagamma", 300.0);
+        first_request.base_style.font_family = "Inter".to_string();
+        first_request.runs = vec![
+            TextLayoutRun {
+                start: 0,
+                end: 5,
+                style: TextStyleMetrics {
+                    font_family: "Inter".to_string(),
+                    font_weight: 400,
+                    ..TextStyleMetrics::default()
+                },
+            },
+            TextLayoutRun {
+                start: 5,
+                end: 9,
+                style: TextStyleMetrics {
+                    font_family: "Inter".to_string(),
+                    font_weight: 500,
+                    ..TextStyleMetrics::default()
+                },
+            },
+            TextLayoutRun {
+                start: 9,
+                end: 14,
+                style: TextStyleMetrics {
+                    font_family: "Inter".to_string(),
+                    font_weight: 600,
+                    ..TextStyleMetrics::default()
+                },
+            },
+        ];
+        let mut changed_request = first_request.clone();
+        changed_request.runs[1].style.font_weight = 550;
+
+        let first = handle.layout(&first_request).expect("initial shaping runs");
+        let changed = handle
+            .layout(&changed_request)
+            .expect("incremental shaping runs");
+        let cold = layout_with_editor_fonts(&changed_request);
+
+        assert_eq!(first.shaping_run_cache_hits, 0);
+        assert_eq!(first.shaping_run_cache_misses, 3);
+        assert_eq!(changed.paragraph_cache_hits, 0);
+        assert_eq!(changed.paragraph_cache_misses, 1);
+        assert_eq!(changed.shaping_run_cache_hits, 2);
+        assert_eq!(changed.shaping_run_cache_misses, 1);
+        assert_eq!(changed.lines, cold.lines);
+        assert_eq!(changed.graphemes, cold.graphemes);
+        assert_eq!(changed.carets, cold.carets);
+        assert_eq!(changed.glyphs, cold.glyphs);
+        assert_eq!(changed.resolved_fonts, cold.resolved_fonts);
+    }
+
+    #[test]
     fn reflows_cached_paragraph_shapes_when_only_width_changes() {
         let mut handle = editor_font_handle();
         let wide_request = request("alpha beta gamma\nstable paragraph", 300.0);
@@ -2145,6 +2427,26 @@ mod tests {
         assert_eq!(stats.paragraph_entries, 4);
         assert_eq!(stats.paragraph_capacity, 4);
         assert_eq!(stats.paragraph_misses, 8);
+    }
+
+    #[test]
+    fn bounds_the_shaping_run_cache_independently_from_paragraphs() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+
+        for index in 0..20 {
+            let mut input = request(&format!("unique shaping run {index}"), 300.0);
+            input.base_style.font_family = "Inter".to_string();
+            handle.layout(&input).expect("shaping run layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(stats.paragraph_entries, 4);
+        assert_eq!(stats.shaping_run_entries, 16);
+        assert_eq!(stats.shaping_run_capacity, 16);
+        assert_eq!(stats.shaping_run_misses, 20);
     }
 
     #[test]

@@ -18,3 +18,7 @@ unicode-width = "0.2.2"
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "text_layout"
+harness = false
