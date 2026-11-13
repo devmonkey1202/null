@@ -7,6 +7,7 @@ import type {
   RenderTransform,
 } from "@/v2/editor/contracts";
 import {
+  buildWebGlDrawPlan,
   buildWebGlPrimitiveBatch,
   parseRenderColor,
   WEBGL_INSTANCE_FLOATS,
@@ -47,7 +48,7 @@ function item(
 
 function renderList(items: RenderItem[]): RenderList {
   return {
-    version: 1,
+    version: 2,
     pageId: "page-1",
     revision: "0123456789abcdef",
     viewport: { x: 0, y: 0, width: 800, height: 600, scale: 1, overscan: 64 },
@@ -61,6 +62,9 @@ function renderList(items: RenderItem[]): RenderList {
       commandCount: items.length,
       glyphCount: 0,
       textRunCount: 0,
+      pathCount: 0,
+      vectorVertexCount: 0,
+      vectorIndexCount: 0,
     },
   };
 }
@@ -163,5 +167,125 @@ describe("v2 WebGL render batches", () => {
     expect(batch.unsupportedCommandIds).toEqual(["path:shape", "image:placeholder"]);
     expect(batch.skippedCommandIds).toEqual(["empty:shape"]);
     expect(batch.invalidPaintCommandIds).toEqual(["invalid:shape"]);
+  });
+
+  it("preserves z-order while interleaving instanced shapes and Rust path meshes", () => {
+    const path = item(
+      "path:shape",
+      2,
+      {
+        kind: "path",
+        points: [],
+        closed: true,
+        paint: PAINT,
+        geometry: {
+          version: 1,
+          tolerance: 0.25,
+          fill: {
+            vertices: [
+              { x: 0, y: 0 },
+              { x: 20, y: 0 },
+              { x: 10, y: 20 },
+            ],
+            indices: [0, 1, 2],
+            bounds: { x: 0, y: 0, width: 20, height: 20 },
+          },
+          stroke: {
+            vertices: [
+              { x: -1, y: -1 },
+              { x: 21, y: -1 },
+              { x: 10, y: 21 },
+            ],
+            indices: [0, 1, 2],
+            bounds: { x: -1, y: -1, width: 22, height: 22 },
+          },
+          stats: {
+            pathPointCount: 3,
+            fillVertexCount: 3,
+            fillIndexCount: 3,
+            strokeVertexCount: 3,
+            strokeIndexCount: 3,
+          },
+          fingerprint: "geometry-1",
+        },
+      },
+      { ...IDENTITY, dx: 10, dy: 20 },
+    );
+    const plan = buildWebGlDrawPlan(
+      renderList([
+        item("ellipse:shape", 3, { kind: "ellipse", width: 20, height: 20, paint: PAINT }),
+        path,
+        item("rect:shape", 1, {
+          kind: "rect",
+          width: 20,
+          height: 20,
+          cornerRadius: 2,
+          paint: PAINT,
+        }),
+      ]),
+    );
+
+    expect(plan.operations.map((operation) => operation.kind)).toEqual([
+      "instances",
+      "mesh",
+      "instances",
+    ]);
+    expect(plan.instanceCount).toBe(2);
+    expect(plan.meshVertexCount).toBe(6);
+    expect(plan.meshIndexCount).toBe(6);
+    expect(plan.triangleCount).toBe(6);
+    expect(plan.supportedCommandIds).toEqual(["rect:shape", "path:shape", "ellipse:shape"]);
+    expect(plan.unsupportedCommandIds).toEqual([]);
+    const meshOperation = plan.operations[1];
+    expect(meshOperation.kind).toBe("mesh");
+    if (meshOperation.kind !== "mesh") {
+      throw new Error("Expected a mesh operation.");
+    }
+    const firstVertex = [...meshOperation.batch.vertices.slice(0, 6)];
+    expect(firstVertex[0]).toBe(10);
+    expect(firstVertex[1]).toBe(20);
+    expect(firstVertex[2]).toBeCloseTo(40 / 255);
+    expect(firstVertex[3]).toBeCloseTo(89 / 255);
+    expect(firstVertex[4]).toBe(1);
+    expect(firstVertex[5]).toBeCloseTo(0.8);
+  });
+
+  it("rejects malformed mesh indices without sending corrupt geometry to WebGL", () => {
+    const plan = buildWebGlDrawPlan(
+      renderList([
+        item("broken:shape", 0, {
+          kind: "path",
+          points: [],
+          closed: true,
+          paint: PAINT,
+          geometry: {
+            version: 1,
+            tolerance: 0.25,
+            fill: {
+              vertices: [
+                { x: 0, y: 0 },
+                { x: 10, y: 0 },
+                { x: 0, y: 10 },
+              ],
+              indices: [0, 1, 9],
+              bounds: { x: 0, y: 0, width: 10, height: 10 },
+            },
+            stats: {
+              pathPointCount: 3,
+              fillVertexCount: 3,
+              fillIndexCount: 3,
+              strokeVertexCount: 0,
+              strokeIndexCount: 0,
+            },
+            fingerprint: "broken",
+          },
+        }),
+      ]),
+    );
+
+    expect(plan.operations).toEqual([]);
+    expect(plan.supportedCommandIds).toEqual(["broken:shape"]);
+    expect(plan.skippedCommandIds).toEqual(["broken:shape"]);
+    expect(plan.invalidGeometryCommandIds).toEqual(["broken:shape"]);
   });
 });

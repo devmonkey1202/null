@@ -5,10 +5,14 @@ use kernel_doc::{
 };
 use kernel_scene::{build_absolute_frame_map, text_layout_for_node_with_handle};
 use kernel_text::{TextLayout, TextLayoutHandle, TextMeasurementMode};
+use kernel_vector::{
+    tessellate_path, TessellatedPath, VectorPath, VectorPathPoint, VectorPoint,
+    VectorTessellationOptions,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const RENDER_LIST_VERSION: u32 = 1;
+pub const RENDER_LIST_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +201,8 @@ pub enum RenderPrimitive {
         points: Vec<RenderPathPoint>,
         closed: bool,
         paint: RenderPaint,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        geometry: Option<TessellatedPath>,
     },
     GlyphRun {
         style: RenderTextStyle,
@@ -248,6 +254,9 @@ pub struct RenderListStats {
     pub command_count: usize,
     pub glyph_count: usize,
     pub text_run_count: usize,
+    pub path_count: usize,
+    pub vector_vertex_count: usize,
+    pub vector_index_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -411,9 +420,11 @@ pub fn build_render_list(
                 frame,
                 node_bounds,
                 transform,
+                (0.25 / viewport.scale).clamp(0.01, 1.0),
                 &mut z_index,
                 &mut items,
                 &mut issues,
+                &mut stats,
             ),
             SceneNodeKind::Text => build_text_items(
                 doc,
@@ -617,9 +628,11 @@ fn build_shape_item(
     frame: &EditorRect,
     bounds: RenderBounds,
     transform: RenderTransform,
+    vector_tolerance: f32,
     z_index: &mut usize,
     items: &mut Vec<RenderItem>,
     issues: &mut Vec<RenderIssue>,
+    stats: &mut RenderListStats,
 ) {
     let Some(shape) = &node.shape else {
         issues.push(RenderIssue {
@@ -666,6 +679,37 @@ fn build_shape_item(
                 });
                 return;
             };
+            stats.path_count += 1;
+            let geometry = if path.closed || shape.stroke_width > 0.0 {
+                match tessellate_path(
+                    &vector_path(path),
+                    VectorTessellationOptions {
+                        fill: path.closed,
+                        stroke_width: shape.stroke_width.max(0.0),
+                        tolerance: vector_tolerance,
+                        ..VectorTessellationOptions::default()
+                    },
+                ) {
+                    Ok(geometry) => {
+                        stats.vector_vertex_count +=
+                            geometry.stats.fill_vertex_count + geometry.stats.stroke_vertex_count;
+                        stats.vector_index_count +=
+                            geometry.stats.fill_index_count + geometry.stats.stroke_index_count;
+                        Some(geometry)
+                    }
+                    Err(error) => {
+                        issues.push(RenderIssue {
+                            node_id: node.id.clone(),
+                            code: error.code.to_string(),
+                            message: error.message,
+                            severity: RenderIssueSeverity::Error,
+                        });
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             RenderPrimitive::Path {
                 points: render_path_points(path),
                 closed: path.closed,
@@ -673,6 +717,7 @@ fn build_shape_item(
                     fill: path.closed.then(|| shape.fill.clone()),
                     ..paint
                 },
+                geometry,
             }
         }
     };
@@ -828,6 +873,28 @@ fn render_path_points(path: &ShapePathData) -> Vec<RenderPathPoint> {
             }),
         })
         .collect()
+}
+
+fn vector_path(path: &ShapePathData) -> VectorPath {
+    VectorPath {
+        points: path
+            .points
+            .iter()
+            .map(|point| VectorPathPoint {
+                x: point.x,
+                y: point.y,
+                handle_in: point.handle_in.as_ref().map(|handle| VectorPoint {
+                    x: handle.x,
+                    y: handle.y,
+                }),
+                handle_out: point.handle_out.as_ref().map(|handle| VectorPoint {
+                    x: handle.x,
+                    y: handle.y,
+                }),
+            })
+            .collect(),
+        closed: path.closed,
+    }
 }
 
 fn push_item(
@@ -1195,6 +1262,60 @@ mod tests {
         assert_eq!(style.font_family, "Inter");
         assert!(!glyphs.is_empty());
         assert!(list.issues.is_empty());
+    }
+
+    #[test]
+    fn path_commands_include_zoom_adaptive_tessellated_geometry() {
+        let mut text = text_handle();
+        let standard = build_render_list(&sample_doc(), "page-1", wide_viewport(), &mut text)
+            .expect("standard render list");
+        let path_item = standard
+            .items
+            .iter()
+            .find(|item| item.node_id == "path")
+            .expect("path item");
+        let RenderPrimitive::Path {
+            geometry: Some(geometry),
+            ..
+        } = &path_item.primitive
+        else {
+            panic!("expected tessellated path geometry");
+        };
+
+        assert_eq!(geometry.tolerance, 0.25);
+        assert!(geometry.fill.is_some());
+        assert!(geometry.stroke.is_some());
+        assert_eq!(standard.stats.path_count, 1);
+        assert_eq!(
+            standard.stats.vector_vertex_count,
+            geometry.stats.fill_vertex_count + geometry.stats.stroke_vertex_count
+        );
+        assert_eq!(
+            standard.stats.vector_index_count,
+            geometry.stats.fill_index_count + geometry.stats.stroke_index_count
+        );
+
+        let detailed = build_render_list(
+            &sample_doc(),
+            "page-1",
+            RenderViewport::new(0.0, 0.0, 2000.0, 1200.0, 4.0),
+            &mut text,
+        )
+        .expect("detailed render list");
+        let detailed_path = detailed
+            .items
+            .iter()
+            .find(|item| item.node_id == "path")
+            .expect("detailed path");
+        let RenderPrimitive::Path {
+            geometry: Some(detailed_geometry),
+            ..
+        } = &detailed_path.primitive
+        else {
+            panic!("expected detailed geometry");
+        };
+        assert_eq!(detailed_geometry.tolerance, 0.0625);
+        assert_ne!(geometry.fingerprint, detailed_geometry.fingerprint);
     }
 
     #[test]

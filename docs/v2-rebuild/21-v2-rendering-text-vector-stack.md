@@ -179,15 +179,19 @@ Implemented in `kernel-render` Phase 3 partial:
 - stable command fingerprint/revision and added/updated/removed/unchanged frame diff
 - WASM `render_frame` FFI, editor pan/zoom viewport connection, inspector diagnostics
 - Rust/FFI tests and real browser text-edit incremental diff E2E
-- WebGL2 shadow backend with one instanced draw call for z-ordered rect/ellipse/line commands
+- WebGL2 shadow backend with instanced draw batches for consecutive z-ordered rect/ellipse/line commands
 - DPR-aware surface allocation, shader/resource lifecycle, context loss/restore, GL error diagnostics
 - browser acceptance coverage for Rust/GPU revision parity and non-transparent GPU pixel output
+- `kernel-vector` Lyon fill/stroke tessellation with cubic handles, finite/input/output limits, zoom-adaptive tolerance, bounds, and stable geometry fingerprints
+- RenderList v2 indexed path meshes and WebGL2 z-order interleaving between instanced primitives and path draw operations
+- malformed mesh rejection plus browser diagnostics for mesh vertices, indices, triangles, and context-restored path output
 
 Not yet implemented and still release-blocking:
 
 - end-user font ingestion UI, project font manifest/persistence, content-hash persistent cache, and a CJK fallback set
 - other RTL shaping, Script_Extensions refinement, and configurable OpenType features
-- path tessellation, glyph raster/atlas, media textures, texture eviction, full WebGL2 visual parity, and replacement of the current DOM/SVG visual path
+- geometry tessellation cache/upload reuse, glyph raster/atlas, media textures, texture eviction, full WebGL2 visual parity, and replacement of the current DOM/SVG visual path
+- compound paths, fill rules, vector boolean kernel, configurable stroke cap/join/alignment, and export parity
 - multi-script/very-large-document profiling and allocator overhead/fragmentation을 포함한 process-memory budget 검증
 - editor/preview/publish shaped-text visual parity
 

@@ -3341,7 +3341,7 @@ export class NoopEditorBridge implements EditorBridge {
           ).length ?? 0;
         return {
           list: {
-            version: 1,
+            version: 2,
             pageId: selector.pageId,
             revision: "noop",
             viewport: selector.viewport,
@@ -3362,6 +3362,9 @@ export class NoopEditorBridge implements EditorBridge {
               commandCount: 0,
               glyphCount: 0,
               textRunCount: 0,
+              pathCount: 0,
+              vectorVertexCount: 0,
+              vectorIndexCount: 0,
             },
           },
         };

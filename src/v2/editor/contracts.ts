@@ -493,6 +493,41 @@ export type RenderPathPoint = {
   handleOut?: { x: number; y: number };
 };
 
+export type VectorPoint = {
+  x: number;
+  y: number;
+};
+
+export type VectorBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type VectorMesh = {
+  vertices: VectorPoint[];
+  indices: number[];
+  bounds: VectorBounds;
+};
+
+export type VectorGeometryStats = {
+  pathPointCount: number;
+  fillVertexCount: number;
+  fillIndexCount: number;
+  strokeVertexCount: number;
+  strokeIndexCount: number;
+};
+
+export type TessellatedPath = {
+  version: number;
+  tolerance: number;
+  fill?: VectorMesh;
+  stroke?: VectorMesh;
+  stats: VectorGeometryStats;
+  fingerprint: string;
+};
+
 export type RenderGlyph = {
   glyphId: number;
   clusterStart: number;
@@ -541,6 +576,7 @@ export type RenderPrimitive =
       points: RenderPathPoint[];
       closed: boolean;
       paint: RenderPaint;
+      geometry?: TessellatedPath;
     }
   | {
       kind: "glyph_run";
@@ -580,6 +616,9 @@ export type RenderListStats = {
   commandCount: number;
   glyphCount: number;
   textRunCount: number;
+  pathCount: number;
+  vectorVertexCount: number;
+  vectorIndexCount: number;
 };
 
 export type RenderList = {

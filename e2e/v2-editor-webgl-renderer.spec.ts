@@ -14,7 +14,31 @@ test("v2 editor submits Rust render commands to the WebGL2 shadow backend", asyn
   await expect
     .poll(async () => Number(await surface.getAttribute("data-instance-count")))
     .toBeGreaterThan(2);
-  await expect(surface).toHaveAttribute("data-draw-call-count", "1");
+  await expect
+    .poll(async () => Number(await surface.getAttribute("data-draw-call-count")))
+    .toBeGreaterThan(1);
+  await expect
+    .poll(async () => Number(await surface.getAttribute("data-mesh-vertex-count")))
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => Number(await surface.getAttribute("data-mesh-index-count")))
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => Number(await renderSummary.getAttribute("data-path-count")))
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => {
+      const rustVertices = Number(await renderSummary.getAttribute("data-vector-vertex-count"));
+      const gpuVertices = Number(await surface.getAttribute("data-mesh-vertex-count"));
+      const rustIndices = Number(await renderSummary.getAttribute("data-vector-index-count"));
+      const gpuIndices = Number(await surface.getAttribute("data-mesh-index-count"));
+      return rustVertices > 0 && rustVertices === gpuVertices && rustIndices === gpuIndices;
+    })
+    .toBe(true);
+  await expect
+    .poll(async () => Number(await surface.getAttribute("data-triangle-count")))
+    .toBeGreaterThan(6);
+  await expect(surface).toHaveAttribute("data-invalid-geometry-count", "0");
   await expect
     .poll(async () => Number(await surface.getAttribute("data-unsupported-command-count")))
     .toBeGreaterThan(0);
@@ -97,6 +121,15 @@ test("v2 WebGL2 backend recovers its resources after context restoration", async
   });
   await expect(surface).toHaveAttribute("data-context-lost", "false");
   await expect(surface).toHaveAttribute("data-available", "true");
-  await expect(surface).toHaveAttribute("data-draw-call-count", "1");
+  await expect
+    .poll(async () => Number(await surface.getAttribute("data-draw-call-count")))
+    .toBeGreaterThan(1);
+  await expect
+    .poll(async () => Number(await surface.getAttribute("data-mesh-vertex-count")))
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => Number(await surface.getAttribute("data-mesh-index-count")))
+    .toBeGreaterThan(0);
+  await expect(surface).toHaveAttribute("data-invalid-geometry-count", "0");
   await expect(surface).toHaveAttribute("data-gl-error", "0");
 });

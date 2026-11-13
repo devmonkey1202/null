@@ -7040,9 +7040,12 @@ export function V2EditorShell() {
                   data-render-revision={activeRenderFrame?.list.revision ?? ""}
                   data-command-count={activeRenderFrame?.list.stats.commandCount ?? 0}
                   data-glyph-count={activeRenderFrame?.list.stats.glyphCount ?? 0}
+                  data-path-count={activeRenderFrame?.list.stats.pathCount ?? 0}
+                  data-vector-vertex-count={activeRenderFrame?.list.stats.vectorVertexCount ?? 0}
+                  data-vector-index-count={activeRenderFrame?.list.stats.vectorIndexCount ?? 0}
                   data-render-issue-count={activeRenderFrame?.list.issues.length ?? 0}
                 >
-                  render: {activeRenderFrame?.list.stats.commandCount ?? 0} commands / {activeRenderFrame?.list.stats.glyphCount ?? 0} glyphs
+                  render: {activeRenderFrame?.list.stats.commandCount ?? 0} commands / {activeRenderFrame?.list.stats.glyphCount ?? 0} glyphs / {activeRenderFrame?.list.stats.vectorVertexCount ?? 0} vector vertices
                 </div>
                 <div className="mt-1">
                   visible: {activeRenderFrame?.list.stats.visibleNodes ?? 0} / {activeRenderFrame?.list.stats.drawableNodes ?? 0} drawables
@@ -7060,7 +7063,7 @@ export function V2EditorShell() {
                   </div>
                 ) : null}
                 <div className="mt-1" data-testid="v2-webgl-render-summary">
-                  webgl2: {activeWebGlStatus?.instanceCount ?? 0} instances / {activeWebGlStatus?.drawCalls ?? 0} draw calls
+                  webgl2: {activeWebGlStatus?.instanceCount ?? 0} instances / {activeWebGlStatus?.meshVertexCount ?? 0} mesh vertices / {activeWebGlStatus?.drawCalls ?? 0} draw calls
                 </div>
                 <div className="mt-1">
                   gpu pending: {activeWebGlStatus?.unsupportedCommandCount ?? 0} commands / errors {activeWebGlStatus?.glError ?? 0}

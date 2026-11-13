@@ -271,15 +271,16 @@ Phase 2B bounded text-cache checkpoint (`TextLayout.engineVersion = 9`):
 - exact/paragraph/run별 bytes, byte capacity, eviction을 동일 `TextLayoutCacheStats` 및 WASM bridge query로 노출
 - inspector는 세 계층의 현재/최대 cache payload를 합산해 표시하고 browser E2E에서 기본 총 `40 MiB` 계약을 검증
 
-Phase 3 render-command checkpoint (`RenderList.version = 1`, partial):
+Phase 3 render-command checkpoint (`RenderList.version = 2`, partial):
 
 - `kernel-render`가 SceneDoc 계층 순서와 Rust scene absolute frame을 사용해 shape/path/styled glyph-run 명령을 생성
 - center rotation matrix, 회전 AABB, stroke inflation, world-space viewport/overscan culling을 command 생성 전에 적용
 - command stable fingerprint와 RenderList revision을 생성하고 이전 frame 대비 added/updated/removed/unchanged diff를 계산
 - WASM `render_frame`이 실제 editor pan/zoom viewport와 연결되고 inspector에서 command/glyph/visible/cull/diff를 진단
-- browser WebGL2 shadow backend가 rect/ellipse/line을 z-order 유지 instanced batch 1회 draw call로 제출하고 Rust revision, unsupported command, GL error를 진단
+- browser WebGL2 shadow backend가 rect/ellipse/line 연속 구간을 instanced batch로 제출하고 Rust/Lyon path fill/stroke mesh를 z-order대로 indexed draw하며 revision, unsupported/invalid command, GL error를 진단
+- path geometry는 `kernel-vector`가 cubic handle, zoom-adaptive tolerance, bounds, input/output hard limit, stable fingerprint를 소유한다.
 - shader compile/link, DPR backing surface, premultiplied-alpha 합성, context loss/restore 후 resource 재생성과 실제 non-transparent pixel 출력을 Playwright에서 검증
-- 현재 DOM/SVG 캔버스는 비교 기준으로 유지한다. path tessellation, glyph raster/atlas, media texture, 전체 visual parity를 통과하기 전에는 GPU renderer 전환 완료로 판정하지 않는다.
+- 현재 DOM/SVG 캔버스는 비교 기준으로 유지한다. geometry cache, glyph raster/atlas, media texture, 전체 visual parity를 통과하기 전에는 GPU renderer 전환 완료로 판정하지 않는다.
 
 현재 명시적 한계:
 

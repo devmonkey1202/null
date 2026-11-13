@@ -105,7 +105,7 @@
 
 ## 11. Text Engine checkpoint 판정
 
-2026-11-14 Phase 2B partial와 RenderList v1까지 통과한 항목:
+2026-11-14 Phase 2B partial와 RenderList v2 path mesh까지 통과한 항목:
 
 - Rust native font parse/shaping tests
 - Inter kerning, variable weight, italic face test
@@ -139,6 +139,6 @@
 
 - CJK bundled/streamed fallback font
 - Syriac 등 기타 RTL glyph shaping과 Script_Extensions 교집합 기반 정밀 itemization
-- path tessellation, glyph raster/atlas, media texture, WebGL2 visual parity와 DOM/SVG renderer 제거
+- geometry tessellation cache, glyph raster/atlas, media texture, WebGL2 visual parity와 DOM/SVG renderer 제거
 - multi-script/very-large document benchmark, allocator overhead/fragmentation을 포함한 process-memory profile, calibrated CI performance gate
 - editor/preview/publish pixel parity

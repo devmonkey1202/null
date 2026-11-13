@@ -1,6 +1,6 @@
 import type { RenderList } from "@/v2/editor/contracts";
 import {
-  buildWebGlPrimitiveBatch,
+  buildWebGlDrawPlan,
   WEBGL_INSTANCE_FLOATS,
 } from "@/v2/editor/render-batches";
 
@@ -92,6 +92,40 @@ void main() {
 }
 `;
 
+const MESH_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+layout(location = 0) in vec2 a_position;
+layout(location = 1) in vec4 a_color;
+
+uniform vec2 u_world_origin;
+uniform float u_world_scale;
+uniform vec2 u_surface_size;
+
+out vec4 v_color;
+
+void main() {
+  vec2 pixel = (a_position - u_world_origin) * u_world_scale;
+  vec2 clip = (pixel / u_surface_size) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_color = a_color;
+}
+`;
+
+const MESH_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+in vec4 v_color;
+out vec4 out_color;
+
+void main() {
+  if (v_color.a <= 0.0001) {
+    discard;
+  }
+  out_color = vec4(v_color.rgb * v_color.a, v_color.a);
+}
+`;
+
 export type WebGlRenderStatus = {
   backend: "webgl2" | "unavailable";
   available: boolean;
@@ -103,6 +137,10 @@ export type WebGlRenderStatus = {
   unsupportedCommandCount: number;
   skippedCommandCount: number;
   invalidPaintCount: number;
+  invalidGeometryCount: number;
+  meshVertexCount: number;
+  meshIndexCount: number;
+  triangleCount: number;
   pixelWidth: number;
   pixelHeight: number;
   glError: number;
@@ -124,6 +162,13 @@ type RendererResources = {
   worldOrigin: WebGLUniformLocation;
   worldScale: WebGLUniformLocation;
   surfaceSize: WebGLUniformLocation;
+  meshProgram: WebGLProgram;
+  meshVertexArray: WebGLVertexArrayObject;
+  meshVertexBuffer: WebGLBuffer;
+  meshIndexBuffer: WebGLBuffer;
+  meshWorldOrigin: WebGLUniformLocation;
+  meshWorldScale: WebGLUniformLocation;
+  meshSurfaceSize: WebGLUniformLocation;
 };
 
 export class WebGl2UnavailableError extends Error {
@@ -156,9 +201,15 @@ function requireUniform(gl: WebGL2RenderingContext, program: WebGLProgram, name:
   return location;
 }
 
-function createResources(gl: WebGL2RenderingContext): RendererResources {
-  const vertexShader = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
-  const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
+function createProgram(gl: WebGL2RenderingContext, vertexSource: string, fragmentSource: string) {
+  const vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
+  let fragmentShader: WebGLShader;
+  try {
+    fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  } catch (error) {
+    gl.deleteShader(vertexShader);
+    throw error;
+  }
   const program = gl.createProgram();
   if (!program) {
     gl.deleteShader(vertexShader);
@@ -175,15 +226,41 @@ function createResources(gl: WebGL2RenderingContext): RendererResources {
     gl.deleteProgram(program);
     throw new Error(message);
   }
+  return program;
+}
+
+function createResources(gl: WebGL2RenderingContext): RendererResources {
+  const program = createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
+  let meshProgram: WebGLProgram;
+  try {
+    meshProgram = createProgram(gl, MESH_VERTEX_SHADER, MESH_FRAGMENT_SHADER);
+  } catch (error) {
+    gl.deleteProgram(program);
+    throw error;
+  }
 
   const vertexArray = gl.createVertexArray();
   const cornerBuffer = gl.createBuffer();
   const instanceBuffer = gl.createBuffer();
-  if (!vertexArray || !cornerBuffer || !instanceBuffer) {
+  const meshVertexArray = gl.createVertexArray();
+  const meshVertexBuffer = gl.createBuffer();
+  const meshIndexBuffer = gl.createBuffer();
+  if (
+    !vertexArray ||
+    !cornerBuffer ||
+    !instanceBuffer ||
+    !meshVertexArray ||
+    !meshVertexBuffer ||
+    !meshIndexBuffer
+  ) {
     gl.deleteVertexArray(vertexArray);
     gl.deleteBuffer(cornerBuffer);
     gl.deleteBuffer(instanceBuffer);
+    gl.deleteVertexArray(meshVertexArray);
+    gl.deleteBuffer(meshVertexBuffer);
+    gl.deleteBuffer(meshIndexBuffer);
     gl.deleteProgram(program);
+    gl.deleteProgram(meshProgram);
     throw new Error("WebGL2 could not allocate renderer buffers.");
   }
 
@@ -212,17 +289,52 @@ function createResources(gl: WebGL2RenderingContext): RendererResources {
     gl.vertexAttribDivisor(location, 1);
   }
 
+  gl.bindVertexArray(meshVertexArray);
+  gl.bindBuffer(gl.ARRAY_BUFFER, meshVertexBuffer);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, meshIndexBuffer);
+  const meshStride = 6 * Float32Array.BYTES_PER_ELEMENT;
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, meshStride, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(
+    1,
+    4,
+    gl.FLOAT,
+    false,
+    meshStride,
+    2 * Float32Array.BYTES_PER_ELEMENT,
+  );
+
   gl.bindBuffer(gl.ARRAY_BUFFER, null);
   gl.bindVertexArray(null);
-  return {
-    program,
-    vertexArray,
-    cornerBuffer,
-    instanceBuffer,
-    worldOrigin: requireUniform(gl, program, "u_world_origin"),
-    worldScale: requireUniform(gl, program, "u_world_scale"),
-    surfaceSize: requireUniform(gl, program, "u_surface_size"),
-  };
+  try {
+    return {
+      program,
+      vertexArray,
+      cornerBuffer,
+      instanceBuffer,
+      worldOrigin: requireUniform(gl, program, "u_world_origin"),
+      worldScale: requireUniform(gl, program, "u_world_scale"),
+      surfaceSize: requireUniform(gl, program, "u_surface_size"),
+      meshProgram,
+      meshVertexArray,
+      meshVertexBuffer,
+      meshIndexBuffer,
+      meshWorldOrigin: requireUniform(gl, meshProgram, "u_world_origin"),
+      meshWorldScale: requireUniform(gl, meshProgram, "u_world_scale"),
+      meshSurfaceSize: requireUniform(gl, meshProgram, "u_surface_size"),
+    };
+  } catch (error) {
+    gl.deleteVertexArray(vertexArray);
+    gl.deleteBuffer(cornerBuffer);
+    gl.deleteBuffer(instanceBuffer);
+    gl.deleteVertexArray(meshVertexArray);
+    gl.deleteBuffer(meshVertexBuffer);
+    gl.deleteBuffer(meshIndexBuffer);
+    gl.deleteProgram(program);
+    gl.deleteProgram(meshProgram);
+    throw error;
+  }
 }
 
 function emptyStatus(error?: string): WebGlRenderStatus {
@@ -237,6 +349,10 @@ function emptyStatus(error?: string): WebGlRenderStatus {
     unsupportedCommandCount: 0,
     skippedCommandCount: 0,
     invalidPaintCount: 0,
+    invalidGeometryCount: 0,
+    meshVertexCount: 0,
+    meshIndexCount: 0,
+    triangleCount: 0,
     pixelWidth: 0,
     pixelHeight: 0,
     glError: 0,
@@ -287,32 +403,50 @@ export class WebGlRenderBackend {
     this.canvas.style.width = `${Math.max(request.cssWidth, 1)}px`;
     this.canvas.style.height = `${Math.max(request.cssHeight, 1)}px`;
 
-    const batch = buildWebGlPrimitiveBatch(request.renderList);
+    const plan = buildWebGlDrawPlan(request.renderList);
+    const worldScale = request.renderList.viewport.scale * pixelRatio;
     gl.viewport(0, 0, pixelWidth, pixelHeight);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    gl.useProgram(resources.program);
-    gl.uniform2f(
-      resources.worldOrigin,
-      request.renderList.viewport.x,
-      request.renderList.viewport.y,
-    );
-    gl.uniform1f(resources.worldScale, request.renderList.viewport.scale * pixelRatio);
-    gl.uniform2f(resources.surfaceSize, pixelWidth, pixelHeight);
-
     let drawCalls = 0;
-    if (batch.instanceCount > 0) {
-      gl.bindVertexArray(resources.vertexArray);
-      gl.bindBuffer(gl.ARRAY_BUFFER, resources.instanceBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, batch.instances, gl.DYNAMIC_DRAW);
-      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, batch.instanceCount);
-      gl.bindBuffer(gl.ARRAY_BUFFER, null);
-      gl.bindVertexArray(null);
-      drawCalls = 1;
+    for (const operation of plan.operations) {
+      if (operation.kind === "instances") {
+        gl.useProgram(resources.program);
+        gl.uniform2f(
+          resources.worldOrigin,
+          request.renderList.viewport.x,
+          request.renderList.viewport.y,
+        );
+        gl.uniform1f(resources.worldScale, worldScale);
+        gl.uniform2f(resources.surfaceSize, pixelWidth, pixelHeight);
+        gl.bindVertexArray(resources.vertexArray);
+        gl.bindBuffer(gl.ARRAY_BUFFER, resources.instanceBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, operation.batch.instances, gl.DYNAMIC_DRAW);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, operation.batch.instanceCount);
+      } else {
+        gl.useProgram(resources.meshProgram);
+        gl.uniform2f(
+          resources.meshWorldOrigin,
+          request.renderList.viewport.x,
+          request.renderList.viewport.y,
+        );
+        gl.uniform1f(resources.meshWorldScale, worldScale);
+        gl.uniform2f(resources.meshSurfaceSize, pixelWidth, pixelHeight);
+        gl.bindVertexArray(resources.meshVertexArray);
+        gl.bindBuffer(gl.ARRAY_BUFFER, resources.meshVertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, operation.batch.vertices, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.meshIndexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, operation.batch.indices, gl.DYNAMIC_DRAW);
+        gl.drawElements(gl.TRIANGLES, operation.batch.indexCount, gl.UNSIGNED_INT, 0);
+      }
+      drawCalls += 1;
     }
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindVertexArray(null);
+    gl.useProgram(null);
     const glError = gl.getError();
     return this.publishStatus({
       backend: "webgl2",
@@ -320,11 +454,15 @@ export class WebGlRenderBackend {
       contextLost: false,
       revision: request.renderList.revision,
       drawCalls,
-      instanceCount: batch.instanceCount,
-      supportedCommandCount: batch.supportedCommandIds.length,
-      unsupportedCommandCount: batch.unsupportedCommandIds.length,
-      skippedCommandCount: batch.skippedCommandIds.length,
-      invalidPaintCount: batch.invalidPaintCommandIds.length,
+      instanceCount: plan.instanceCount,
+      supportedCommandCount: plan.supportedCommandIds.length,
+      unsupportedCommandCount: plan.unsupportedCommandIds.length,
+      skippedCommandCount: plan.skippedCommandIds.length,
+      invalidPaintCount: plan.invalidPaintCommandIds.length,
+      invalidGeometryCount: plan.invalidGeometryCommandIds.length,
+      meshVertexCount: plan.meshVertexCount,
+      meshIndexCount: plan.meshIndexCount,
+      triangleCount: plan.triangleCount,
       pixelWidth,
       pixelHeight,
       glError,
@@ -370,6 +508,10 @@ export class WebGlRenderBackend {
     this.gl.deleteBuffer(this.resources.instanceBuffer);
     this.gl.deleteVertexArray(this.resources.vertexArray);
     this.gl.deleteProgram(this.resources.program);
+    this.gl.deleteBuffer(this.resources.meshVertexBuffer);
+    this.gl.deleteBuffer(this.resources.meshIndexBuffer);
+    this.gl.deleteVertexArray(this.resources.meshVertexArray);
+    this.gl.deleteProgram(this.resources.meshProgram);
     this.resources = null;
   }
 

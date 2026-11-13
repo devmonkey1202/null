@@ -18,6 +18,32 @@ export type WebGlPrimitiveBatch = {
   invalidPaintCommandIds: string[];
 };
 
+export type WebGlMeshBatch = {
+  vertices: Float32Array;
+  indices: Uint32Array;
+  vertexCount: number;
+  indexCount: number;
+  triangleCount: number;
+  commandId: string;
+};
+
+export type WebGlDrawOperation =
+  | { kind: "instances"; batch: WebGlPrimitiveBatch }
+  | { kind: "mesh"; batch: WebGlMeshBatch };
+
+export type WebGlDrawPlan = {
+  operations: WebGlDrawOperation[];
+  supportedCommandIds: string[];
+  unsupportedCommandIds: string[];
+  skippedCommandIds: string[];
+  invalidPaintCommandIds: string[];
+  invalidGeometryCommandIds: string[];
+  instanceCount: number;
+  meshVertexCount: number;
+  meshIndexCount: number;
+  triangleCount: number;
+};
+
 type MutableRenderColor = [number, number, number, number];
 
 type QuadInstance = {
@@ -242,6 +268,92 @@ function writeInstance(target: Float32Array, index: number, instance: QuadInstan
   );
 }
 
+function transformPoint(transform: RenderTransform, x: number, y: number) {
+  return {
+    x: transform.m11 * x + transform.m21 * y + transform.dx,
+    y: transform.m12 * x + transform.m22 * y + transform.dy,
+  };
+}
+
+function buildInstanceBatch(
+  prepared: Array<{ commandId: string; instance: QuadInstance }>,
+): WebGlPrimitiveBatch {
+  const instances = new Float32Array(prepared.length * WEBGL_INSTANCE_FLOATS);
+  prepared.forEach(({ instance }, index) => writeInstance(instances, index, instance));
+  return {
+    instances,
+    instanceCount: prepared.length,
+    supportedCommandIds: prepared.map(({ commandId }) => commandId),
+    unsupportedCommandIds: [],
+    skippedCommandIds: [],
+    invalidPaintCommandIds: [],
+  };
+}
+
+function buildPathMesh(item: RenderItem): {
+  batch: WebGlMeshBatch | null;
+  invalidPaint: boolean;
+  invalidGeometry: boolean;
+} {
+  const primitive = item.primitive;
+  if (primitive.kind !== "path" || !primitive.geometry) {
+    return { batch: null, invalidPaint: false, invalidGeometry: true };
+  }
+
+  const colors = paintColors(primitive.paint);
+  const vertices: number[] = [];
+  const indices: number[] = [];
+  let invalidGeometry = false;
+
+  const appendMesh = (
+    mesh: NonNullable<typeof primitive.geometry>["fill"],
+    color: RenderColor,
+  ) => {
+    if (!mesh || color[3] <= 0) {
+      return;
+    }
+    if (
+      mesh.vertices.length === 0 ||
+      mesh.indices.length === 0 ||
+      mesh.indices.length % 3 !== 0 ||
+      mesh.indices.some((index) => !Number.isInteger(index) || index < 0 || index >= mesh.vertices.length)
+    ) {
+      invalidGeometry = true;
+      return;
+    }
+    const vertexOffset = vertices.length / 6;
+    for (const vertex of mesh.vertices) {
+      if (!Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)) {
+        invalidGeometry = true;
+        return;
+      }
+      const world = transformPoint(item.transform, vertex.x, vertex.y);
+      vertices.push(world.x, world.y, color[0], color[1], color[2], color[3]);
+    }
+    for (const index of mesh.indices) {
+      indices.push(vertexOffset + index);
+    }
+  };
+
+  appendMesh(primitive.geometry.fill, colors.fill);
+  appendMesh(primitive.geometry.stroke, colors.stroke);
+  if (invalidGeometry || vertices.length === 0 || indices.length === 0) {
+    return { batch: null, invalidPaint: colors.invalid, invalidGeometry };
+  }
+  return {
+    batch: {
+      vertices: new Float32Array(vertices),
+      indices: new Uint32Array(indices),
+      vertexCount: vertices.length / 6,
+      indexCount: indices.length,
+      triangleCount: indices.length / 3,
+      commandId: item.commandId,
+    },
+    invalidPaint: colors.invalid,
+    invalidGeometry: false,
+  };
+}
+
 export function buildWebGlPrimitiveBatch(renderList: RenderList): WebGlPrimitiveBatch {
   const prepared: Array<{ item: RenderItem; instance: QuadInstance }> = [];
   const supportedCommandIds: string[] = [];
@@ -277,5 +389,88 @@ export function buildWebGlPrimitiveBatch(renderList: RenderList): WebGlPrimitive
     unsupportedCommandIds,
     skippedCommandIds,
     invalidPaintCommandIds,
+  };
+}
+
+export function buildWebGlDrawPlan(renderList: RenderList): WebGlDrawPlan {
+  const operations: WebGlDrawOperation[] = [];
+  const supportedCommandIds: string[] = [];
+  const unsupportedCommandIds: string[] = [];
+  const skippedCommandIds: string[] = [];
+  const invalidPaintCommandIds: string[] = [];
+  const invalidGeometryCommandIds: string[] = [];
+  let pendingInstances: Array<{ commandId: string; instance: QuadInstance }> = [];
+  let instanceCount = 0;
+  let meshVertexCount = 0;
+  let meshIndexCount = 0;
+  let triangleCount = 0;
+
+  const flushInstances = () => {
+    if (pendingInstances.length === 0) {
+      return;
+    }
+    const batch = buildInstanceBatch(pendingInstances);
+    instanceCount += batch.instanceCount;
+    triangleCount += batch.instanceCount * 2;
+    operations.push({ kind: "instances", batch });
+    pendingInstances = [];
+  };
+
+  const ordered = [...renderList.items].sort((left, right) => left.zIndex - right.zIndex);
+  for (const item of ordered) {
+    if (item.primitive.kind === "path") {
+      flushInstances();
+      if (!item.primitive.geometry) {
+        unsupportedCommandIds.push(item.commandId);
+        continue;
+      }
+      supportedCommandIds.push(item.commandId);
+      const result = buildPathMesh(item);
+      if (result.invalidPaint) {
+        invalidPaintCommandIds.push(item.commandId);
+      }
+      if (result.invalidGeometry) {
+        invalidGeometryCommandIds.push(item.commandId);
+      }
+      if (!result.batch) {
+        skippedCommandIds.push(item.commandId);
+        continue;
+      }
+      meshVertexCount += result.batch.vertexCount;
+      meshIndexCount += result.batch.indexCount;
+      triangleCount += result.batch.triangleCount;
+      operations.push({ kind: "mesh", batch: result.batch });
+      continue;
+    }
+
+    const result = shapeInstance(item);
+    if (!result) {
+      flushInstances();
+      unsupportedCommandIds.push(item.commandId);
+      continue;
+    }
+    supportedCommandIds.push(item.commandId);
+    if (result.invalidPaint) {
+      invalidPaintCommandIds.push(item.commandId);
+    }
+    if (!result.instance) {
+      skippedCommandIds.push(item.commandId);
+      continue;
+    }
+    pendingInstances.push({ commandId: item.commandId, instance: result.instance });
+  }
+  flushInstances();
+
+  return {
+    operations,
+    supportedCommandIds,
+    unsupportedCommandIds,
+    skippedCommandIds,
+    invalidPaintCommandIds,
+    invalidGeometryCommandIds,
+    instanceCount,
+    meshVertexCount,
+    meshIndexCount,
+    triangleCount,
   };
 }

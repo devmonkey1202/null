@@ -7,6 +7,9 @@ publish.workspace = true
 
 [dependencies]
 core-error = { path = "../core-error" }
+lyon_path = "1"
+lyon_tessellation = "1"
+serde = { version = "1", features = ["derive"] }
 
 [lib]
 path = "src/lib.rs"

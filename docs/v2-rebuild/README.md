@@ -135,16 +135,16 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - Unicode grapheme/line-break/caret geometry, 동적 등록 Inter shaping, bidi visual-order geometry를 제공하는 `kernel-text` Phase 2B 일부
 - Inter 4.1 Regular/Italic variable font registry, `ttf-parser` coverage 확인, `rustybuzz` OpenType positioning
 - `TextLayout` v9 glyph/cluster/bidi/script geometry, Hebrew/Arabic RTL shaping, exact/paragraph/run incremental cache와 byte-budget 진단
-- `kernel-render` RenderList v1: scene 순서, 절대 transform, 회전 AABB, viewport/overscan culling, shape/path/styled glyph-run 명령, stable fingerprint와 incremental diff
+- `kernel-render` RenderList v2: scene 순서, 절대 transform, 회전 AABB, viewport/overscan culling, shape/path/styled glyph-run 명령, stable fingerprint와 incremental diff
 - WASM `render_frame` query와 실제 editor viewport 연동, 명령/glyph/culling/diff inspector 진단 및 Playwright 회귀 검증
-- WebGL2 shadow backend: rect/ellipse/line z-order instanced batch, DPR surface, context loss/restore, GL error 및 실제 pixel output 검증
+- WebGL2 shadow backend: rect/ellipse/line z-order instanced batch, Rust/Lyon path fill/stroke indexed mesh, DPR surface, context loss/restore, GL error 및 실제 pixel output 검증
 - Playwright 기반 실제 Rust/WASM 편집 흐름 검증
 
 아직 상용 수준 완료로 간주할 수 없는 핵심 범위:
 
 - end-user font upload UI/manifest/persistence, CJK 폰트 세트, Arabic 이외 RTL glyph shaping, Script_Extensions 정밀 처리, 완전한 fallback chain
-- path tessellation, glyph raster/atlas, media texture, 기존 DOM/SVG 캔버스 제거와 editor/preview/publish pixel parity
-- 완성형 vector boolean/tessellation
+- glyph raster/atlas, media texture, geometry cache, 기존 DOM/SVG 캔버스 제거와 editor/preview/publish pixel parity
+- 완성형 vector boolean operations와 compound-path semantics
 - editor collaboration document ops
 - multi-script/very-large document benchmark, byte-accurate cache memory profiling과 calibrated CI performance gate
 - autosave/version persistence, staging validation, acceptance gate
@@ -167,7 +167,7 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - exact 16 MiB, paragraph 16 MiB, shaping-run 8 MiB의 기본 총 40 MiB text-cache 상한과 계층별 LRU eviction 적용
 - Noto Sans Hebrew 원본: Google Fonts OFL, SHA-256 `7EF36A2C3593758CDB622E1BDEF4F84523E92FBC3CCC667438DD80FF54C2DE88`
 - Noto Sans Arabic 원본: Google Fonts OFL, SHA-256 `63111B5B2E074DD48CC67692E0A2726D86EE94C1C37FE8598257B7B4E87E869E`
-- RenderList v1과 `render_frame` FFI를 포함한 현재 WASM raw 크기는 `2,326,115 bytes`이며 최초 `4,950,594 bytes`보다 `2,624,479 bytes` 감소; WASM+기본 font 4개 자동 gzip gate 합계 `2,244,760 bytes`, production transfer와 startup font fetch/parse는 계속 성능 추적 대상
+- RenderList v2, Lyon path tessellation과 `render_frame` FFI를 포함한 현재 WASM raw 크기는 `2,471,423 bytes`이며 최초 `4,950,594 bytes`보다 `2,479,171 bytes` 감소; WASM+기본 font 4개 자동 gzip gate 합계 `2,298,038 bytes`, production transfer와 startup font fetch/parse는 계속 성능 추적 대상
 - 10k grapheme/100-run/50-edit release benchmark는 로컬 warm p95 `25.021ms`, unchanged run 재사용 `4,950/5,000`, total retained cache payload `32,997,630/41,943,040 bytes`를 기록했으나 CI runner 보정 전에는 전 환경 SLO 통과로 판정하지 않음
 - 전역 Space Grotesk/IBM Plex Mono도 OFL 원본을 self-host하여 production build가 Google Fonts 네트워크 상태에 의존하지 않음
 - 이 checkpoint는 Text Engine Phase 2B의 incremental shaping cache 구간 완료를 뜻하며 상용 텍스트 엔진 전체 완료를 뜻하지 않음

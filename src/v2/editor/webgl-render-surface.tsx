@@ -27,6 +27,10 @@ const INITIAL_STATUS: WebGlRenderStatus = {
   unsupportedCommandCount: 0,
   skippedCommandCount: 0,
   invalidPaintCount: 0,
+  invalidGeometryCount: 0,
+  meshVertexCount: 0,
+  meshIndexCount: 0,
+  triangleCount: 0,
   pixelWidth: 0,
   pixelHeight: 0,
   glError: 0,
@@ -109,6 +113,10 @@ export function WebGlRenderSurface({
       data-unsupported-command-count={status.unsupportedCommandCount}
       data-skipped-command-count={status.skippedCommandCount}
       data-invalid-paint-count={status.invalidPaintCount}
+      data-invalid-geometry-count={status.invalidGeometryCount}
+      data-mesh-vertex-count={status.meshVertexCount}
+      data-mesh-index-count={status.meshIndexCount}
+      data-triangle-count={status.triangleCount}
       data-gl-error={status.glError}
       data-pixel-width={status.pixelWidth}
       data-pixel-height={status.pixelHeight}
