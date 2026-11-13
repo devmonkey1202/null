@@ -124,6 +124,8 @@
 - 동일 길이 문단 로컬 편집 후 unchanged paragraph shaping reuse Playwright E2E
 - dirty paragraph 내부 style-run 변경 시 unchanged shaping-run reuse와 cold-layout glyph/caret parity Rust test
 - long shaping-run sequence에서 retained-payload byte budget, LRU eviction, stats serialization Rust/FFI test
+- large exact-layout sequence와 large multi-paragraph layout에서 계층별 byte-driven eviction 및 상한 준수 Rust test
+- WASM bridge cache-stats query와 inspector 기본 총 `40 MiB` 계약 Playwright E2E
 - selection style edit -> WASM run-cache reuse -> inspector diagnostics Playwright E2E
 - `cargo bench -p kernel-text --bench text_layout` 10k grapheme/100-run incremental release benchmark
 - `npm run verify:v2:assets`로 font SHA-256, raw WASM 3 MB, WASM+기본 font gzip 2.5 MB 상한을 CI에서 차단

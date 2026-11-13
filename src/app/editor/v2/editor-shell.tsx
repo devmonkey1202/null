@@ -5893,8 +5893,22 @@ export function V2EditorShell() {
                               ) : null}
                               {activeTextCacheStats?.shapingRunByteCapacity ? (
                                 <span data-testid="v2-text-cache-memory">
-                                  {(activeTextCacheStats.shapingRunBytes / 1024 / 1024).toFixed(1)} /{" "}
-                                  {(activeTextCacheStats.shapingRunByteCapacity / 1024 / 1024).toFixed(1)} MB cache
+                                  {(
+                                    (activeTextCacheStats.bytes +
+                                      activeTextCacheStats.paragraphBytes +
+                                      activeTextCacheStats.shapingRunBytes) /
+                                    1024 /
+                                    1024
+                                  ).toFixed(1)}{" "}
+                                  /{" "}
+                                  {(
+                                    (activeTextCacheStats.byteCapacity +
+                                      activeTextCacheStats.paragraphByteCapacity +
+                                      activeTextCacheStats.shapingRunByteCapacity) /
+                                    1024 /
+                                    1024
+                                  ).toFixed(1)}{" "}
+                                  MB cache
                                 </span>
                               ) : null}
                               {activeTextLayout.bidiParagraphCount ? (

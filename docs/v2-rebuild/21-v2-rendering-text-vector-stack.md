@@ -168,6 +168,7 @@ Implemented in `kernel-text` Phase 2B partial:
 - paragraph-relative bounded shaping LRU with UTF-16 offset relocation, width-only reflow reuse, WASM diagnostics, and cold-layout parity tests
 - script/bidi/font/style/text-keyed shaping-run LRU with relative glyph relocation, selection-style-edit browser coverage, and a reproducible 10k-grapheme release benchmark
 - shaping-run key/glyph retained-payload accounting, 8 MiB byte budget, oversize insertion rejection, and LRU eviction diagnostics
+- exact result geometry 16 MiB, paragraph shape geometry 16 MiB, shaping-run 8 MiB의 독립 byte-bounded LRU와 합산 inspector diagnostics
 
 Not yet implemented and still release-blocking:
 

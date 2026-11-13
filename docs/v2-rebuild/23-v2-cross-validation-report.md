@@ -121,7 +121,7 @@
 
 ### 7.1 2026-11-14 구현 교차검증
 
-- `kernel-text` 계약과 TypeScript `TextLayout` 계약은 engine version 8로 일치
+- `kernel-text` 계약과 TypeScript `TextLayout` 계약은 engine version 9로 일치
 - scene auto-height와 FFI `text_layout`은 동일 Rust layout 함수를 사용
 - browser shell은 regenerated release WASM을 사용하며 noop fallback과 측정 mode를 구분
 - browser CSS와 Rust shaping은 동일 Inter/Noto 파일을 사용하며, 기본 face 4개 모두 startup fetch 후 registry에 등록하고 WASM에는 font bytes를 중복 내장하지 않음
@@ -130,13 +130,14 @@
 - `TextLayoutHandle`의 bounded exact-request LRU를 browser FFI가 직접 사용하며 hit/miss/eviction과 browser cache reuse를 검증
 - paragraph-relative 128-entry cache와 shaping-run 512-entry cache의 hit/miss/eviction, UTF-16 offset relocation, cold-layout geometry parity를 Rust test로 검증
 - shaping-run cache의 8 MiB retained-payload budget, oversize insertion 차단, byte-driven LRU eviction과 WASM stats serialization을 Rust/FFI test로 검증
+- exact `16 MiB`, paragraph `16 MiB`, shaping-run `8 MiB` budget과 계층별 retained bytes/eviction을 Rust-WASM-TypeScript 계약에서 교차검증하고 inspector 총 `40 MiB` 상한을 browser test로 확인
 - browser selection style edit에서 unchanged shaping run reuse가 WASM/TypeScript/inspector까지 전달됨을 Playwright로 검증
 - production build의 `next/font/google` 네트워크 실패를 제거하기 위해 Space Grotesk/IBM Plex Mono를 OFL self-host asset으로 고정
 - Hebrew RTL shaping과 bidi geometry 구현 증거를 Rust 및 browser acceptance test로 확보
 - Unicode 17 기반 script itemization, ISO 15924 Rustybuzz 전달, grapheme `script`, `scriptRunCount`는 Rust/FFI/TypeScript/Playwright 계약에서 교차검증
 - Noto Sans Arabic fallback과 RTL shaping은 Rust/browser에서 검증했지만 Script_Extensions 정밀 해소, 기타 RTL 폰트, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
 - dynamic registry의 invalid/oversized face 거부, 등록/해제, cache invalidation과 FFI 전달을 Rust test로 검증
-- raw editor WASM은 `2,244,373 bytes`, WASM+기본 font 4개 자동 gzip gate 합계는 `2,221,422 bytes`; 10k/100-run local warm p95는 `27.357ms`, retained run payload는 `1,909,500/8,388,608 bytes`지만 calibrated CI, allocator-inclusive memory, production transport, font fetch/parse SLO는 아직 미측정
+- raw editor WASM은 `2,248,077 bytes`, WASM+기본 font 4개 자동 gzip gate 합계는 `2,223,698 bytes`; 10k/100-run local warm p95는 `25.021ms`, total retained cache payload는 `32,997,630/41,943,040 bytes`지만 calibrated CI, allocator-inclusive memory, production transport, font fetch/parse SLO는 아직 미측정
 
 ## 8. 실행 판단
 

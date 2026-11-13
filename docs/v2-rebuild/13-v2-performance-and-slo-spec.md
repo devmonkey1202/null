@@ -28,11 +28,11 @@
 - text edit 이후 재계산은 dirty paragraph/run 범위로 제한
 - font parse 결과와 shape plan은 font hash + face index + variation axis 기준으로 cache
 - 초기 editor WASM + 필수 font compressed transfer: 2.5 MB 이하 목표
-- 2026-11-14 Phase 2B partial raw WASM은 동적 font registry/FFI, bidi visual-order geometry, RTL shaping, Unicode script itemization, 32-entry exact-request LRU, 128-entry paragraph shaping LRU, 512-entry/8 MiB shaping-run LRU를 포함해 `2,244,373 bytes`; Inter normal/italic과 Noto Sans Hebrew/Arabic은 browser startup에서 병렬 fetch/등록함
-- 최초 raw WASM `4,950,594 bytes` 대비 `2,706,221 bytes`(`54.7%`) 감소
-- 자동 품질 게이트의 Node gzip level 9 측정은 WASM `708,794 bytes` + 기본 font 4개 `1,512,628 bytes` = 총 `2,221,422 bytes`로 2.5 MB 목표 이내; production HTTP compression/cache와 startup fetch/parse latency 실측 전에는 성능 release gate 최종 통과로 보지 않음
+- 2026-11-14 Phase 2B partial raw WASM은 동적 font registry/FFI, bidi visual-order geometry, RTL shaping, Unicode script itemization, exact `32 entries / 16 MiB`, paragraph `128 entries / 16 MiB`, shaping-run `512 entries / 8 MiB` LRU를 포함해 `2,248,077 bytes`; Inter normal/italic과 Noto Sans Hebrew/Arabic은 browser startup에서 병렬 fetch/등록함
+- 최초 raw WASM `4,950,594 bytes` 대비 `2,702,517 bytes`(`54.6%`) 감소
+- 자동 품질 게이트의 Node gzip level 9 측정은 WASM `711,070 bytes` + 기본 font 4개 `1,512,628 bytes` = 총 `2,223,698 bytes`로 2.5 MB 목표 이내; production HTTP compression/cache와 startup fetch/parse latency 실측 전에는 성능 release gate 최종 통과로 보지 않음
 - exact layout은 `TextLayoutRequest` 전체 동등성으로 보호하고, shaping은 paragraph-relative cache와 script/bidi/font/style/text 기반 run cache로 분리한다. width/alignment/spacing 변화는 shaping을 무효화하지 않고, 한 run의 style 변경은 같은 문단의 나머지 run을 재사용한다.
-- 2026-11-14 로컬 release benchmark(`10,000 grapheme`, `100 runs`, `50 edits`) 재실측은 cold `35.031ms`, warm p50 `19.795ms`, warm p95 `27.357ms`, reused/reshaped run `4,950/50`, retained run payload `1,909,500/8,388,608 bytes`, eviction `0`이다. 해당 장비에서는 warm p95 40ms 목표 안이지만 calibrated CI runner와 반복 분산 기준이 없으므로 전 환경 SLO 최종 통과로 판정하지 않는다.
+- 2026-11-14 로컬 release benchmark(`10,000 grapheme`, `100 runs`, `50 edits`) 재실측은 cold `34.644ms`, warm p50 `19.988ms`, warm p95 `25.021ms`, reused/reshaped run `4,950/50`, exact/paragraph/run entries `7/8/150`, total retained cache payload `32,997,630/41,943,040 bytes`, total eviction `87`이다. 해당 장비에서는 warm p95 40ms 목표 안이고 cache 상한도 유지됐지만 calibrated CI runner와 반복 분산 기준이 없으므로 전 환경 SLO 최종 통과로 판정하지 않는다.
 - CJK/사용자 font는 Phase 2B에서 lazy fetch + content hash cache로 분리하고 WASM binary에 계속 직접 embed하지 않음
 
 ## 3. 런타임 성능 목표

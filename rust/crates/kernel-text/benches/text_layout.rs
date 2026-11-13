@@ -49,7 +49,7 @@ fn main() {
     let p95 = percentile(&samples, 0.95);
     let stats = handle.stats();
     println!(
-        "kernel-text-large-document graphemes={} runs={} edits={} cold_ms={:.3} warm_p50_ms={:.3} warm_p95_ms={:.3} reused_runs={} reshaped_runs={} run_cache_entries={}/{} run_cache_bytes={}/{} evictions={}",
+        "kernel-text-large-document graphemes={} runs={} edits={} cold_ms={:.3} warm_p50_ms={:.3} warm_p95_ms={:.3} reused_runs={} reshaped_runs={} exact_cache={}/{} paragraph_cache={}/{} run_cache={}/{} total_cache_bytes={}/{} total_evictions={}",
         RUN_COUNT * GRAPHEMES_PER_RUN,
         RUN_COUNT,
         EDIT_ITERATIONS,
@@ -58,11 +58,24 @@ fn main() {
         milliseconds(p95),
         reused_runs,
         reshaped_runs,
+        stats.entries,
+        stats.capacity,
+        stats.paragraph_entries,
+        stats.paragraph_capacity,
         stats.shaping_run_entries,
         stats.shaping_run_capacity,
-        stats.shaping_run_bytes,
-        stats.shaping_run_byte_capacity,
-        stats.shaping_run_evictions,
+        stats
+            .bytes
+            .saturating_add(stats.paragraph_bytes)
+            .saturating_add(stats.shaping_run_bytes),
+        stats
+            .byte_capacity
+            .saturating_add(stats.paragraph_byte_capacity)
+            .saturating_add(stats.shaping_run_byte_capacity),
+        stats
+            .evictions
+            .saturating_add(stats.paragraph_evictions)
+            .saturating_add(stats.shaping_run_evictions),
     );
 }
 

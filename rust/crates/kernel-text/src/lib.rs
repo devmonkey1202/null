@@ -15,7 +15,7 @@ use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 8;
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 9;
 
 const MAX_REGISTERED_FONT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FONT_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
@@ -217,6 +217,8 @@ pub struct TextHitTest {
 const DEFAULT_LAYOUT_CACHE_CAPACITY: usize = 32;
 const PARAGRAPH_CACHE_MULTIPLIER: usize = 4;
 const SHAPING_RUN_CACHE_MULTIPLIER: usize = 4;
+const LAYOUT_CACHE_BYTES_PER_ENTRY: usize = 512 * 1024;
+const PARAGRAPH_CACHE_BYTES_PER_ENTRY: usize = 128 * 1024;
 const SHAPING_RUN_CACHE_BYTES_PER_ENTRY: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -226,10 +228,16 @@ pub struct TextLayoutCacheStats {
     pub misses: u64,
     pub entries: usize,
     pub capacity: usize,
+    pub evictions: u64,
+    pub bytes: usize,
+    pub byte_capacity: usize,
     pub paragraph_hits: u64,
     pub paragraph_misses: u64,
     pub paragraph_entries: usize,
     pub paragraph_capacity: usize,
+    pub paragraph_evictions: u64,
+    pub paragraph_bytes: usize,
+    pub paragraph_byte_capacity: usize,
     pub shaping_run_hits: u64,
     pub shaping_run_misses: u64,
     pub shaping_run_entries: usize,
@@ -237,6 +245,83 @@ pub struct TextLayoutCacheStats {
     pub shaping_run_evictions: u64,
     pub shaping_run_bytes: usize,
     pub shaping_run_byte_capacity: usize,
+}
+
+fn style_heap_bytes(style: &TextStyleMetrics) -> usize {
+    style.font_family.capacity()
+}
+
+fn runs_heap_bytes(runs: &Vec<TextLayoutRun>) -> usize {
+    runs.capacity()
+        .saturating_mul(size_of::<TextLayoutRun>())
+        .saturating_add(
+            runs.iter()
+                .map(|run| style_heap_bytes(&run.style))
+                .sum::<usize>(),
+        )
+}
+
+fn string_vec_heap_bytes(values: &Vec<String>) -> usize {
+    values
+        .capacity()
+        .saturating_mul(size_of::<String>())
+        .saturating_add(values.iter().map(String::capacity).sum::<usize>())
+}
+
+fn request_heap_bytes(request: &TextLayoutRequest) -> usize {
+    request
+        .content
+        .capacity()
+        .saturating_add(style_heap_bytes(&request.base_style))
+        .saturating_add(runs_heap_bytes(&request.runs))
+}
+
+fn layout_heap_bytes(layout: &TextLayout) -> usize {
+    layout
+        .lines
+        .capacity()
+        .saturating_mul(size_of::<TextLine>())
+        .saturating_add(
+            layout
+                .graphemes
+                .capacity()
+                .saturating_mul(size_of::<TextGraphemeBox>()),
+        )
+        .saturating_add(
+            layout
+                .graphemes
+                .iter()
+                .map(|grapheme| grapheme.script.capacity())
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            layout
+                .carets
+                .capacity()
+                .saturating_mul(size_of::<TextCaret>()),
+        )
+        .saturating_add(
+            layout
+                .glyphs
+                .capacity()
+                .saturating_mul(size_of::<TextGlyph>()),
+        )
+        .saturating_add(
+            layout
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.font_family.capacity())
+                .sum::<usize>(),
+        )
+        .saturating_add(string_vec_heap_bytes(&layout.resolved_fonts))
+        .saturating_add(string_vec_heap_bytes(&layout.font_fallbacks))
+        .saturating_add(string_vec_heap_bytes(&layout.layout_warnings))
+}
+
+fn layout_cache_entry_bytes(request: &TextLayoutRequest, layout: &TextLayout) -> usize {
+    size_of::<(TextLayoutRequest, TextLayout)>()
+        .saturating_add(request_heap_bytes(request))
+        .saturating_add(layout_heap_bytes(layout))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -253,8 +338,11 @@ pub struct TextLayoutHandle {
     pub revision: u64,
     cache: VecDeque<(TextLayoutRequest, TextLayout)>,
     capacity: usize,
+    byte_capacity: usize,
+    retained_bytes: usize,
     hits: u64,
     misses: u64,
+    evictions: u64,
     paragraph_cache: ParagraphShapeCache,
     fonts: FontRegistry,
 }
@@ -271,8 +359,11 @@ impl TextLayoutHandle {
             revision: 0,
             cache: VecDeque::new(),
             capacity,
+            byte_capacity: capacity.saturating_mul(LAYOUT_CACHE_BYTES_PER_ENTRY),
+            retained_bytes: 0,
             hits: 0,
             misses: 0,
+            evictions: 0,
             paragraph_cache: ParagraphShapeCache::with_capacity(
                 capacity.saturating_mul(PARAGRAPH_CACHE_MULTIPLIER),
             ),
@@ -287,9 +378,10 @@ impl TextLayoutHandle {
             .iter()
             .position(|(cached_request, _)| cached_request == request)
         {
-            let (_, mut layout) = self.cache.remove(index).expect("cache index must exist");
+            let (cached_request, mut layout) =
+                self.cache.remove(index).expect("cache index must exist");
             layout.cache_hit = true;
-            self.cache.push_back((request.clone(), layout.clone()));
+            self.cache.push_back((cached_request, layout.clone()));
             self.hits += 1;
             return Ok(layout);
         }
@@ -301,18 +393,42 @@ impl TextLayoutHandle {
         )?;
         self.revision += 1;
         self.misses += 1;
-        if self.capacity > 0 {
-            while self.cache.len() >= self.capacity {
-                self.cache.pop_front();
+        if self.capacity > 0 && self.byte_capacity > 0 {
+            let cached_request = request.clone();
+            let cached_layout = layout.clone();
+            let entry_bytes = layout_cache_entry_bytes(&cached_request, &cached_layout);
+            if entry_bytes <= self.byte_capacity {
+                while self.cache.len() >= self.capacity
+                    || self.retained_bytes.saturating_add(entry_bytes) > self.byte_capacity
+                {
+                    if !self.pop_front() {
+                        break;
+                    }
+                }
+                self.retained_bytes = self.retained_bytes.saturating_add(entry_bytes);
+                self.cache.push_back((cached_request, cached_layout));
             }
-            self.cache.push_back((request.clone(), layout.clone()));
         }
         Ok(layout)
     }
 
     pub fn clear(&mut self) {
         self.cache.clear();
+        self.retained_bytes = 0;
         self.paragraph_cache.clear();
+    }
+
+    fn pop_front(&mut self) -> bool {
+        if let Some((request, layout)) = self.cache.pop_front() {
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(layout_cache_entry_bytes(&request, &layout));
+            self.evictions += 1;
+            true
+        } else {
+            self.retained_bytes = 0;
+            false
+        }
     }
 
     pub fn stats(&self) -> TextLayoutCacheStats {
@@ -321,10 +437,16 @@ impl TextLayoutHandle {
             misses: self.misses,
             entries: self.cache.len(),
             capacity: self.capacity,
+            evictions: self.evictions,
+            bytes: self.retained_bytes,
+            byte_capacity: self.byte_capacity,
             paragraph_hits: self.paragraph_cache.hits,
             paragraph_misses: self.paragraph_cache.misses,
             paragraph_entries: self.paragraph_cache.entries.len(),
             paragraph_capacity: self.paragraph_cache.capacity,
+            paragraph_evictions: self.paragraph_cache.evictions,
+            paragraph_bytes: self.paragraph_cache.retained_bytes,
+            paragraph_byte_capacity: self.paragraph_cache.byte_capacity,
             shaping_run_hits: self.paragraph_cache.shaping_runs.hits,
             shaping_run_misses: self.paragraph_cache.shaping_runs.misses,
             shaping_run_entries: self.paragraph_cache.shaping_runs.entries.len(),
@@ -619,6 +741,12 @@ impl LayoutDiagnostics {
         self.visual_run_count += other.visual_run_count;
         self.script_run_count += other.script_run_count;
     }
+
+    fn heap_bytes(&self) -> usize {
+        string_vec_heap_bytes(&self.resolved_fonts)
+            .saturating_add(string_vec_heap_bytes(&self.font_fallbacks))
+            .saturating_add(string_vec_heap_bytes(&self.layout_warnings))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -641,6 +769,40 @@ impl ParagraphClusters {
             }
         }
     }
+}
+
+fn cluster_heap_bytes(cluster: &Cluster) -> usize {
+    cluster
+        .shaping_text
+        .capacity()
+        .saturating_add(style_heap_bytes(&cluster.style))
+        .saturating_add(
+            cluster
+                .glyphs
+                .capacity()
+                .saturating_mul(size_of::<ClusterGlyph>()),
+        )
+        .saturating_add(
+            cluster
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.font_family.capacity())
+                .sum::<usize>(),
+        )
+}
+
+fn paragraph_clusters_heap_bytes(layout: &ParagraphClusters) -> usize {
+    layout
+        .clusters
+        .capacity()
+        .saturating_mul(size_of::<Cluster>())
+        .saturating_add(
+            layout
+                .clusters
+                .iter()
+                .map(cluster_heap_bytes)
+                .sum::<usize>(),
+        )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -687,12 +849,26 @@ impl ParagraphShapeKey {
             runs: self.runs.clone(),
         }
     }
+
+    fn heap_bytes(&self) -> usize {
+        self.content
+            .capacity()
+            .saturating_add(style_heap_bytes(&self.base_style))
+            .saturating_add(runs_heap_bytes(&self.runs))
+    }
 }
 
 #[derive(Debug, Clone)]
 struct CachedParagraphShape {
     layout: ParagraphClusters,
     diagnostics: LayoutDiagnostics,
+}
+
+fn paragraph_cache_entry_bytes(key: &ParagraphShapeKey, cached: &CachedParagraphShape) -> usize {
+    size_of::<(ParagraphShapeKey, CachedParagraphShape)>()
+        .saturating_add(key.heap_bytes())
+        .saturating_add(paragraph_clusters_heap_bytes(&cached.layout))
+        .saturating_add(cached.diagnostics.heap_bytes())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -840,12 +1016,16 @@ impl ShapingRunCache {
         self.retained_bytes = 0;
     }
 
-    fn pop_front(&mut self) {
+    fn pop_front(&mut self) -> bool {
         if let Some((key, cached)) = self.entries.pop_front() {
             self.retained_bytes = self
                 .retained_bytes
                 .saturating_sub(shaping_run_entry_bytes(&key, &cached));
             self.evictions += 1;
+            true
+        } else {
+            self.retained_bytes = 0;
+            false
         }
     }
 
@@ -890,7 +1070,9 @@ impl ShapingRunCache {
                     while self.entries.len() >= self.capacity
                         || self.retained_bytes.saturating_add(entry_bytes) > self.byte_capacity
                     {
-                        self.pop_front();
+                        if !self.pop_front() {
+                            break;
+                        }
                     }
                     self.retained_bytes = self.retained_bytes.saturating_add(entry_bytes);
                     self.entries.push_back((key, cached));
@@ -909,8 +1091,11 @@ fn shaping_run_entry_bytes(key: &ShapingRunKey, cached: &CachedShapingRun) -> us
 struct ParagraphShapeCache {
     entries: VecDeque<(ParagraphShapeKey, CachedParagraphShape)>,
     capacity: usize,
+    byte_capacity: usize,
+    retained_bytes: usize,
     hits: u64,
     misses: u64,
+    evictions: u64,
     shaping_runs: ShapingRunCache,
 }
 
@@ -918,6 +1103,7 @@ impl ParagraphShapeCache {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             capacity,
+            byte_capacity: capacity.saturating_mul(PARAGRAPH_CACHE_BYTES_PER_ENTRY),
             shaping_runs: ShapingRunCache::with_capacity(
                 capacity.saturating_mul(SHAPING_RUN_CACHE_MULTIPLIER),
             ),
@@ -927,7 +1113,21 @@ impl ParagraphShapeCache {
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.retained_bytes = 0;
         self.shaping_runs.clear();
+    }
+
+    fn pop_front(&mut self) -> bool {
+        if let Some((key, cached)) = self.entries.pop_front() {
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(paragraph_cache_entry_bytes(&key, &cached));
+            self.evictions += 1;
+            true
+        } else {
+            self.retained_bytes = 0;
+            false
+        }
     }
 
     fn resolve(
@@ -963,11 +1163,20 @@ impl ParagraphShapeCache {
             diagnostics,
         };
         self.misses += 1;
-        if self.capacity > 0 {
-            while self.entries.len() >= self.capacity {
-                self.entries.pop_front();
+        if self.capacity > 0 && self.byte_capacity > 0 {
+            let cached_entry = cached.clone();
+            let entry_bytes = paragraph_cache_entry_bytes(&key, &cached_entry);
+            if entry_bytes <= self.byte_capacity {
+                while self.entries.len() >= self.capacity
+                    || self.retained_bytes.saturating_add(entry_bytes) > self.byte_capacity
+                {
+                    if !self.pop_front() {
+                        break;
+                    }
+                }
+                self.retained_bytes = self.retained_bytes.saturating_add(entry_bytes);
+                self.entries.push_back((key, cached_entry));
             }
-            self.entries.push_back((key, cached.clone()));
         }
         (cached, false, activity)
     }
@@ -2011,7 +2220,7 @@ mod tests {
             + layout_with_editor_fonts(&right).lines[0].width;
         let pair_width = layout_with_editor_fonts(&pair).lines[0].width;
 
-        assert_eq!(layout.engine_version, 8);
+        assert_eq!(layout.engine_version, 9);
         assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
         assert_eq!(layout.resolved_fonts, vec!["Inter"]);
         assert!(layout.font_fallbacks.is_empty());
@@ -2341,10 +2550,16 @@ mod tests {
                 misses: 1,
                 entries: 1,
                 capacity: 2,
+                evictions: 0,
+                bytes: handle.stats().bytes,
+                byte_capacity: 2 * LAYOUT_CACHE_BYTES_PER_ENTRY,
                 paragraph_hits: 0,
                 paragraph_misses: 1,
                 paragraph_entries: 1,
                 paragraph_capacity: 8,
+                paragraph_evictions: 0,
+                paragraph_bytes: handle.stats().paragraph_bytes,
+                paragraph_byte_capacity: 8 * PARAGRAPH_CACHE_BYTES_PER_ENTRY,
                 shaping_run_hits: 0,
                 shaping_run_misses: 0,
                 shaping_run_entries: 0,
@@ -2500,6 +2715,57 @@ mod tests {
         assert_eq!(stats.paragraph_entries, 4);
         assert_eq!(stats.paragraph_capacity, 4);
         assert_eq!(stats.paragraph_misses, 8);
+        assert!(stats.bytes <= stats.byte_capacity);
+        assert!(stats.paragraph_bytes <= stats.paragraph_byte_capacity);
+    }
+
+    #[test]
+    fn bounds_exact_layout_cache_by_retained_bytes() {
+        let mut handle = TextLayoutHandle::with_capacity(8);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+
+        for index in 0..8 {
+            let content = format!("{index:02}{}", "x".repeat(5_000));
+            let mut input = request(&content, 10_000.0);
+            input.base_style.font_family = "Inter".to_string();
+            handle.layout(&input).expect("large exact layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(stats.byte_capacity, 8 * LAYOUT_CACHE_BYTES_PER_ENTRY);
+        assert!(stats.entries > 0);
+        assert!(stats.entries < stats.capacity);
+        assert!(stats.evictions > 0);
+        assert!(stats.bytes > 0);
+        assert!(stats.bytes <= stats.byte_capacity);
+    }
+
+    #[test]
+    fn bounds_paragraph_cache_by_retained_bytes() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+        let content = (0..4)
+            .map(|index| format!("{index:02}{}", "x".repeat(1_000)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut input = request(&content, 10_000.0);
+        input.base_style.font_family = "Inter".to_string();
+        handle.layout(&input).expect("large paragraph layout");
+
+        let stats = handle.stats();
+        assert_eq!(
+            stats.paragraph_byte_capacity,
+            4 * PARAGRAPH_CACHE_BYTES_PER_ENTRY
+        );
+        assert!(stats.paragraph_entries > 0);
+        assert!(stats.paragraph_entries < stats.paragraph_capacity);
+        assert!(stats.paragraph_evictions > 0);
+        assert!(stats.paragraph_bytes > 0);
+        assert!(stats.paragraph_bytes <= stats.paragraph_byte_capacity);
     }
 
     #[test]

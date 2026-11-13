@@ -263,6 +263,14 @@ Phase 2B byte-bounded shaping cache checkpoint (`TextLayout.engineVersion = 8`):
 - `shapingRunBytes`, `shapingRunByteCapacity`, `shapingRunEvictions`를 `TextLayoutCacheStats`와 WASM FFI에 노출
 - allocator metadata와 fragmentation까지 포함한 process-memory profiling은 별도 calibrated benchmark release blocker로 유지
 
+Phase 2B bounded text-cache checkpoint (`TextLayout.engineVersion = 9`):
+
+- exact-layout cache `32 entries / 16 MiB`, paragraph cache `128 entries / 16 MiB`, shaping-run cache `512 entries / 8 MiB`의 이중 상한 적용
+- `TextLayoutRequest`, 최종 line/grapheme/caret/glyph geometry, paragraph cluster/glyph geometry의 중첩 vector와 string capacity를 보존 payload로 합산
+- 각 계층은 oversize entry를 저장하지 않고 byte budget 또는 entry 상한 초과 시 독립 LRU eviction 수행
+- exact/paragraph/run별 bytes, byte capacity, eviction을 동일 `TextLayoutCacheStats` 및 WASM bridge query로 노출
+- inspector는 세 계층의 현재/최대 cache payload를 합산해 표시하고 browser E2E에서 기본 총 `40 MiB` 계약을 검증
+
 현재 명시적 한계:
 
 - 현재 기본 face 4개(Inter regular/italic, Noto Sans Hebrew/Arabic)는 같은 origin의 public asset을 동적 등록하며 WASM binary에 font bytes를 내장하지 않는다.

@@ -702,7 +702,7 @@ mod tests {
             .text_layout("title")
             .expect("text layout should serialize");
         assert!(text_layout.contains("\"measurementMode\":\"shaped\""));
-        assert!(text_layout.contains("\"engineVersion\":8"));
+        assert!(text_layout.contains("\"engineVersion\":9"));
         assert!(text_layout.contains("\"scriptRunCount\":1"));
         assert!(text_layout.contains("\"resolvedFonts\":[\"Inter\"]"));
         assert!(text_layout.contains("\"fallbackGraphemeCount\":0"));
@@ -716,6 +716,8 @@ mod tests {
             .expect("text layout cache stats should serialize");
         assert!(cache_stats.contains("\"shapingRunByteCapacity\":8388608"));
         assert!(cache_stats.contains("\"shapingRunBytes\":"));
+        assert!(cache_stats.contains("\"byteCapacity\":16777216"));
+        assert!(cache_stats.contains("\"paragraphByteCapacity\":16777216"));
 
         let handles = bridge
             .transform_handles()

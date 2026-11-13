@@ -435,10 +435,16 @@ export type TextLayoutCacheStats = {
   misses: number;
   entries: number;
   capacity: number;
+  evictions: number;
+  bytes: number;
+  byteCapacity: number;
   paragraphHits: number;
   paragraphMisses: number;
   paragraphEntries: number;
   paragraphCapacity: number;
+  paragraphEvictions: number;
+  paragraphBytes: number;
+  paragraphByteCapacity: number;
   shapingRunHits: number;
   shapingRunMisses: number;
   shapingRunEntries: number;
