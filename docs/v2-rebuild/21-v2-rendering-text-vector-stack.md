@@ -179,12 +179,15 @@ Implemented in `kernel-render` Phase 3 partial:
 - stable command fingerprint/revision and added/updated/removed/unchanged frame diff
 - WASM `render_frame` FFI, editor pan/zoom viewport connection, inspector diagnostics
 - Rust/FFI tests and real browser text-edit incremental diff E2E
+- WebGL2 shadow backend with one instanced draw call for z-ordered rect/ellipse/line commands
+- DPR-aware surface allocation, shader/resource lifecycle, context loss/restore, GL error diagnostics
+- browser acceptance coverage for Rust/GPU revision parity and non-transparent GPU pixel output
 
 Not yet implemented and still release-blocking:
 
 - end-user font ingestion UI, project font manifest/persistence, content-hash persistent cache, and a CJK fallback set
 - other RTL shaping, Script_Extensions refinement, and configurable OpenType features
-- glyph raster/atlas, WebGL2 backend draw calls, batching, texture eviction, and replacement of the current DOM/SVG visual path
+- path tessellation, glyph raster/atlas, media textures, texture eviction, full WebGL2 visual parity, and replacement of the current DOM/SVG visual path
 - multi-script/very-large-document profiling and allocator overhead/fragmentation을 포함한 process-memory budget 검증
 - editor/preview/publish shaped-text visual parity
 

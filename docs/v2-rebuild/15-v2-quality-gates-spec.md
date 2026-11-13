@@ -132,11 +132,13 @@
 - shape/path/styled glyph-run RenderList 생성, 절대 transform, 회전 AABB, viewport/overscan culling Rust test
 - stable command fingerprint와 added/updated/removed/unchanged RenderDiff Rust/FFI test
 - 실제 editor viewport -> WASM `render_frame` -> inspector diagnostics와 text edit incremental diff Playwright E2E
+- rect/ellipse/line WebGL2 instanced batch의 z-order/transform/color 단위 test
+- browser WebGL2 draw call, Rust/GPU revision parity, non-transparent pixel output, GL error 0, context loss/restore Playwright E2E
 
 아직 release blocker인 항목:
 
 - CJK bundled/streamed fallback font
 - Syriac 등 기타 RTL glyph shaping과 Script_Extensions 교집합 기반 정밀 itemization
-- glyph raster/atlas, WebGL2 backend draw call과 DOM/SVG renderer 제거
+- path tessellation, glyph raster/atlas, media texture, WebGL2 visual parity와 DOM/SVG renderer 제거
 - multi-script/very-large document benchmark, allocator overhead/fragmentation을 포함한 process-memory profile, calibrated CI performance gate
 - editor/preview/publish pixel parity

@@ -120,7 +120,8 @@
 - 회전 AABB와 stroke inflation을 포함한 world-space viewport/overscan culling 적용
 - command별 stable fingerprint와 이전/다음 프레임 `added/updated/removed/unchanged` diff 생성
 - editor pan/zoom viewport를 WASM `render_frame`에 전달하고 inspector에서 command/glyph/visible/cull/diff를 관찰
-- 현재 수치는 기능 계약 검증 단계이며 20k node culling/frame-time benchmark와 GPU draw-call 비용은 아직 측정 전
+- WebGL2 shadow backend는 rect/ellipse/line을 단일 instanced draw call로 제출하고 DPR surface, context restore, GL error, unsupported command를 계측
+- 현재 수치는 기능 계약 검증 단계이며 20k node culling/frame-time, GPU upload/draw 비용, atlas/texture memory는 아직 측정 전
 
 ## 12. 대규모 운영 대응
 

@@ -137,12 +137,13 @@ AI는 이 단계부터 **외부 상용 API가 아니라 self-hosted inference �
 - `TextLayout` v9 glyph/cluster/bidi/script geometry, Hebrew/Arabic RTL shaping, exact/paragraph/run incremental cache와 byte-budget 진단
 - `kernel-render` RenderList v1: scene 순서, 절대 transform, 회전 AABB, viewport/overscan culling, shape/path/styled glyph-run 명령, stable fingerprint와 incremental diff
 - WASM `render_frame` query와 실제 editor viewport 연동, 명령/glyph/culling/diff inspector 진단 및 Playwright 회귀 검증
+- WebGL2 shadow backend: rect/ellipse/line z-order instanced batch, DPR surface, context loss/restore, GL error 및 실제 pixel output 검증
 - Playwright 기반 실제 Rust/WASM 편집 흐름 검증
 
 아직 상용 수준 완료로 간주할 수 없는 핵심 범위:
 
 - end-user font upload UI/manifest/persistence, CJK 폰트 세트, Arabic 이외 RTL glyph shaping, Script_Extensions 정밀 처리, 완전한 fallback chain
-- glyph raster/atlas, WebGL2 backend draw call, 기존 DOM/SVG 캔버스 제거와 editor/preview/publish pixel parity
+- path tessellation, glyph raster/atlas, media texture, 기존 DOM/SVG 캔버스 제거와 editor/preview/publish pixel parity
 - 완성형 vector boolean/tessellation
 - editor collaboration document ops
 - multi-script/very-large document benchmark, byte-accurate cache memory profiling과 calibrated CI performance gate

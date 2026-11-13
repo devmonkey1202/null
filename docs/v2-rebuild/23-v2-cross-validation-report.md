@@ -138,7 +138,7 @@
 - Noto Sans Arabic fallback과 RTL shaping은 Rust/browser에서 검증했지만 Script_Extensions 정밀 해소, 기타 RTL 폰트, CJK/font streaming, Phase 3가 미완료이므로 상용 텍스트 엔진 완료 판정은 금지
 - dynamic registry의 invalid/oversized face 거부, 등록/해제, cache invalidation과 FFI 전달을 Rust test로 검증
 - RenderList v1/`render_frame` FFI를 포함한 raw editor WASM은 `2,326,115 bytes`, WASM+기본 font 4개 자동 gzip gate 합계는 `2,244,760 bytes`; 10k/100-run local warm p95는 `25.021ms`, total retained cache payload는 `32,997,630/41,943,040 bytes`지만 calibrated CI, allocator-inclusive memory, production transport, font fetch/parse SLO는 아직 미측정
-- `kernel-render`는 shape/path/styled glyph-run command, absolute transform, 회전 AABB, viewport culling, stable diff까지 구현됐지만 glyph raster/atlas와 WebGL2 backend가 없어 현재 DOM/SVG visual path를 아직 대체하지 않음
+- `kernel-render`는 shape/path/styled glyph-run command, absolute transform, 회전 AABB, viewport culling, stable diff까지 구현됐고 WebGL2 shadow backend가 rect/ellipse/line을 단일 instanced draw call로 실제 rasterize함. 다만 path tessellation, glyph raster/atlas, media texture와 전체 pixel parity가 없어 현재 DOM/SVG visual path는 아직 대체하지 않음
 
 ## 8. 실행 판단
 

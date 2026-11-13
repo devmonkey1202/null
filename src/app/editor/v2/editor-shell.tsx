@@ -47,6 +47,8 @@ import type {
 } from "@/v2/editor/contracts";
 import { loadEditorBridge } from "@/v2/editor/bridge/load-editor-bridge";
 import { sampleSceneDoc } from "@/v2/editor/sample-doc";
+import { WebGlRenderSurface } from "@/v2/editor/webgl-render-surface";
+import type { WebGlRenderStatus } from "@/v2/editor/webgl-renderer";
 const CANVAS_PAGE_ID = sampleSceneDoc.pages[0]?.id ?? "page-home";
 
 function textRenderFontFamily(fontFamily: string) {
@@ -1667,6 +1669,7 @@ export function V2EditorShell() {
   const [activeTextLayout, setActiveTextLayout] = useState<TextLayout | null>(null);
   const [activeTextCacheStats, setActiveTextCacheStats] = useState<TextLayoutCacheStats | null>(null);
   const [activeRenderFrame, setActiveRenderFrame] = useState<RenderFrame | null>(null);
+  const [activeWebGlStatus, setActiveWebGlStatus] = useState<WebGlRenderStatus | null>(null);
   const [activePathPointIndex, setActivePathPointIndex] = useState<number | null>(null);
   const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
@@ -4310,6 +4313,13 @@ export function V2EditorShell() {
               onPointerCancel={handleCanvasPointerCancel}
               onWheel={handleCanvasWheel}
             >
+              <WebGlRenderSurface
+                frame={activeRenderFrame}
+                width={canvasSize.width}
+                height={canvasSize.height}
+                onStatus={setActiveWebGlStatus}
+                className="pointer-events-none absolute inset-0 opacity-0"
+              />
               <div
                 className="absolute inset-0 origin-top-left"
                 style={{
@@ -7049,6 +7059,12 @@ export function V2EditorShell() {
                     diff: +{activeRenderFrame.diff.added.length} ~{activeRenderFrame.diff.updated.length} -{activeRenderFrame.diff.removed.length}
                   </div>
                 ) : null}
+                <div className="mt-1" data-testid="v2-webgl-render-summary">
+                  webgl2: {activeWebGlStatus?.instanceCount ?? 0} instances / {activeWebGlStatus?.drawCalls ?? 0} draw calls
+                </div>
+                <div className="mt-1">
+                  gpu pending: {activeWebGlStatus?.unsupportedCommandCount ?? 0} commands / errors {activeWebGlStatus?.glError ?? 0}
+                </div>
                 <div className="mt-1">
                   viewport: {Math.round(viewViewport.zoom * 100)}% / {Math.round(viewViewport.x)}/
                   {Math.round(viewViewport.y)}

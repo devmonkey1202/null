@@ -277,7 +277,9 @@ Phase 3 render-command checkpoint (`RenderList.version = 1`, partial):
 - center rotation matrix, 회전 AABB, stroke inflation, world-space viewport/overscan culling을 command 생성 전에 적용
 - command stable fingerprint와 RenderList revision을 생성하고 이전 frame 대비 added/updated/removed/unchanged diff를 계산
 - WASM `render_frame`이 실제 editor pan/zoom viewport와 연결되고 inspector에서 command/glyph/visible/cull/diff를 진단
-- 현재 DOM/SVG 캔버스는 비교 기준으로 유지한다. glyph raster/atlas, WebGL2 backend, batching과 pixel parity를 통과하기 전에는 GPU renderer 전환 완료로 판정하지 않는다.
+- browser WebGL2 shadow backend가 rect/ellipse/line을 z-order 유지 instanced batch 1회 draw call로 제출하고 Rust revision, unsupported command, GL error를 진단
+- shader compile/link, DPR backing surface, premultiplied-alpha 합성, context loss/restore 후 resource 재생성과 실제 non-transparent pixel 출력을 Playwright에서 검증
+- 현재 DOM/SVG 캔버스는 비교 기준으로 유지한다. path tessellation, glyph raster/atlas, media texture, 전체 visual parity를 통과하기 전에는 GPU renderer 전환 완료로 판정하지 않는다.
 
 현재 명시적 한계:
 
