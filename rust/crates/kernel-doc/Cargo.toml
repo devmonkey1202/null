@@ -1,0 +1,15 @@
+[package]
+name = "kernel-doc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-error = { path = "../core-error" }
+core-id = { path = "../core-id" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+path = "src/lib.rs"

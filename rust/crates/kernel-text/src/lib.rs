@@ -1,0 +1,2837 @@
+use core_error::CoreError;
+use rustybuzz::{
+    shape, Direction as ShapingDirection, Face as ShapingFace, Script as ShapingScript,
+    UnicodeBuffer, Variation,
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashSet, VecDeque},
+    mem::size_of,
+};
+use ttf_parser::{Face as ParsedFace, Tag};
+use unicode_bidi::{BidiInfo, Level};
+use unicode_linebreak::linebreaks;
+use unicode_script::{Script, UnicodeScript};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+pub const TEXT_LAYOUT_ENGINE_VERSION: u32 = 9;
+
+const MAX_REGISTERED_FONT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FONT_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_REGISTERED_FONTS: usize = 32;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlignment {
+    #[default]
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextTransform {
+    #[default]
+    None,
+    Upper,
+    Lower,
+    Capitalize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextMeasurementMode {
+    Shaped,
+    Mixed,
+    DeterministicFallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextDirection {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextStyleMetrics {
+    pub font_family: String,
+    pub font_size: f32,
+    pub font_weight: u16,
+    pub line_height: f32,
+    pub letter_spacing: f32,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub transform: TextTransform,
+}
+
+impl Default for TextStyleMetrics {
+    fn default() -> Self {
+        Self {
+            font_family: "system-ui".to_string(),
+            font_size: 16.0,
+            font_weight: 400,
+            line_height: 24.0,
+            letter_spacing: 0.0,
+            italic: false,
+            transform: TextTransform::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayoutRun {
+    pub start: usize,
+    pub end: usize,
+    pub style: TextStyleMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayoutRequest {
+    pub content: String,
+    pub width: f32,
+    pub alignment: TextAlignment,
+    pub paragraph_spacing: f32,
+    pub base_style: TextStyleMetrics,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<TextLayoutRun>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLine {
+    pub index: usize,
+    pub paragraph_index: usize,
+    pub start: usize,
+    pub end: usize,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub baseline: f32,
+    pub hard_break: bool,
+    pub soft_wrapped: bool,
+    pub base_direction: TextDirection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextGraphemeBox {
+    pub start: usize,
+    pub end: usize,
+    pub line_index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub direction: TextDirection,
+    pub bidi_level: u8,
+    pub script: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextGlyph {
+    pub glyph_id: u32,
+    pub cluster_start: usize,
+    pub cluster_end: usize,
+    pub line_index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub advance_x: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub font_family: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaretAffinity {
+    Upstream,
+    Downstream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextCaret {
+    pub offset: usize,
+    pub line_index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub height: f32,
+    pub affinity: CaretAffinity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSelectionRect {
+    pub line_index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayout {
+    pub engine_version: u32,
+    pub measurement_mode: TextMeasurementMode,
+    pub width: f32,
+    pub height: f32,
+    pub lines: Vec<TextLine>,
+    pub graphemes: Vec<TextGraphemeBox>,
+    pub carets: Vec<TextCaret>,
+    pub glyphs: Vec<TextGlyph>,
+    pub resolved_fonts: Vec<String>,
+    pub font_fallbacks: Vec<String>,
+    pub layout_warnings: Vec<String>,
+    pub shaped_run_count: usize,
+    pub fallback_grapheme_count: usize,
+    pub bidi_paragraph_count: usize,
+    pub visual_run_count: usize,
+    pub script_run_count: usize,
+    pub cache_hit: bool,
+    pub paragraph_cache_hits: usize,
+    pub paragraph_cache_misses: usize,
+    pub shaping_run_cache_hits: usize,
+    pub shaping_run_cache_misses: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextHitTest {
+    pub offset: usize,
+    pub line_index: usize,
+    pub affinity: CaretAffinity,
+}
+
+const DEFAULT_LAYOUT_CACHE_CAPACITY: usize = 32;
+const PARAGRAPH_CACHE_MULTIPLIER: usize = 4;
+const SHAPING_RUN_CACHE_MULTIPLIER: usize = 4;
+const LAYOUT_CACHE_BYTES_PER_ENTRY: usize = 512 * 1024;
+const PARAGRAPH_CACHE_BYTES_PER_ENTRY: usize = 128 * 1024;
+const SHAPING_RUN_CACHE_BYTES_PER_ENTRY: usize = 16 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayoutCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub entries: usize,
+    pub capacity: usize,
+    pub evictions: u64,
+    pub bytes: usize,
+    pub byte_capacity: usize,
+    pub paragraph_hits: u64,
+    pub paragraph_misses: u64,
+    pub paragraph_entries: usize,
+    pub paragraph_capacity: usize,
+    pub paragraph_evictions: u64,
+    pub paragraph_bytes: usize,
+    pub paragraph_byte_capacity: usize,
+    pub shaping_run_hits: u64,
+    pub shaping_run_misses: u64,
+    pub shaping_run_entries: usize,
+    pub shaping_run_capacity: usize,
+    pub shaping_run_evictions: u64,
+    pub shaping_run_bytes: usize,
+    pub shaping_run_byte_capacity: usize,
+}
+
+fn style_heap_bytes(style: &TextStyleMetrics) -> usize {
+    style.font_family.capacity()
+}
+
+fn runs_heap_bytes(runs: &Vec<TextLayoutRun>) -> usize {
+    runs.capacity()
+        .saturating_mul(size_of::<TextLayoutRun>())
+        .saturating_add(
+            runs.iter()
+                .map(|run| style_heap_bytes(&run.style))
+                .sum::<usize>(),
+        )
+}
+
+fn string_vec_heap_bytes(values: &Vec<String>) -> usize {
+    values
+        .capacity()
+        .saturating_mul(size_of::<String>())
+        .saturating_add(values.iter().map(String::capacity).sum::<usize>())
+}
+
+fn request_heap_bytes(request: &TextLayoutRequest) -> usize {
+    request
+        .content
+        .capacity()
+        .saturating_add(style_heap_bytes(&request.base_style))
+        .saturating_add(runs_heap_bytes(&request.runs))
+}
+
+fn layout_heap_bytes(layout: &TextLayout) -> usize {
+    layout
+        .lines
+        .capacity()
+        .saturating_mul(size_of::<TextLine>())
+        .saturating_add(
+            layout
+                .graphemes
+                .capacity()
+                .saturating_mul(size_of::<TextGraphemeBox>()),
+        )
+        .saturating_add(
+            layout
+                .graphemes
+                .iter()
+                .map(|grapheme| grapheme.script.capacity())
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            layout
+                .carets
+                .capacity()
+                .saturating_mul(size_of::<TextCaret>()),
+        )
+        .saturating_add(
+            layout
+                .glyphs
+                .capacity()
+                .saturating_mul(size_of::<TextGlyph>()),
+        )
+        .saturating_add(
+            layout
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.font_family.capacity())
+                .sum::<usize>(),
+        )
+        .saturating_add(string_vec_heap_bytes(&layout.resolved_fonts))
+        .saturating_add(string_vec_heap_bytes(&layout.font_fallbacks))
+        .saturating_add(string_vec_heap_bytes(&layout.layout_warnings))
+}
+
+fn layout_cache_entry_bytes(request: &TextLayoutRequest, layout: &TextLayout) -> usize {
+    size_of::<(TextLayoutRequest, TextLayout)>()
+        .saturating_add(request_heap_bytes(request))
+        .saturating_add(layout_heap_bytes(layout))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredFontInfo {
+    pub family: String,
+    pub italic: bool,
+    pub byte_length: usize,
+    pub glyph_count: u16,
+}
+
+#[derive(Debug)]
+pub struct TextLayoutHandle {
+    pub revision: u64,
+    cache: VecDeque<(TextLayoutRequest, TextLayout)>,
+    capacity: usize,
+    byte_capacity: usize,
+    retained_bytes: usize,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    paragraph_cache: ParagraphShapeCache,
+    fonts: FontRegistry,
+}
+
+impl Default for TextLayoutHandle {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_LAYOUT_CACHE_CAPACITY)
+    }
+}
+
+impl TextLayoutHandle {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            revision: 0,
+            cache: VecDeque::new(),
+            capacity,
+            byte_capacity: capacity.saturating_mul(LAYOUT_CACHE_BYTES_PER_ENTRY),
+            retained_bytes: 0,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            paragraph_cache: ParagraphShapeCache::with_capacity(
+                capacity.saturating_mul(PARAGRAPH_CACHE_MULTIPLIER),
+            ),
+            fonts: FontRegistry::default(),
+        }
+    }
+
+    pub fn layout(&mut self, request: &TextLayoutRequest) -> Result<TextLayout, CoreError> {
+        validate_request(request)?;
+        if let Some(index) = self
+            .cache
+            .iter()
+            .position(|(cached_request, _)| cached_request == request)
+        {
+            let (cached_request, mut layout) =
+                self.cache.remove(index).expect("cache index must exist");
+            layout.cache_hit = true;
+            self.cache.push_back((cached_request, layout.clone()));
+            self.hits += 1;
+            return Ok(layout);
+        }
+
+        let layout = layout_text_with_registry_and_cache(
+            request,
+            &self.fonts,
+            Some(&mut self.paragraph_cache),
+        )?;
+        self.revision += 1;
+        self.misses += 1;
+        if self.capacity > 0 && self.byte_capacity > 0 {
+            let cached_request = request.clone();
+            let cached_layout = layout.clone();
+            let entry_bytes = layout_cache_entry_bytes(&cached_request, &cached_layout);
+            if entry_bytes <= self.byte_capacity {
+                while self.cache.len() >= self.capacity
+                    || self.retained_bytes.saturating_add(entry_bytes) > self.byte_capacity
+                {
+                    if !self.pop_front() {
+                        break;
+                    }
+                }
+                self.retained_bytes = self.retained_bytes.saturating_add(entry_bytes);
+                self.cache.push_back((cached_request, cached_layout));
+            }
+        }
+        Ok(layout)
+    }
+
+    pub fn clear(&mut self) {
+        self.cache.clear();
+        self.retained_bytes = 0;
+        self.paragraph_cache.clear();
+    }
+
+    fn pop_front(&mut self) -> bool {
+        if let Some((request, layout)) = self.cache.pop_front() {
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(layout_cache_entry_bytes(&request, &layout));
+            self.evictions += 1;
+            true
+        } else {
+            self.retained_bytes = 0;
+            false
+        }
+    }
+
+    pub fn stats(&self) -> TextLayoutCacheStats {
+        TextLayoutCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+            entries: self.cache.len(),
+            capacity: self.capacity,
+            evictions: self.evictions,
+            bytes: self.retained_bytes,
+            byte_capacity: self.byte_capacity,
+            paragraph_hits: self.paragraph_cache.hits,
+            paragraph_misses: self.paragraph_cache.misses,
+            paragraph_entries: self.paragraph_cache.entries.len(),
+            paragraph_capacity: self.paragraph_cache.capacity,
+            paragraph_evictions: self.paragraph_cache.evictions,
+            paragraph_bytes: self.paragraph_cache.retained_bytes,
+            paragraph_byte_capacity: self.paragraph_cache.byte_capacity,
+            shaping_run_hits: self.paragraph_cache.shaping_runs.hits,
+            shaping_run_misses: self.paragraph_cache.shaping_runs.misses,
+            shaping_run_entries: self.paragraph_cache.shaping_runs.entries.len(),
+            shaping_run_capacity: self.paragraph_cache.shaping_runs.capacity,
+            shaping_run_evictions: self.paragraph_cache.shaping_runs.evictions,
+            shaping_run_bytes: self.paragraph_cache.shaping_runs.retained_bytes,
+            shaping_run_byte_capacity: self.paragraph_cache.shaping_runs.byte_capacity,
+        }
+    }
+
+    pub fn register_font(
+        &mut self,
+        family: &str,
+        data: Vec<u8>,
+        italic: bool,
+    ) -> Result<RegisteredFontInfo, CoreError> {
+        let info = self.fonts.register(family, data, italic)?;
+        self.clear();
+        Ok(info)
+    }
+
+    pub fn unregister_font(&mut self, family: &str, italic: bool) -> bool {
+        let removed = self.fonts.unregister(family, italic);
+        if removed {
+            self.clear();
+        }
+        removed
+    }
+
+    pub fn registered_fonts(&self) -> Vec<RegisteredFontInfo> {
+        self.fonts.registered_fonts()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Cluster {
+    start: usize,
+    end: usize,
+    shaping_text: String,
+    style: TextStyleMetrics,
+    advance: f32,
+    line_height: f32,
+    font_size: f32,
+    whitespace: bool,
+    break_after: bool,
+    bidi_level: u8,
+    script: Script,
+    glyphs: Vec<ClusterGlyph>,
+}
+
+#[derive(Debug, Clone)]
+struct ClusterGlyph {
+    glyph_id: u32,
+    cluster_start: usize,
+    cluster_end: usize,
+    local_x: f32,
+    advance_x: f32,
+    offset_x: f32,
+    offset_y: f32,
+    font_family: String,
+}
+
+#[derive(Debug, Clone)]
+struct OwnedFont {
+    family: String,
+    normalized_family: String,
+    data: Vec<u8>,
+    italic: bool,
+    glyph_count: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RegisteredFont<'a> {
+    family: &'a str,
+    data: &'a [u8],
+}
+
+#[derive(Debug, Default)]
+struct FontRegistry {
+    registered: Vec<OwnedFont>,
+}
+
+impl FontRegistry {
+    fn register(
+        &mut self,
+        family: &str,
+        data: Vec<u8>,
+        italic: bool,
+    ) -> Result<RegisteredFontInfo, CoreError> {
+        let family = family.trim().trim_matches(['\'', '"']);
+        if family.is_empty() {
+            return Err(CoreError::new(
+                "text.font.family.invalid",
+                "Font family must not be empty.",
+            ));
+        }
+        if data.is_empty() {
+            return Err(CoreError::new(
+                "text.font.bytes.invalid",
+                "Font data must not be empty.",
+            ));
+        }
+        if data.len() > MAX_REGISTERED_FONT_BYTES {
+            return Err(CoreError::new(
+                "text.font.bytes.limit",
+                format!(
+                    "Font '{}' is {} bytes; the per-font limit is {} bytes.",
+                    family,
+                    data.len(),
+                    MAX_REGISTERED_FONT_BYTES
+                ),
+            ));
+        }
+
+        let face = ParsedFace::parse(&data, 0).map_err(|_| {
+            CoreError::new(
+                "text.font.parse_failed",
+                format!("Font '{}' is not a supported OpenType face.", family),
+            )
+        })?;
+        let glyph_count = face.number_of_glyphs();
+        drop(face);
+
+        let normalized_family = normalize_font_family(family);
+        let existing = self
+            .registered
+            .iter()
+            .position(|font| font.normalized_family == normalized_family && font.italic == italic);
+        if existing.is_none() && self.registered.len() >= MAX_REGISTERED_FONTS {
+            return Err(CoreError::new(
+                "text.font.registry.count_limit",
+                format!(
+                    "The font registry is limited to {} faces.",
+                    MAX_REGISTERED_FONTS
+                ),
+            ));
+        }
+
+        let replaced_bytes = existing
+            .map(|index| self.registered[index].data.len())
+            .unwrap_or(0);
+        let next_bytes = self
+            .registered
+            .iter()
+            .map(|font| font.data.len())
+            .sum::<usize>()
+            .saturating_sub(replaced_bytes)
+            .saturating_add(data.len());
+        if next_bytes > MAX_FONT_REGISTRY_BYTES {
+            return Err(CoreError::new(
+                "text.font.registry.bytes_limit",
+                format!(
+                    "Registering '{}' would exceed the {} byte font registry limit.",
+                    family, MAX_FONT_REGISTRY_BYTES
+                ),
+            ));
+        }
+
+        let byte_length = data.len();
+        let owned = OwnedFont {
+            family: family.to_string(),
+            normalized_family,
+            data,
+            italic,
+            glyph_count,
+        };
+        if let Some(index) = existing {
+            self.registered[index] = owned;
+        } else {
+            self.registered.push(owned);
+        }
+
+        Ok(RegisteredFontInfo {
+            family: family.to_string(),
+            italic,
+            byte_length,
+            glyph_count,
+        })
+    }
+
+    fn unregister(&mut self, family: &str, italic: bool) -> bool {
+        let normalized_family = normalize_font_family(family);
+        let previous_len = self.registered.len();
+        self.registered
+            .retain(|font| font.normalized_family != normalized_family || font.italic != italic);
+        self.registered.len() != previous_len
+    }
+
+    fn registered_fonts(&self) -> Vec<RegisteredFontInfo> {
+        self.registered
+            .iter()
+            .map(|font| RegisteredFontInfo {
+                family: font.family.clone(),
+                italic: font.italic,
+                byte_length: font.data.len(),
+                glyph_count: font.glyph_count,
+            })
+            .collect()
+    }
+
+    fn resolve_family(&self, family: &str, italic: bool) -> Option<RegisteredFont<'_>> {
+        let normalized = normalize_font_family(family);
+        if let Some(font) = self
+            .registered
+            .iter()
+            .find(|font| font.normalized_family == normalized && font.italic == italic)
+        {
+            return Some(RegisteredFont {
+                family: &font.family,
+                data: &font.data,
+            });
+        }
+        if italic {
+            if let Some(font) = self
+                .registered
+                .iter()
+                .find(|font| font.normalized_family == normalized && !font.italic)
+            {
+                return Some(RegisteredFont {
+                    family: &font.family,
+                    data: &font.data,
+                });
+            }
+        }
+
+        None
+    }
+
+    fn resolve_for_text(
+        &self,
+        style: &TextStyleMetrics,
+        text: &str,
+        script: Script,
+    ) -> Option<RegisteredFont<'_>> {
+        let script_fallback = match script {
+            Script::Hebrew => Some("Noto Sans Hebrew"),
+            Script::Arabic => Some("Noto Sans Arabic"),
+            _ => None,
+        };
+        if let Some(family) = script_fallback {
+            if let Some(fallback) = self.resolve_family(family, style.italic) {
+                if font_data_covers(fallback.data, text) {
+                    return Some(fallback);
+                }
+            }
+        }
+
+        style.font_family.split(',').find_map(|family| {
+            let font = self.resolve_family(family, style.italic)?;
+            font_data_covers(font.data, text).then_some(font)
+        })
+    }
+
+    fn requested_font(&self, style: &TextStyleMetrics) -> Option<RegisteredFont<'_>> {
+        style
+            .font_family
+            .split(',')
+            .find_map(|family| self.resolve_family(family, style.italic))
+    }
+}
+
+fn normalize_font_family(family: &str) -> String {
+    family.trim().trim_matches(['\'', '"']).to_ascii_lowercase()
+}
+
+#[derive(Debug, Clone, Default)]
+struct LayoutDiagnostics {
+    resolved_fonts: Vec<String>,
+    font_fallbacks: Vec<String>,
+    layout_warnings: Vec<String>,
+    shaped_run_count: usize,
+    fallback_grapheme_count: usize,
+    bidi_paragraph_count: usize,
+    visual_run_count: usize,
+    script_run_count: usize,
+}
+
+impl LayoutDiagnostics {
+    fn merge(&mut self, other: &Self) {
+        for font in &other.resolved_fonts {
+            push_unique(&mut self.resolved_fonts, font.clone());
+        }
+        for fallback in &other.font_fallbacks {
+            push_unique(&mut self.font_fallbacks, fallback.clone());
+        }
+        for warning in &other.layout_warnings {
+            push_unique(&mut self.layout_warnings, warning.clone());
+        }
+        self.shaped_run_count += other.shaped_run_count;
+        self.fallback_grapheme_count += other.fallback_grapheme_count;
+        self.bidi_paragraph_count += other.bidi_paragraph_count;
+        self.visual_run_count += other.visual_run_count;
+        self.script_run_count += other.script_run_count;
+    }
+
+    fn heap_bytes(&self) -> usize {
+        string_vec_heap_bytes(&self.resolved_fonts)
+            .saturating_add(string_vec_heap_bytes(&self.font_fallbacks))
+            .saturating_add(string_vec_heap_bytes(&self.layout_warnings))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParagraphClusters {
+    clusters: Vec<Cluster>,
+    base_direction: TextDirection,
+}
+
+impl ParagraphClusters {
+    fn shift_utf16_offsets(&mut self, offset: usize) {
+        if offset == 0 {
+            return;
+        }
+        for cluster in &mut self.clusters {
+            cluster.start += offset;
+            cluster.end += offset;
+            for glyph in &mut cluster.glyphs {
+                glyph.cluster_start += offset;
+                glyph.cluster_end += offset;
+            }
+        }
+    }
+}
+
+fn cluster_heap_bytes(cluster: &Cluster) -> usize {
+    cluster
+        .shaping_text
+        .capacity()
+        .saturating_add(style_heap_bytes(&cluster.style))
+        .saturating_add(
+            cluster
+                .glyphs
+                .capacity()
+                .saturating_mul(size_of::<ClusterGlyph>()),
+        )
+        .saturating_add(
+            cluster
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.font_family.capacity())
+                .sum::<usize>(),
+        )
+}
+
+fn paragraph_clusters_heap_bytes(layout: &ParagraphClusters) -> usize {
+    layout
+        .clusters
+        .capacity()
+        .saturating_mul(size_of::<Cluster>())
+        .saturating_add(
+            layout
+                .clusters
+                .iter()
+                .map(cluster_heap_bytes)
+                .sum::<usize>(),
+        )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ParagraphShapeKey {
+    content: String,
+    base_style: TextStyleMetrics,
+    runs: Vec<TextLayoutRun>,
+}
+
+impl ParagraphShapeKey {
+    fn from_request(
+        request: &TextLayoutRequest,
+        paragraph: &str,
+        global_utf16_offset: usize,
+    ) -> Self {
+        let paragraph_end = global_utf16_offset + paragraph.encode_utf16().count();
+        let runs = request
+            .runs
+            .iter()
+            .filter_map(|run| {
+                let start = run.start.max(global_utf16_offset);
+                let end = run.end.min(paragraph_end);
+                (start < end).then(|| TextLayoutRun {
+                    start: start - global_utf16_offset,
+                    end: end - global_utf16_offset,
+                    style: run.style.clone(),
+                })
+            })
+            .collect();
+        Self {
+            content: paragraph.to_string(),
+            base_style: request.base_style.clone(),
+            runs,
+        }
+    }
+
+    fn as_request(&self) -> TextLayoutRequest {
+        TextLayoutRequest {
+            content: self.content.clone(),
+            width: 1.0,
+            alignment: TextAlignment::Left,
+            paragraph_spacing: 0.0,
+            base_style: self.base_style.clone(),
+            runs: self.runs.clone(),
+        }
+    }
+
+    fn heap_bytes(&self) -> usize {
+        self.content
+            .capacity()
+            .saturating_add(style_heap_bytes(&self.base_style))
+            .saturating_add(runs_heap_bytes(&self.runs))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedParagraphShape {
+    layout: ParagraphClusters,
+    diagnostics: LayoutDiagnostics,
+}
+
+fn paragraph_cache_entry_bytes(key: &ParagraphShapeKey, cached: &CachedParagraphShape) -> usize {
+    size_of::<(ParagraphShapeKey, CachedParagraphShape)>()
+        .saturating_add(key.heap_bytes())
+        .saturating_add(paragraph_clusters_heap_bytes(&cached.layout))
+        .saturating_add(cached.diagnostics.heap_bytes())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ShapingRunKey {
+    graphemes: Vec<String>,
+    style: TextStyleMetrics,
+    bidi_level: u8,
+    script: Script,
+    font_family: String,
+}
+
+impl ShapingRunKey {
+    fn new(clusters: &[Cluster], font_family: &str) -> Option<Self> {
+        let first = clusters.first()?;
+        Some(Self {
+            graphemes: clusters
+                .iter()
+                .map(|cluster| cluster.shaping_text.clone())
+                .collect(),
+            style: first.style.clone(),
+            bidi_level: first.bidi_level,
+            script: first.script,
+            font_family: font_family.to_string(),
+        })
+    }
+
+    fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.graphemes
+                    .capacity()
+                    .saturating_mul(size_of::<String>()),
+            )
+            .saturating_add(self.graphemes.iter().map(String::capacity).sum::<usize>())
+            .saturating_add(self.style.font_family.capacity())
+            .saturating_add(self.font_family.capacity())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedClusterShape {
+    advance: f32,
+    glyphs: Vec<ClusterGlyph>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedShapingRun {
+    clusters: Vec<CachedClusterShape>,
+}
+
+impl CachedShapingRun {
+    fn capture(clusters: &[Cluster]) -> Option<Self> {
+        let origin = clusters.first()?.start;
+        Some(Self {
+            clusters: clusters
+                .iter()
+                .map(|cluster| CachedClusterShape {
+                    advance: cluster.advance,
+                    glyphs: cluster
+                        .glyphs
+                        .iter()
+                        .cloned()
+                        .map(|mut glyph| {
+                            glyph.cluster_start = glyph.cluster_start.saturating_sub(origin);
+                            glyph.cluster_end = glyph.cluster_end.saturating_sub(origin);
+                            glyph
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    fn apply(&self, clusters: &mut [Cluster]) -> bool {
+        if self.clusters.len() != clusters.len() || clusters.is_empty() {
+            return false;
+        }
+        let origin = clusters[0].start;
+        for (cluster, cached) in clusters.iter_mut().zip(&self.clusters) {
+            cluster.advance = cached.advance;
+            cluster.glyphs = cached
+                .glyphs
+                .iter()
+                .cloned()
+                .map(|mut glyph| {
+                    glyph.cluster_start += origin;
+                    glyph.cluster_end += origin;
+                    glyph
+                })
+                .collect();
+        }
+        true
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.clusters.iter().fold(
+            size_of::<Self>().saturating_add(
+                self.clusters
+                    .capacity()
+                    .saturating_mul(size_of::<CachedClusterShape>()),
+            ),
+            |total, cluster| {
+                cluster.glyphs.iter().fold(
+                    total.saturating_add(
+                        cluster
+                            .glyphs
+                            .capacity()
+                            .saturating_mul(size_of::<ClusterGlyph>()),
+                    ),
+                    |glyph_total, glyph| glyph_total.saturating_add(glyph.font_family.capacity()),
+                )
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ShapingRunCacheActivity {
+    hits: usize,
+    misses: usize,
+}
+
+#[derive(Debug, Default)]
+struct ShapingRunCache {
+    entries: VecDeque<(ShapingRunKey, CachedShapingRun)>,
+    capacity: usize,
+    byte_capacity: usize,
+    retained_bytes: usize,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+}
+
+impl ShapingRunCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            byte_capacity: capacity.saturating_mul(SHAPING_RUN_CACHE_BYTES_PER_ENTRY),
+            ..Self::default()
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.retained_bytes = 0;
+    }
+
+    fn pop_front(&mut self) -> bool {
+        if let Some((key, cached)) = self.entries.pop_front() {
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(shaping_run_entry_bytes(&key, &cached));
+            self.evictions += 1;
+            true
+        } else {
+            self.retained_bytes = 0;
+            false
+        }
+    }
+
+    fn shape_or_reuse(
+        &mut self,
+        clusters: &mut [Cluster],
+        font: RegisteredFont<'_>,
+        style: &TextStyleMetrics,
+        direction: TextDirection,
+        script: Script,
+        activity: &mut ShapingRunCacheActivity,
+    ) -> bool {
+        let Some(key) = ShapingRunKey::new(clusters, font.family) else {
+            return false;
+        };
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|(cached_key, _)| cached_key == &key)
+        {
+            let (cached_key, cached) = self.entries.remove(index).expect("cache index must exist");
+            if cached.apply(clusters) {
+                self.entries.push_back((cached_key, cached));
+                self.hits += 1;
+                activity.hits += 1;
+                return true;
+            }
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(shaping_run_entry_bytes(&cached_key, &cached));
+        }
+
+        self.misses += 1;
+        activity.misses += 1;
+        if !shape_cluster_run(clusters, font, style, direction, script) {
+            return false;
+        }
+        if self.capacity > 0 && self.byte_capacity > 0 {
+            if let Some(cached) = CachedShapingRun::capture(clusters) {
+                let entry_bytes = shaping_run_entry_bytes(&key, &cached);
+                if entry_bytes <= self.byte_capacity {
+                    while self.entries.len() >= self.capacity
+                        || self.retained_bytes.saturating_add(entry_bytes) > self.byte_capacity
+                    {
+                        if !self.pop_front() {
+                            break;
+                        }
+                    }
+                    self.retained_bytes = self.retained_bytes.saturating_add(entry_bytes);
+                    self.entries.push_back((key, cached));
+                }
+            }
+        }
+        true
+    }
+}
+
+fn shaping_run_entry_bytes(key: &ShapingRunKey, cached: &CachedShapingRun) -> usize {
+    key.retained_bytes().saturating_add(cached.retained_bytes())
+}
+
+#[derive(Debug, Default)]
+struct ParagraphShapeCache {
+    entries: VecDeque<(ParagraphShapeKey, CachedParagraphShape)>,
+    capacity: usize,
+    byte_capacity: usize,
+    retained_bytes: usize,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    shaping_runs: ShapingRunCache,
+}
+
+impl ParagraphShapeCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            byte_capacity: capacity.saturating_mul(PARAGRAPH_CACHE_BYTES_PER_ENTRY),
+            shaping_runs: ShapingRunCache::with_capacity(
+                capacity.saturating_mul(SHAPING_RUN_CACHE_MULTIPLIER),
+            ),
+            ..Self::default()
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.retained_bytes = 0;
+        self.shaping_runs.clear();
+    }
+
+    fn pop_front(&mut self) -> bool {
+        if let Some((key, cached)) = self.entries.pop_front() {
+            self.retained_bytes = self
+                .retained_bytes
+                .saturating_sub(paragraph_cache_entry_bytes(&key, &cached));
+            self.evictions += 1;
+            true
+        } else {
+            self.retained_bytes = 0;
+            false
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        key: ParagraphShapeKey,
+        registry: &FontRegistry,
+    ) -> (CachedParagraphShape, bool, ShapingRunCacheActivity) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|(cached_key, _)| cached_key == &key)
+        {
+            let (cached_key, cached) = self.entries.remove(index).expect("cache index must exist");
+            self.entries.push_back((cached_key, cached.clone()));
+            self.hits += 1;
+            return (cached, true, ShapingRunCacheActivity::default());
+        }
+
+        let request = key.as_request();
+        let mut diagnostics = LayoutDiagnostics::default();
+        let mut activity = ShapingRunCacheActivity::default();
+        let layout = build_clusters_with_run_cache(
+            &request,
+            &key.content,
+            0,
+            registry,
+            &mut diagnostics,
+            Some(&mut self.shaping_runs),
+            &mut activity,
+        );
+        let cached = CachedParagraphShape {
+            layout,
+            diagnostics,
+        };
+        self.misses += 1;
+        if self.capacity > 0 && self.byte_capacity > 0 {
+            let cached_entry = cached.clone();
+            let entry_bytes = paragraph_cache_entry_bytes(&key, &cached_entry);
+            if entry_bytes <= self.byte_capacity {
+                while self.entries.len() >= self.capacity
+                    || self.retained_bytes.saturating_add(entry_bytes) > self.byte_capacity
+                {
+                    if !self.pop_front() {
+                        break;
+                    }
+                }
+                self.retained_bytes = self.retained_bytes.saturating_add(entry_bytes);
+                self.entries.push_back((key, cached_entry));
+            }
+        }
+        (cached, false, activity)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LineSlice {
+    start: usize,
+    end: usize,
+    soft_wrapped: bool,
+}
+
+pub fn layout_text(request: &TextLayoutRequest) -> Result<TextLayout, CoreError> {
+    let registry = FontRegistry::default();
+    layout_text_with_registry(request, &registry)
+}
+
+fn layout_text_with_registry(
+    request: &TextLayoutRequest,
+    registry: &FontRegistry,
+) -> Result<TextLayout, CoreError> {
+    layout_text_with_registry_and_cache(request, registry, None)
+}
+
+fn layout_text_with_registry_and_cache(
+    request: &TextLayoutRequest,
+    registry: &FontRegistry,
+    mut paragraph_cache: Option<&mut ParagraphShapeCache>,
+) -> Result<TextLayout, CoreError> {
+    validate_request(request)?;
+    let width = request.width.max(1.0);
+    let mut diagnostics = LayoutDiagnostics::default();
+    let paragraphs = request.content.split('\n').collect::<Vec<_>>();
+    let mut global_utf16_offset = 0usize;
+    let mut y = 0.0f32;
+    let mut lines = Vec::new();
+    let mut graphemes = Vec::new();
+    let mut carets = Vec::new();
+    let mut glyphs = Vec::new();
+    let mut paragraph_cache_hits = 0usize;
+    let mut paragraph_cache_misses = 0usize;
+    let mut shaping_run_cache_hits = 0usize;
+    let mut shaping_run_cache_misses = 0usize;
+
+    for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
+        let mut paragraph_layout = if let Some(cache) = paragraph_cache.as_deref_mut() {
+            let key = ParagraphShapeKey::from_request(request, paragraph, global_utf16_offset);
+            let (cached, hit, run_activity) = cache.resolve(key, registry);
+            paragraph_cache_hits += usize::from(hit);
+            paragraph_cache_misses += usize::from(!hit);
+            shaping_run_cache_hits += run_activity.hits;
+            shaping_run_cache_misses += run_activity.misses;
+            diagnostics.merge(&cached.diagnostics);
+            cached.layout
+        } else {
+            build_clusters(
+                request,
+                paragraph,
+                global_utf16_offset,
+                registry,
+                &mut diagnostics,
+            )
+        };
+        if paragraph_cache.is_some() {
+            paragraph_layout.shift_utf16_offsets(global_utf16_offset);
+        }
+        let paragraph_clusters = &paragraph_layout.clusters;
+        let slices = wrap_paragraph(paragraph_clusters, width);
+        let has_newline_after = paragraph_index + 1 < paragraphs.len();
+
+        for (slice_index, slice) in slices.iter().enumerate() {
+            let line_index = lines.len();
+            let line_clusters = &paragraph_clusters[slice.start..slice.end];
+            let line_height = if line_clusters.is_empty() {
+                request.base_style.line_height
+            } else {
+                line_clusters
+                    .iter()
+                    .map(|cluster| cluster.line_height)
+                    .fold(0.0, f32::max)
+            }
+            .max(1.0);
+            let max_font_size = if line_clusters.is_empty() {
+                request.base_style.font_size
+            } else {
+                line_clusters
+                    .iter()
+                    .map(|cluster| cluster.font_size)
+                    .fold(0.0, f32::max)
+            }
+            .max(1.0);
+            let natural_width = line_clusters
+                .iter()
+                .map(|cluster| cluster.advance)
+                .sum::<f32>();
+            let is_last_paragraph_line = slice_index + 1 == slices.len();
+            let justify = matches!(request.alignment, TextAlignment::Justify)
+                && slice.soft_wrapped
+                && !is_last_paragraph_line;
+            let whitespace_count = line_clusters
+                .iter()
+                .filter(|cluster| cluster.whitespace)
+                .count();
+            let justify_extra = if justify && whitespace_count > 0 {
+                ((width - natural_width) / whitespace_count as f32).max(0.0)
+            } else {
+                0.0
+            };
+            let rendered_width = if justify_extra > 0.0 {
+                width
+            } else {
+                natural_width
+            };
+            let x = match request.alignment {
+                TextAlignment::Center => ((width - rendered_width) / 2.0).max(0.0),
+                TextAlignment::Right => (width - rendered_width).max(0.0),
+                TextAlignment::Left | TextAlignment::Justify => 0.0,
+            };
+            let start_offset = line_clusters
+                .first()
+                .map(|cluster| cluster.start)
+                .unwrap_or(global_utf16_offset);
+            let end_offset = line_clusters
+                .last()
+                .map(|cluster| cluster.end)
+                .unwrap_or(global_utf16_offset);
+            let baseline = y + ((line_height - max_font_size) / 2.0).max(0.0) + max_font_size * 0.8;
+            let hard_break = has_newline_after && is_last_paragraph_line;
+            let visual_order = visual_order(line_clusters, paragraph_layout.base_direction);
+            diagnostics.visual_run_count += visual_run_count(
+                line_clusters,
+                &visual_order,
+                paragraph_layout.base_direction,
+            );
+
+            let mut cursor_x = x;
+            for cluster_index in visual_order {
+                let cluster = &line_clusters[cluster_index];
+                let extra = if cluster.whitespace {
+                    justify_extra
+                } else {
+                    0.0
+                };
+                let cluster_width = cluster.advance + extra;
+                graphemes.push(TextGraphemeBox {
+                    start: cluster.start,
+                    end: cluster.end,
+                    line_index,
+                    x: cursor_x,
+                    y,
+                    width: cluster_width,
+                    height: line_height,
+                    direction: direction_for_level(cluster.bidi_level),
+                    bidi_level: cluster.bidi_level,
+                    script: cluster.script.short_name().to_string(),
+                });
+                glyphs.extend(cluster.glyphs.iter().map(|glyph| TextGlyph {
+                    glyph_id: glyph.glyph_id,
+                    cluster_start: glyph.cluster_start,
+                    cluster_end: glyph.cluster_end,
+                    line_index,
+                    x: cursor_x + glyph.local_x + glyph.offset_x,
+                    y: baseline - glyph.offset_y,
+                    advance_x: glyph.advance_x,
+                    offset_x: glyph.offset_x,
+                    offset_y: glyph.offset_y,
+                    font_family: glyph.font_family.clone(),
+                }));
+                let direction = direction_for_level(cluster.bidi_level);
+                let (start_x, end_x) = match direction {
+                    TextDirection::Ltr => (cursor_x, cursor_x + cluster_width),
+                    TextDirection::Rtl => (cursor_x + cluster_width, cursor_x),
+                };
+                carets.push(TextCaret {
+                    offset: cluster.start,
+                    line_index,
+                    x: start_x,
+                    y,
+                    height: line_height,
+                    affinity: CaretAffinity::Downstream,
+                });
+                carets.push(TextCaret {
+                    offset: cluster.end,
+                    line_index,
+                    x: end_x,
+                    y,
+                    height: line_height,
+                    affinity: CaretAffinity::Upstream,
+                });
+                cursor_x += cluster_width;
+            }
+
+            if line_clusters.is_empty() {
+                carets.push(TextCaret {
+                    offset: start_offset,
+                    line_index,
+                    x,
+                    y,
+                    height: line_height,
+                    affinity: CaretAffinity::Downstream,
+                });
+            }
+
+            lines.push(TextLine {
+                index: line_index,
+                paragraph_index,
+                start: start_offset,
+                end: end_offset,
+                x,
+                y,
+                width: rendered_width,
+                height: line_height,
+                baseline,
+                hard_break,
+                soft_wrapped: slice.soft_wrapped,
+                base_direction: paragraph_layout.base_direction,
+            });
+            y += line_height;
+        }
+
+        if has_newline_after {
+            y += request.paragraph_spacing.max(0.0);
+            global_utf16_offset += paragraph.encode_utf16().count() + 1;
+        } else {
+            global_utf16_offset += paragraph.encode_utf16().count();
+        }
+    }
+
+    let measurement_mode = if diagnostics.shaped_run_count == 0 {
+        TextMeasurementMode::DeterministicFallback
+    } else if diagnostics.fallback_grapheme_count > 0 {
+        TextMeasurementMode::Mixed
+    } else {
+        TextMeasurementMode::Shaped
+    };
+
+    Ok(TextLayout {
+        engine_version: TEXT_LAYOUT_ENGINE_VERSION,
+        measurement_mode,
+        width,
+        height: y.max(request.base_style.line_height.max(1.0)),
+        lines,
+        graphemes,
+        carets,
+        glyphs,
+        resolved_fonts: diagnostics.resolved_fonts,
+        font_fallbacks: diagnostics.font_fallbacks,
+        layout_warnings: diagnostics.layout_warnings,
+        shaped_run_count: diagnostics.shaped_run_count,
+        fallback_grapheme_count: diagnostics.fallback_grapheme_count,
+        bidi_paragraph_count: diagnostics.bidi_paragraph_count,
+        visual_run_count: diagnostics.visual_run_count,
+        script_run_count: diagnostics.script_run_count,
+        cache_hit: false,
+        paragraph_cache_hits,
+        paragraph_cache_misses,
+        shaping_run_cache_hits,
+        shaping_run_cache_misses,
+    })
+}
+
+pub fn hit_test_text(layout: &TextLayout, x: f32, y: f32) -> Option<TextHitTest> {
+    let line = layout.lines.iter().min_by(|left, right| {
+        distance_to_range(y, left.y, left.y + left.height).total_cmp(&distance_to_range(
+            y,
+            right.y,
+            right.y + right.height,
+        ))
+    })?;
+    let caret = layout
+        .carets
+        .iter()
+        .filter(|caret| caret.line_index == line.index)
+        .min_by(|left, right| (x - left.x).abs().total_cmp(&(x - right.x).abs()))?;
+
+    Some(TextHitTest {
+        offset: caret.offset,
+        line_index: caret.line_index,
+        affinity: caret.affinity,
+    })
+}
+
+pub fn selection_rects(layout: &TextLayout, start: usize, end: usize) -> Vec<TextSelectionRect> {
+    let selection_start = start.min(end);
+    let selection_end = start.max(end);
+    if selection_start == selection_end {
+        return Vec::new();
+    }
+
+    let mut rectangles = Vec::new();
+    for line in &layout.lines {
+        let mut selected = layout
+            .graphemes
+            .iter()
+            .filter(|grapheme| {
+                grapheme.line_index == line.index
+                    && grapheme.start < selection_end
+                    && grapheme.end > selection_start
+            })
+            .collect::<Vec<_>>();
+        selected.sort_by(|left, right| left.x.total_cmp(&right.x));
+
+        let mut current: Option<TextSelectionRect> = None;
+        for grapheme in selected {
+            let next = TextSelectionRect {
+                line_index: line.index,
+                x: grapheme.x,
+                y: grapheme.y,
+                width: grapheme.width.max(1.0),
+                height: grapheme.height,
+            };
+            if let Some(rectangle) = current.as_mut() {
+                let current_end = rectangle.x + rectangle.width;
+                if next.x <= current_end + 0.5 {
+                    rectangle.width = (next.x + next.width - rectangle.x).max(rectangle.width);
+                    rectangle.height = rectangle.height.max(next.height);
+                    continue;
+                }
+                rectangles.push(rectangle.clone());
+            }
+            current = Some(next);
+        }
+        if let Some(rectangle) = current {
+            rectangles.push(rectangle);
+        }
+    }
+    rectangles
+}
+
+fn validate_request(request: &TextLayoutRequest) -> Result<(), CoreError> {
+    if !request.width.is_finite() || request.width <= 0.0 {
+        return Err(CoreError::new(
+            "text.layout.width.invalid",
+            "Text layout width must be a finite number greater than zero.",
+        ));
+    }
+    if !valid_style(&request.base_style) {
+        return Err(CoreError::new(
+            "text.layout.style.invalid",
+            "Base text style contains invalid metrics.",
+        ));
+    }
+    let content_len = request.content.encode_utf16().count();
+    for run in &request.runs {
+        if run.start >= run.end || run.end > content_len || !valid_style(&run.style) {
+            return Err(CoreError::new(
+                "text.layout.run.invalid",
+                "Text layout run has an invalid range or style.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn valid_style(style: &TextStyleMetrics) -> bool {
+    style.font_size.is_finite()
+        && style.font_size > 0.0
+        && style.line_height.is_finite()
+        && style.line_height > 0.0
+        && style.letter_spacing.is_finite()
+}
+
+fn build_clusters(
+    request: &TextLayoutRequest,
+    paragraph: &str,
+    global_utf16_offset: usize,
+    registry: &FontRegistry,
+    diagnostics: &mut LayoutDiagnostics,
+) -> ParagraphClusters {
+    let mut activity = ShapingRunCacheActivity::default();
+    build_clusters_with_run_cache(
+        request,
+        paragraph,
+        global_utf16_offset,
+        registry,
+        diagnostics,
+        None,
+        &mut activity,
+    )
+}
+
+fn build_clusters_with_run_cache(
+    request: &TextLayoutRequest,
+    paragraph: &str,
+    global_utf16_offset: usize,
+    registry: &FontRegistry,
+    diagnostics: &mut LayoutDiagnostics,
+    run_cache: Option<&mut ShapingRunCache>,
+    run_activity: &mut ShapingRunCacheActivity,
+) -> ParagraphClusters {
+    let bidi = BidiInfo::new(paragraph, None);
+    let paragraph_level = bidi
+        .paragraphs
+        .first()
+        .map(|info| info.level)
+        .unwrap_or_else(Level::ltr);
+    let base_direction = direction_for_level(paragraph_level.number());
+    if bidi.has_rtl() {
+        diagnostics.bidi_paragraph_count += 1;
+    }
+    let break_offsets = linebreaks(paragraph)
+        .map(|(offset, _)| offset)
+        .collect::<HashSet<_>>();
+    let mut utf16_offset = global_utf16_offset;
+    let mut word_start = true;
+
+    let mut clusters = paragraph
+        .grapheme_indices(true)
+        .map(|(byte_start, grapheme)| {
+            let utf16_len = grapheme.encode_utf16().count();
+            let start = utf16_offset;
+            let end = start + utf16_len;
+            utf16_offset = end;
+            let style = resolve_style(request, start);
+            let measured = transform_for_measurement(grapheme, style.transform, word_start);
+            let whitespace = grapheme.chars().all(char::is_whitespace);
+            word_start = whitespace
+                || grapheme
+                    .chars()
+                    .all(|character| !character.is_alphanumeric());
+            let byte_end = byte_start + grapheme.len();
+
+            Cluster {
+                start,
+                end,
+                shaping_text: measured.clone(),
+                style: style.clone(),
+                advance: measure_grapheme(&measured, style),
+                line_height: style.line_height,
+                font_size: style.font_size,
+                whitespace,
+                break_after: break_offsets.contains(&byte_end),
+                bidi_level: bidi
+                    .levels
+                    .get(byte_start)
+                    .copied()
+                    .unwrap_or(paragraph_level)
+                    .number(),
+                script: grapheme_script(&measured),
+                glyphs: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    resolve_cluster_scripts(&mut clusters);
+    diagnostics.script_run_count += script_run_count(&clusters);
+    shape_clusters(
+        &mut clusters,
+        registry,
+        diagnostics,
+        run_cache,
+        run_activity,
+    );
+    ParagraphClusters {
+        clusters,
+        base_direction,
+    }
+}
+
+fn shape_clusters(
+    clusters: &mut [Cluster],
+    registry: &FontRegistry,
+    diagnostics: &mut LayoutDiagnostics,
+    mut run_cache: Option<&mut ShapingRunCache>,
+    run_activity: &mut ShapingRunCacheActivity,
+) {
+    let mut start = 0usize;
+    while start < clusters.len() {
+        let style = clusters[start].style.clone();
+        let bidi_level = clusters[start].bidi_level;
+        let script = clusters[start].script;
+        let direction = direction_for_level(bidi_level);
+        let Some(font) = registry.resolve_for_text(&style, &clusters[start].shaping_text, script)
+        else {
+            let diagnostic = registry
+                .requested_font(&style)
+                .map(|font| format!("{}: missing glyphs", font.family))
+                .unwrap_or_else(|| format!("{}: family unavailable", style.font_family));
+            push_unique(&mut diagnostics.font_fallbacks, diagnostic);
+            diagnostics.fallback_grapheme_count += 1;
+            start += 1;
+            continue;
+        };
+
+        let mut end = start + 1;
+        while end < clusters.len() {
+            let candidate = &clusters[end];
+            let same_style = candidate.style == style;
+            let same_font = registry
+                .resolve_for_text(&candidate.style, &candidate.shaping_text, candidate.script)
+                .is_some_and(|resolved| {
+                    resolved.family == font.family && resolved.data.as_ptr() == font.data.as_ptr()
+                });
+            if !same_style
+                || !same_font
+                || candidate.bidi_level != bidi_level
+                || candidate.script != script
+            {
+                break;
+            }
+            end += 1;
+        }
+
+        let shaped = if let Some(cache) = run_cache.as_deref_mut() {
+            cache.shape_or_reuse(
+                &mut clusters[start..end],
+                font,
+                &style,
+                direction,
+                script,
+                run_activity,
+            )
+        } else {
+            shape_cluster_run(&mut clusters[start..end], font, &style, direction, script)
+        };
+        if shaped {
+            diagnostics.shaped_run_count += 1;
+            push_unique(&mut diagnostics.resolved_fonts, font.family.to_string());
+        } else {
+            let run_len = end - start;
+            diagnostics.fallback_grapheme_count += run_len;
+            push_unique(
+                &mut diagnostics.font_fallbacks,
+                format!("{}: shaping failed", font.family),
+            );
+        }
+        start = end;
+    }
+}
+
+fn direction_for_level(level: u8) -> TextDirection {
+    if level % 2 == 1 {
+        TextDirection::Rtl
+    } else {
+        TextDirection::Ltr
+    }
+}
+
+fn grapheme_script(grapheme: &str) -> Script {
+    grapheme
+        .chars()
+        .map(|character| character.script())
+        .find(|script| !is_weak_script(*script))
+        .unwrap_or(Script::Common)
+}
+
+fn is_weak_script(script: Script) -> bool {
+    matches!(script, Script::Common | Script::Inherited | Script::Unknown)
+}
+
+fn resolve_cluster_scripts(clusters: &mut [Cluster]) {
+    let mut preceding = None;
+    for cluster in clusters.iter_mut() {
+        if is_weak_script(cluster.script) {
+            if let Some(script) = preceding {
+                cluster.script = script;
+            }
+        } else {
+            preceding = Some(cluster.script);
+        }
+    }
+
+    let mut following = None;
+    for cluster in clusters.iter_mut().rev() {
+        if is_weak_script(cluster.script) {
+            cluster.script = following.unwrap_or(Script::Latin);
+        } else {
+            following = Some(cluster.script);
+        }
+    }
+}
+
+fn script_run_count(clusters: &[Cluster]) -> usize {
+    clusters
+        .iter()
+        .map(|cluster| cluster.script)
+        .fold((0usize, None), |(count, previous), script| {
+            (count + usize::from(previous != Some(script)), Some(script))
+        })
+        .0
+}
+
+fn visual_order(clusters: &[Cluster], base_direction: TextDirection) -> Vec<usize> {
+    if clusters.is_empty() {
+        return Vec::new();
+    }
+
+    let base_level = match base_direction {
+        TextDirection::Ltr => 0,
+        TextDirection::Rtl => 1,
+    };
+    let mut levels = clusters
+        .iter()
+        .map(|cluster| Level::new(cluster.bidi_level).unwrap_or_else(|_| Level::ltr()))
+        .collect::<Vec<_>>();
+
+    // UAX #9 rule L1 resets trailing whitespace to the paragraph embedding level.
+    for (cluster, level) in clusters.iter().zip(levels.iter_mut()).rev() {
+        if !cluster.whitespace {
+            break;
+        }
+        *level = Level::new(base_level).unwrap_or_else(|_| Level::ltr());
+    }
+
+    BidiInfo::reorder_visual(&levels)
+}
+
+fn visual_run_count(clusters: &[Cluster], order: &[usize], base_direction: TextDirection) -> usize {
+    let mut previous = None;
+    let mut count = 0;
+    for index in order {
+        let direction = clusters
+            .get(*index)
+            .map(|cluster| direction_for_level(cluster.bidi_level))
+            .unwrap_or(base_direction);
+        if previous != Some(direction) {
+            count += 1;
+            previous = Some(direction);
+        }
+    }
+    count
+}
+
+fn shape_cluster_run(
+    clusters: &mut [Cluster],
+    font: RegisteredFont,
+    style: &TextStyleMetrics,
+    direction: TextDirection,
+    script: Script,
+) -> bool {
+    if clusters.is_empty() {
+        return false;
+    }
+
+    let Some(mut face) = ShapingFace::from_slice(font.data, 0) else {
+        return false;
+    };
+    face.set_variations(&[
+        Variation {
+            tag: Tag::from_bytes(b"wght"),
+            value: style.font_weight.clamp(100, 900) as f32,
+        },
+        Variation {
+            tag: Tag::from_bytes(b"opsz"),
+            value: style.font_size.clamp(14.0, 32.0),
+        },
+    ]);
+
+    let mut input = String::new();
+    let mut spans = Vec::with_capacity(clusters.len());
+    for (index, cluster) in clusters.iter().enumerate() {
+        let byte_start = input.len();
+        input.push_str(&cluster.shaping_text);
+        spans.push((byte_start, input.len(), index));
+    }
+    if input.is_empty() {
+        return false;
+    }
+
+    let mut buffer = UnicodeBuffer::new();
+    buffer.push_str(&input);
+    buffer.guess_segment_properties();
+    buffer.set_direction(match direction {
+        TextDirection::Ltr => ShapingDirection::LeftToRight,
+        TextDirection::Rtl => ShapingDirection::RightToLeft,
+    });
+    if let Ok(shaping_script) = script.short_name().parse::<ShapingScript>() {
+        buffer.set_script(shaping_script);
+    }
+    let shaped = shape(&face, &[], buffer);
+    if shaped.is_empty() {
+        return false;
+    }
+
+    let scale = style.font_size / face.units_per_em().max(1) as f32;
+    let infos = shaped.glyph_infos();
+    let positions = shaped.glyph_positions();
+    for cluster in clusters.iter_mut() {
+        cluster.advance = 0.0;
+    }
+    let mut logical_offsets = infos
+        .iter()
+        .map(|info| info.cluster as usize)
+        .collect::<Vec<_>>();
+    logical_offsets.push(input.len());
+    logical_offsets.sort_unstable();
+    logical_offsets.dedup();
+
+    let mut pending = Vec::with_capacity(infos.len());
+    for (info, position) in infos.iter().zip(positions.iter()) {
+        let glyph_start = (info.cluster as usize).min(input.len());
+        let glyph_end = logical_offsets
+            .iter()
+            .copied()
+            .find(|offset| *offset > glyph_start)
+            .unwrap_or(input.len());
+        let owners = spans
+            .iter()
+            .filter(|(start, end, _)| *start < glyph_end && *end > glyph_start)
+            .map(|(_, _, index)| *index)
+            .collect::<Vec<_>>();
+        let owner = match direction {
+            TextDirection::Ltr => owners.first(),
+            TextDirection::Rtl => owners.last(),
+        };
+        let Some(&owner) = owner else {
+            continue;
+        };
+        let advance = (position.x_advance as f32 * scale).abs();
+        let share = advance / owners.len().max(1) as f32;
+        for index in &owners {
+            clusters[*index].advance = (clusters[*index].advance + share).max(0.0);
+        }
+        let cluster_start = owners
+            .first()
+            .map(|index| clusters[*index].start)
+            .unwrap_or(clusters[owner].start);
+        let cluster_end = owners
+            .last()
+            .map(|index| clusters[*index].end)
+            .unwrap_or(clusters[owner].end);
+        pending.push((
+            owner,
+            info.glyph_id,
+            cluster_start,
+            cluster_end,
+            advance,
+            position.x_offset as f32 * scale,
+            position.y_offset as f32 * scale,
+        ));
+    }
+
+    for cluster in clusters.iter_mut() {
+        cluster.advance = (cluster.advance + style.letter_spacing).max(0.0);
+    }
+    let mut owner_pens = vec![0.0f32; clusters.len()];
+    for (owner, glyph_id, cluster_start, cluster_end, advance, offset_x, offset_y) in pending {
+        clusters[owner].glyphs.push(ClusterGlyph {
+            glyph_id,
+            cluster_start,
+            cluster_end,
+            local_x: owner_pens[owner],
+            advance_x: advance,
+            offset_x,
+            offset_y,
+            font_family: font.family.to_string(),
+        });
+        owner_pens[owner] += advance;
+    }
+    true
+}
+
+fn font_covers(face: &ParsedFace<'_>, text: &str) -> bool {
+    text.chars().all(|character| {
+        character != '\t'
+            && (character.is_whitespace()
+                || is_default_ignorable(character)
+                || face.glyph_index(character).is_some())
+    })
+}
+
+fn font_data_covers(data: &[u8], text: &str) -> bool {
+    ParsedFace::parse(data, 0)
+        .map(|face| font_covers(&face, text))
+        .unwrap_or(false)
+}
+
+fn is_default_ignorable(character: char) -> bool {
+    matches!(character as u32, 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn resolve_style<'a>(request: &'a TextLayoutRequest, offset: usize) -> &'a TextStyleMetrics {
+    request
+        .runs
+        .iter()
+        .rev()
+        .find(|run| run.start <= offset && offset < run.end)
+        .map(|run| &run.style)
+        .unwrap_or(&request.base_style)
+}
+
+fn transform_for_measurement(grapheme: &str, transform: TextTransform, word_start: bool) -> String {
+    match transform {
+        TextTransform::Upper => grapheme.to_uppercase(),
+        TextTransform::Lower => grapheme.to_lowercase(),
+        TextTransform::Capitalize if word_start => grapheme.to_uppercase(),
+        TextTransform::None | TextTransform::Capitalize => grapheme.to_string(),
+    }
+}
+
+fn measure_grapheme(grapheme: &str, style: &TextStyleMetrics) -> f32 {
+    let base = if grapheme == "\t" {
+        style.font_size * 1.32
+    } else if grapheme.chars().all(char::is_whitespace) {
+        style.font_size * 0.33
+    } else {
+        let width_cells = UnicodeWidthStr::width(grapheme);
+        if width_cells >= 2 {
+            style.font_size
+        } else if grapheme
+            .chars()
+            .all(|character| "ilI.,'`:;!|".contains(character))
+        {
+            style.font_size * 0.32
+        } else if grapheme
+            .chars()
+            .all(|character| "MW@#%&".contains(character))
+        {
+            style.font_size * 0.78
+        } else if width_cells == 0 {
+            0.0
+        } else {
+            style.font_size * 0.56
+        }
+    };
+    let weight_factor = 1.0 + ((style.font_weight as f32 - 400.0) / 500.0).clamp(-0.6, 1.2) * 0.025;
+    let italic_factor = if style.italic { 1.01 } else { 1.0 };
+    (base * weight_factor * italic_factor + style.letter_spacing).max(0.0)
+}
+
+fn wrap_paragraph(clusters: &[Cluster], width: f32) -> Vec<LineSlice> {
+    if clusters.is_empty() {
+        return vec![LineSlice {
+            start: 0,
+            end: 0,
+            soft_wrapped: false,
+        }];
+    }
+
+    let mut slices = Vec::new();
+    let mut start = 0usize;
+    while start < clusters.len() {
+        let mut current_width = 0.0f32;
+        let mut last_break = None;
+        let mut index = start;
+        let mut wrapped = false;
+
+        while index < clusters.len() {
+            let next_width = current_width + clusters[index].advance;
+            if index > start && next_width > width {
+                let end = last_break
+                    .filter(|candidate| *candidate > start)
+                    .unwrap_or(index);
+                slices.push(LineSlice {
+                    start,
+                    end,
+                    soft_wrapped: true,
+                });
+                start = end;
+                wrapped = true;
+                break;
+            }
+
+            current_width = next_width;
+            if clusters[index].break_after {
+                last_break = Some(index + 1);
+            }
+            index += 1;
+        }
+
+        if !wrapped {
+            slices.push(LineSlice {
+                start,
+                end: clusters.len(),
+                soft_wrapped: false,
+            });
+            break;
+        }
+    }
+
+    slices
+}
+
+fn distance_to_range(value: f32, start: f32, end: f32) -> f32 {
+    if value < start {
+        start - value
+    } else if value > end {
+        value - end
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_INTER_REGULAR_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/InterVariable.ttf");
+    const TEST_INTER_ITALIC_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/InterVariable-Italic.ttf");
+    const TEST_NOTO_SANS_HEBREW_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/NotoSansHebrew-Variable.ttf");
+    const TEST_NOTO_SANS_ARABIC_BYTES: &[u8] =
+        include_bytes!("../../../../public/v2/fonts/NotoSansArabic-Variable.ttf");
+
+    fn editor_font_handle() -> TextLayoutHandle {
+        let mut handle = TextLayoutHandle::default();
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter regular test font should register");
+        handle
+            .register_font("Inter", TEST_INTER_ITALIC_BYTES.to_vec(), true)
+            .expect("Inter italic test font should register");
+        handle
+            .register_font(
+                "Noto Sans Hebrew",
+                TEST_NOTO_SANS_HEBREW_BYTES.to_vec(),
+                false,
+            )
+            .expect("Hebrew test font should register");
+        handle
+            .register_font(
+                "Noto Sans Arabic",
+                TEST_NOTO_SANS_ARABIC_BYTES.to_vec(),
+                false,
+            )
+            .expect("Arabic test font should register");
+        handle
+    }
+
+    fn layout_with_editor_fonts(request: &TextLayoutRequest) -> TextLayout {
+        editor_font_handle()
+            .layout(request)
+            .expect("editor font layout should succeed")
+    }
+
+    fn request(content: &str, width: f32) -> TextLayoutRequest {
+        TextLayoutRequest {
+            content: content.to_string(),
+            width,
+            alignment: TextAlignment::Left,
+            paragraph_spacing: 0.0,
+            base_style: TextStyleMetrics::default(),
+            runs: vec![],
+        }
+    }
+
+    #[test]
+    fn wraps_at_unicode_line_breaks_and_builds_carets() {
+        let layout = layout_with_editor_fonts(&request("alpha beta gamma", 70.0));
+
+        assert!(layout.lines.len() >= 2);
+        assert_eq!(layout.lines.first().unwrap().start, 0);
+        assert_eq!(layout.lines.last().unwrap().end, 16);
+        assert!(layout.carets.iter().any(|caret| caret.offset == 16));
+    }
+
+    #[test]
+    fn keeps_combining_sequences_on_single_grapheme_boundary() {
+        let layout = layout_with_editor_fonts(&request("a\u{301}🙂", 200.0));
+
+        assert_eq!(layout.graphemes.len(), 2);
+        assert_eq!(layout.graphemes[0].start, 0);
+        assert_eq!(layout.graphemes[0].end, 2);
+        assert_eq!(layout.graphemes[1].start, 2);
+        assert_eq!(layout.graphemes[1].end, 4);
+        assert!(!layout.carets.iter().any(|caret| caret.offset == 1));
+        assert!(!layout.carets.iter().any(|caret| caret.offset == 3));
+    }
+
+    #[test]
+    fn cjk_metrics_wrap_more_conservatively_than_ascii() {
+        let ascii = layout_with_editor_fonts(&request("abcdef", 55.0));
+        let cjk = layout_with_editor_fonts(&request("가나다라마바", 55.0));
+
+        assert!(cjk.lines.len() > ascii.lines.len());
+    }
+
+    #[test]
+    fn explicit_newlines_add_paragraph_spacing_and_empty_lines() {
+        let mut input = request("first\n\nthird", 300.0);
+        input.paragraph_spacing = 8.0;
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(layout.lines.len(), 3);
+        assert!(layout.lines[0].hard_break);
+        assert_eq!(layout.lines[1].start, 6);
+        assert!(layout.height >= 88.0);
+    }
+
+    #[test]
+    fn style_runs_expand_line_metrics() {
+        let mut input = request("small LARGE", 300.0);
+        input.runs.push(TextLayoutRun {
+            start: 6,
+            end: 11,
+            style: TextStyleMetrics {
+                font_size: 32.0,
+                line_height: 40.0,
+                ..TextStyleMetrics::default()
+            },
+        });
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(layout.lines[0].height, 40.0);
+        assert!(layout.lines[0].baseline > 24.0);
+    }
+
+    #[test]
+    fn alignment_hit_test_and_selection_geometry_share_caret_positions() {
+        let mut input = request("hello world", 240.0);
+        input.alignment = TextAlignment::Center;
+        let layout = layout_with_editor_fonts(&input);
+        let line = &layout.lines[0];
+        let hit = hit_test_text(&layout, line.x, line.y).expect("hit exists");
+        let selection = selection_rects(&layout, 0, 5);
+
+        assert!(line.x > 0.0);
+        assert_eq!(hit.offset, 0);
+        assert_eq!(selection.len(), 1);
+        assert_eq!(selection[0].x, line.x);
+        assert!(selection[0].width > 0.0);
+    }
+
+    #[test]
+    fn rejects_invalid_layout_metrics() {
+        let error = layout_text(&request("invalid", 0.0)).expect_err("invalid width rejected");
+        assert_eq!(error.code, "text.layout.width.invalid");
+    }
+
+    #[test]
+    fn shapes_registered_inter_with_open_type_positioning_and_glyph_geometry() {
+        let mut input = request("AV a\u{301}", 300.0);
+        input.base_style.font_family = "Inter, sans-serif".to_string();
+        let layout = layout_with_editor_fonts(&input);
+
+        let mut left = request("A", 300.0);
+        left.base_style.font_family = "Inter".to_string();
+        let mut right = request("V", 300.0);
+        right.base_style.font_family = "Inter".to_string();
+        let mut pair = request("AV", 300.0);
+        pair.base_style.font_family = "Inter".to_string();
+        let separate_width = layout_with_editor_fonts(&left).lines[0].width
+            + layout_with_editor_fonts(&right).lines[0].width;
+        let pair_width = layout_with_editor_fonts(&pair).lines[0].width;
+
+        assert_eq!(layout.engine_version, 9);
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(layout.resolved_fonts, vec!["Inter"]);
+        assert!(layout.font_fallbacks.is_empty());
+        assert_eq!(layout.shaped_run_count, 1);
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert!(pair_width < separate_width);
+        assert!(layout.glyphs.iter().all(|glyph| glyph.glyph_id > 0));
+        assert!(layout.glyphs.iter().all(|glyph| glyph.advance_x >= 0.0));
+        assert!(layout
+            .glyphs
+            .iter()
+            .any(|glyph| glyph.cluster_end - glyph.cluster_start > 1));
+    }
+
+    #[test]
+    fn selects_the_registered_italic_face_and_variable_weight() {
+        let mut input = request("Variable italic", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        input.base_style.font_weight = 725;
+        input.base_style.italic = true;
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert!(!layout.glyphs.is_empty());
+        assert!(layout
+            .glyphs
+            .iter()
+            .all(|glyph| glyph.font_family == "Inter"));
+    }
+
+    #[test]
+    fn reports_mixed_measurement_when_inter_lacks_hangul_glyphs() {
+        let mut input = request("Hello 한글", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Mixed);
+        assert_eq!(layout.fallback_grapheme_count, 2);
+        assert_eq!(layout.font_fallbacks, vec!["Inter: missing glyphs"]);
+        assert!(layout.shaped_run_count >= 1);
+    }
+
+    #[test]
+    fn reports_unavailable_font_without_claiming_shaping() {
+        let mut input = request("No bundled face", 300.0);
+        input.base_style.font_family = "Unregistered Sans".to_string();
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(
+            layout.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+        assert!(layout.glyphs.is_empty());
+        assert_eq!(layout.fallback_grapheme_count, layout.graphemes.len());
+        assert_eq!(
+            layout.font_fallbacks,
+            vec!["Unregistered Sans: family unavailable"]
+        );
+    }
+
+    #[test]
+    fn applies_letter_spacing_to_glyph_origins_and_caret_geometry() {
+        let mut compact = request("AV", 300.0);
+        compact.base_style.font_family = "Inter".to_string();
+        let compact_layout = layout_with_editor_fonts(&compact);
+
+        let mut spaced = compact;
+        spaced.base_style.letter_spacing = 5.0;
+        let spaced_layout = layout_with_editor_fonts(&spaced);
+        let compact_v = compact_layout
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.cluster_start == 1)
+            .expect("compact V glyph");
+        let spaced_v = spaced_layout
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.cluster_start == 1)
+            .expect("spaced V glyph");
+
+        assert!((spaced_v.x - compact_v.x - 5.0).abs() < 0.01);
+        assert!((spaced_layout.lines[0].width - compact_layout.lines[0].width - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn resolves_rtl_visual_order_carets_and_hit_testing() {
+        let mut input = request("אבג", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_with_editor_fonts(&input);
+        let line = &layout.lines[0];
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert!(!layout.glyphs.is_empty());
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert!(layout.font_fallbacks.is_empty());
+        assert!(layout.layout_warnings.is_empty());
+        assert_eq!(layout.resolved_fonts, vec!["Noto Sans Hebrew"]);
+        assert_eq!(layout.shaped_run_count, 1);
+        assert_eq!(layout.bidi_paragraph_count, 1);
+        assert_eq!(layout.visual_run_count, 1);
+        assert_eq!(line.base_direction, TextDirection::Rtl);
+        assert_eq!(
+            layout
+                .graphemes
+                .iter()
+                .map(|grapheme| grapheme.start)
+                .collect::<Vec<_>>(),
+            vec![2, 1, 0]
+        );
+        assert_eq!(
+            hit_test_text(&layout, line.x, line.y)
+                .expect("left-edge hit")
+                .offset,
+            3
+        );
+        assert_eq!(
+            hit_test_text(&layout, line.x + line.width, line.y)
+                .expect("right-edge hit")
+                .offset,
+            0
+        );
+        assert!(layout
+            .glyphs
+            .iter()
+            .all(|glyph| glyph.x >= line.x && glyph.x <= line.x + line.width));
+    }
+
+    #[test]
+    fn splits_discontiguous_mixed_direction_selection_geometry() {
+        let mut input = request("abc אבג def", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_with_editor_fonts(&input);
+        let selection = selection_rects(&layout, 2, 5);
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert_eq!(layout.resolved_fonts, vec!["Inter", "Noto Sans Hebrew"]);
+        assert_eq!(layout.bidi_paragraph_count, 1);
+        assert_eq!(layout.visual_run_count, 3);
+        assert_eq!(layout.script_run_count, 3);
+        assert_eq!(layout.lines[0].base_direction, TextDirection::Ltr);
+        assert_eq!(selection.len(), 2);
+        assert!(selection[0].x < selection[1].x);
+        assert!(selection[0].x + selection[0].width < selection[1].x);
+    }
+
+    #[test]
+    fn itemizes_scripts_before_shaping_mixed_ltr_text() {
+        let mut input = request("Latin Ελληνικά Latin", 400.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_with_editor_fonts(&input);
+        let scripts = layout
+            .graphemes
+            .iter()
+            .map(|grapheme| grapheme.script.as_str())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert_eq!(layout.script_run_count, 3);
+        assert_eq!(layout.shaped_run_count, 3);
+        assert!(scripts.contains("Latn"));
+        assert!(scripts.contains("Grek"));
+    }
+
+    #[test]
+    fn resolves_leading_common_characters_to_the_following_script() {
+        let mut input = request("(Ελληνικά)", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(layout.script_run_count, 1);
+        assert!(layout
+            .graphemes
+            .iter()
+            .all(|grapheme| grapheme.script == "Grek"));
+    }
+
+    #[test]
+    fn shapes_arabic_with_a_script_specific_fallback_face() {
+        let mut input = request("مرحبا", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(layout.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(layout.resolved_fonts, vec!["Noto Sans Arabic"]);
+        assert_eq!(layout.fallback_grapheme_count, 0);
+        assert!(layout.font_fallbacks.is_empty());
+        assert_eq!(layout.script_run_count, 1);
+        assert_eq!(layout.shaped_run_count, 1);
+        assert_eq!(layout.bidi_paragraph_count, 1);
+        assert!(layout
+            .graphemes
+            .iter()
+            .all(|grapheme| grapheme.script == "Arab"));
+        assert!(layout
+            .glyphs
+            .iter()
+            .all(|glyph| glyph.font_family == "Noto Sans Arabic"));
+    }
+
+    #[test]
+    fn registers_script_fonts_dynamically_and_invalidates_cached_fallbacks() {
+        let mut input = request("مرحبا", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let mut handle = TextLayoutHandle::with_capacity(4);
+
+        let fallback = handle.layout(&input).expect("fallback layout");
+        assert_eq!(
+            fallback.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+        assert!(fallback.glyphs.is_empty());
+        assert_eq!(handle.stats().entries, 1);
+
+        let registered = handle
+            .register_font(
+                "Noto Sans Arabic",
+                TEST_NOTO_SANS_ARABIC_BYTES.to_vec(),
+                false,
+            )
+            .expect("Arabic face should register");
+        assert_eq!(registered.family, "Noto Sans Arabic");
+        assert_eq!(registered.byte_length, TEST_NOTO_SANS_ARABIC_BYTES.len());
+        assert!(registered.glyph_count > 0);
+        assert_eq!(handle.stats().entries, 0);
+        assert_eq!(handle.stats().paragraph_entries, 0);
+
+        let shaped = handle.layout(&input).expect("shaped layout");
+        assert_eq!(shaped.measurement_mode, TextMeasurementMode::Shaped);
+        assert_eq!(shaped.resolved_fonts, vec!["Noto Sans Arabic"]);
+        assert!(!shaped.cache_hit);
+        assert_eq!(handle.registered_fonts(), vec![registered]);
+
+        assert!(handle.unregister_font("noto sans arabic", false));
+        assert!(handle.registered_fonts().is_empty());
+        assert_eq!(handle.stats().entries, 0);
+        assert_eq!(handle.stats().paragraph_entries, 0);
+        let fallback_again = handle
+            .layout(&input)
+            .expect("fallback layout after removal");
+        assert_eq!(
+            fallback_again.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_oversized_dynamic_font_data() {
+        let mut handle = TextLayoutHandle::default();
+        let invalid = handle
+            .register_font("Broken", vec![1, 2, 3, 4], false)
+            .expect_err("invalid font must be rejected");
+        assert_eq!(invalid.code, "text.font.parse_failed");
+
+        let oversized = handle
+            .register_font("Too Large", vec![0; MAX_REGISTERED_FONT_BYTES + 1], false)
+            .expect_err("oversized font must be rejected before parsing");
+        assert_eq!(oversized.code, "text.font.bytes.limit");
+    }
+
+    #[test]
+    fn bounds_dynamic_font_registry_face_count_and_allows_replacement() {
+        let mut handle = TextLayoutHandle::default();
+        for index in 0..MAX_REGISTERED_FONTS {
+            handle
+                .register_font(
+                    &format!("Test Hebrew {index}"),
+                    TEST_NOTO_SANS_HEBREW_BYTES.to_vec(),
+                    false,
+                )
+                .expect("face within count limit should register");
+        }
+        assert_eq!(handle.registered_fonts().len(), MAX_REGISTERED_FONTS);
+
+        let overflow = handle
+            .register_font(
+                "One Face Too Many",
+                TEST_NOTO_SANS_HEBREW_BYTES.to_vec(),
+                false,
+            )
+            .expect_err("face count limit should be enforced");
+        assert_eq!(overflow.code, "text.font.registry.count_limit");
+
+        let replacement = handle
+            .register_font("Test Hebrew 0", TEST_NOTO_SANS_ARABIC_BYTES.to_vec(), false)
+            .expect("an existing family/style may be replaced at the limit");
+        assert_eq!(replacement.byte_length, TEST_NOTO_SANS_ARABIC_BYTES.len());
+        assert_eq!(handle.registered_fonts().len(), MAX_REGISTERED_FONTS);
+    }
+
+    #[test]
+    fn keeps_unbundled_rtl_scripts_on_an_explicit_fallback_path() {
+        let mut input = request("ܫܠܡܐ", 300.0);
+        input.base_style.font_family = "Inter".to_string();
+        let layout = layout_with_editor_fonts(&input);
+
+        assert_eq!(
+            layout.measurement_mode,
+            TextMeasurementMode::DeterministicFallback
+        );
+        assert!(layout.glyphs.is_empty());
+        assert_eq!(layout.fallback_grapheme_count, layout.graphemes.len());
+        assert_eq!(layout.font_fallbacks, vec!["Inter: missing glyphs"]);
+        assert_eq!(layout.bidi_paragraph_count, 1);
+        assert!(layout
+            .graphemes
+            .iter()
+            .all(|grapheme| grapheme.script == "Syrc"));
+    }
+
+    #[test]
+    fn reuses_exact_layout_requests_without_advancing_revision() {
+        let mut handle = TextLayoutHandle::with_capacity(2);
+        let input = request("cached text", 300.0);
+
+        let first = handle.layout(&input).expect("first layout");
+        let second = handle.layout(&input).expect("cached layout");
+
+        assert!(!first.cache_hit);
+        assert!(second.cache_hit);
+        assert_eq!(handle.revision, 1);
+        assert_eq!(
+            handle.stats(),
+            TextLayoutCacheStats {
+                hits: 1,
+                misses: 1,
+                entries: 1,
+                capacity: 2,
+                evictions: 0,
+                bytes: handle.stats().bytes,
+                byte_capacity: 2 * LAYOUT_CACHE_BYTES_PER_ENTRY,
+                paragraph_hits: 0,
+                paragraph_misses: 1,
+                paragraph_entries: 1,
+                paragraph_capacity: 8,
+                paragraph_evictions: 0,
+                paragraph_bytes: handle.stats().paragraph_bytes,
+                paragraph_byte_capacity: 8 * PARAGRAPH_CACHE_BYTES_PER_ENTRY,
+                shaping_run_hits: 0,
+                shaping_run_misses: 0,
+                shaping_run_entries: 0,
+                shaping_run_capacity: 32,
+                shaping_run_evictions: 0,
+                shaping_run_bytes: 0,
+                shaping_run_byte_capacity: 32 * SHAPING_RUN_CACHE_BYTES_PER_ENTRY,
+            }
+        );
+    }
+
+    #[test]
+    fn reuses_unchanged_paragraph_shapes_after_an_earlier_paragraph_changes() {
+        let mut handle = editor_font_handle();
+        let first_request = request("alpha\nstable paragraph\nomega", 300.0);
+        let changed_request = request("alpha extended\nstable paragraph\nomega", 300.0);
+
+        let first = handle.layout(&first_request).expect("initial paragraphs");
+        let changed = handle
+            .layout(&changed_request)
+            .expect("incremental paragraphs");
+        let cold = layout_with_editor_fonts(&changed_request);
+
+        assert_eq!(first.paragraph_cache_hits, 0);
+        assert_eq!(first.paragraph_cache_misses, 3);
+        assert_eq!(changed.paragraph_cache_hits, 2);
+        assert_eq!(changed.paragraph_cache_misses, 1);
+        assert_eq!(changed.lines, cold.lines);
+        assert_eq!(changed.graphemes, cold.graphemes);
+        assert_eq!(changed.carets, cold.carets);
+        assert_eq!(changed.glyphs, cold.glyphs);
+        assert_eq!(changed.resolved_fonts, cold.resolved_fonts);
+        assert_eq!(changed.shaped_run_count, cold.shaped_run_count);
+    }
+
+    #[test]
+    fn invalidates_only_the_paragraph_affected_by_a_style_run() {
+        let mut handle = editor_font_handle();
+        let first_request = request("alpha\nstyled\nomega", 300.0);
+        let mut styled_request = first_request.clone();
+        styled_request.runs.push(TextLayoutRun {
+            start: 6,
+            end: 12,
+            style: TextStyleMetrics {
+                font_weight: 700,
+                letter_spacing: 1.5,
+                ..TextStyleMetrics::default()
+            },
+        });
+
+        handle.layout(&first_request).expect("initial paragraphs");
+        let styled = handle
+            .layout(&styled_request)
+            .expect("styled incremental paragraphs");
+        let cold = layout_with_editor_fonts(&styled_request);
+
+        assert_eq!(styled.paragraph_cache_hits, 2);
+        assert_eq!(styled.paragraph_cache_misses, 1);
+        assert_eq!(styled.lines, cold.lines);
+        assert_eq!(styled.graphemes, cold.graphemes);
+        assert_eq!(styled.glyphs, cold.glyphs);
+    }
+
+    #[test]
+    fn reuses_unchanged_shaping_runs_inside_a_dirty_paragraph() {
+        let mut handle = editor_font_handle();
+        let mut first_request = request("alphabetagamma", 300.0);
+        first_request.base_style.font_family = "Inter".to_string();
+        first_request.runs = vec![
+            TextLayoutRun {
+                start: 0,
+                end: 5,
+                style: TextStyleMetrics {
+                    font_family: "Inter".to_string(),
+                    font_weight: 400,
+                    ..TextStyleMetrics::default()
+                },
+            },
+            TextLayoutRun {
+                start: 5,
+                end: 9,
+                style: TextStyleMetrics {
+                    font_family: "Inter".to_string(),
+                    font_weight: 500,
+                    ..TextStyleMetrics::default()
+                },
+            },
+            TextLayoutRun {
+                start: 9,
+                end: 14,
+                style: TextStyleMetrics {
+                    font_family: "Inter".to_string(),
+                    font_weight: 600,
+                    ..TextStyleMetrics::default()
+                },
+            },
+        ];
+        let mut changed_request = first_request.clone();
+        changed_request.runs[1].style.font_weight = 550;
+
+        let first = handle.layout(&first_request).expect("initial shaping runs");
+        let changed = handle
+            .layout(&changed_request)
+            .expect("incremental shaping runs");
+        let cold = layout_with_editor_fonts(&changed_request);
+
+        assert_eq!(first.shaping_run_cache_hits, 0);
+        assert_eq!(first.shaping_run_cache_misses, 3);
+        assert_eq!(changed.paragraph_cache_hits, 0);
+        assert_eq!(changed.paragraph_cache_misses, 1);
+        assert_eq!(changed.shaping_run_cache_hits, 2);
+        assert_eq!(changed.shaping_run_cache_misses, 1);
+        assert_eq!(changed.lines, cold.lines);
+        assert_eq!(changed.graphemes, cold.graphemes);
+        assert_eq!(changed.carets, cold.carets);
+        assert_eq!(changed.glyphs, cold.glyphs);
+        assert_eq!(changed.resolved_fonts, cold.resolved_fonts);
+    }
+
+    #[test]
+    fn reflows_cached_paragraph_shapes_when_only_width_changes() {
+        let mut handle = editor_font_handle();
+        let wide_request = request("alpha beta gamma\nstable paragraph", 300.0);
+        let mut narrow_request = wide_request.clone();
+        narrow_request.width = 72.0;
+
+        let wide = handle.layout(&wide_request).expect("wide layout");
+        let narrow = handle.layout(&narrow_request).expect("narrow layout");
+        let cold = layout_with_editor_fonts(&narrow_request);
+
+        assert_eq!(wide.paragraph_cache_misses, 2);
+        assert_eq!(narrow.paragraph_cache_hits, 2);
+        assert_eq!(narrow.paragraph_cache_misses, 0);
+        assert!(narrow.lines.len() > wide.lines.len());
+        assert_eq!(narrow.lines, cold.lines);
+        assert_eq!(narrow.graphemes, cold.graphemes);
+        assert_eq!(narrow.glyphs, cold.glyphs);
+    }
+
+    #[test]
+    fn bounds_the_paragraph_shape_cache_independently_from_exact_layouts() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+
+        for index in 0..8 {
+            handle
+                .layout(&request(&format!("paragraph {index}"), 300.0))
+                .expect("paragraph layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.capacity, 1);
+        assert_eq!(stats.paragraph_entries, 4);
+        assert_eq!(stats.paragraph_capacity, 4);
+        assert_eq!(stats.paragraph_misses, 8);
+        assert!(stats.bytes <= stats.byte_capacity);
+        assert!(stats.paragraph_bytes <= stats.paragraph_byte_capacity);
+    }
+
+    #[test]
+    fn bounds_exact_layout_cache_by_retained_bytes() {
+        let mut handle = TextLayoutHandle::with_capacity(8);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+
+        for index in 0..8 {
+            let content = format!("{index:02}{}", "x".repeat(5_000));
+            let mut input = request(&content, 10_000.0);
+            input.base_style.font_family = "Inter".to_string();
+            handle.layout(&input).expect("large exact layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(stats.byte_capacity, 8 * LAYOUT_CACHE_BYTES_PER_ENTRY);
+        assert!(stats.entries > 0);
+        assert!(stats.entries < stats.capacity);
+        assert!(stats.evictions > 0);
+        assert!(stats.bytes > 0);
+        assert!(stats.bytes <= stats.byte_capacity);
+    }
+
+    #[test]
+    fn bounds_paragraph_cache_by_retained_bytes() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+        let content = (0..4)
+            .map(|index| format!("{index:02}{}", "x".repeat(1_000)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut input = request(&content, 10_000.0);
+        input.base_style.font_family = "Inter".to_string();
+        handle.layout(&input).expect("large paragraph layout");
+
+        let stats = handle.stats();
+        assert_eq!(
+            stats.paragraph_byte_capacity,
+            4 * PARAGRAPH_CACHE_BYTES_PER_ENTRY
+        );
+        assert!(stats.paragraph_entries > 0);
+        assert!(stats.paragraph_entries < stats.paragraph_capacity);
+        assert!(stats.paragraph_evictions > 0);
+        assert!(stats.paragraph_bytes > 0);
+        assert!(stats.paragraph_bytes <= stats.paragraph_byte_capacity);
+    }
+
+    #[test]
+    fn bounds_the_shaping_run_cache_independently_from_paragraphs() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+
+        for index in 0..20 {
+            let mut input = request(&format!("unique shaping run {index}"), 300.0);
+            input.base_style.font_family = "Inter".to_string();
+            handle.layout(&input).expect("shaping run layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(stats.paragraph_entries, 4);
+        assert_eq!(stats.shaping_run_entries, 16);
+        assert_eq!(stats.shaping_run_capacity, 16);
+        assert_eq!(stats.shaping_run_misses, 20);
+        assert!(stats.shaping_run_bytes <= stats.shaping_run_byte_capacity);
+    }
+
+    #[test]
+    fn bounds_the_shaping_run_cache_by_retained_bytes() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        handle
+            .register_font("Inter", TEST_INTER_REGULAR_BYTES.to_vec(), false)
+            .expect("Inter test font should register");
+
+        for index in 0..10 {
+            let content = format!("{index:02}{}", "x".repeat(400));
+            let mut input = request(&content, 10_000.0);
+            input.base_style.font_family = "Inter".to_string();
+            handle.layout(&input).expect("shaping run layout");
+        }
+
+        let stats = handle.stats();
+        assert_eq!(
+            stats.shaping_run_byte_capacity,
+            16 * SHAPING_RUN_CACHE_BYTES_PER_ENTRY
+        );
+        assert!(stats.shaping_run_entries > 0);
+        assert!(stats.shaping_run_entries < 10);
+        assert!(stats.shaping_run_evictions > 0);
+        assert!(stats.shaping_run_bytes > 0);
+        assert!(stats.shaping_run_bytes <= stats.shaping_run_byte_capacity);
+    }
+
+    #[test]
+    fn bounds_layout_cache_and_never_reuses_changed_metrics() {
+        let mut handle = TextLayoutHandle::with_capacity(1);
+        let first_request = request("same content", 300.0);
+        let mut changed_request = first_request.clone();
+        changed_request.width = 40.0;
+
+        let first = handle.layout(&first_request).expect("first layout");
+        let changed = handle.layout(&changed_request).expect("changed layout");
+        let first_again = handle.layout(&first_request).expect("evicted layout");
+
+        assert!(!first.cache_hit);
+        assert!(!changed.cache_hit);
+        assert!(!first_again.cache_hit);
+        assert_ne!(first.lines.len(), changed.lines.len());
+        assert_eq!(handle.revision, 3);
+        assert_eq!(handle.stats().entries, 1);
+        assert_eq!(handle.stats().misses, 3);
+    }
+}

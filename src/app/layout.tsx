@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import AnonInit from "@/components/anon-init";
 import { Providers } from "@/components/providers";
@@ -8,15 +8,27 @@ import GlobalNavigation from "@/components/global-navigation";
 import SwRegister from "@/components/sw-register";
 import NativeBridgeHost from "@/components/native-bridge-host";
 
-const sans = Space_Grotesk({
-  subsets: ["latin"],
+const sans = localFont({
+  src: "./fonts/SpaceGrotesk-Variable.ttf",
+  weight: "300 700",
+  style: "normal",
   variable: "--font-sans-custom",
   display: "swap",
 });
 
-const mono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "600"],
+const mono = localFont({
+  src: [
+    {
+      path: "./fonts/IBMPlexMono-Regular.ttf",
+      weight: "400",
+      style: "normal",
+    },
+    {
+      path: "./fonts/IBMPlexMono-SemiBold.ttf",
+      weight: "600",
+      style: "normal",
+    },
+  ],
   variable: "--font-mono-custom",
   display: "swap",
 });

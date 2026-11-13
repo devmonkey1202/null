@@ -1,0 +1,15 @@
+[package]
+name = "service-documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-error = { path = "../core-error" }
+kernel-doc = { path = "../kernel-doc" }
+service-auth = { path = "../service-auth" }
+
+[lib]
+path = "src/lib.rs"
+

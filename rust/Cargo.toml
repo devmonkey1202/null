@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/core-error",
+  "crates/core-id",
+  "crates/kernel-doc",
+  "crates/kernel-scene",
+  "crates/kernel-layout",
+  "crates/kernel-history",
+  "crates/kernel-text",
+  "crates/kernel-vector",
+  "crates/kernel-render",
+  "crates/kernel-sync",
+  "crates/kernel-runtime",
+  "crates/service-auth",
+  "crates/service-documents",
+  "crates/service-collab",
+  "crates/service-publish",
+  "crates/service-media",
+  "crates/service-ai",
+  "crates/service-control-plane",
+  "crates/ffi-wasm-editor",
+  "crates/ffi-wasm-runtime",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+

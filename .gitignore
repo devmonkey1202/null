@@ -24,6 +24,7 @@
 
 # production
 /build
+/rust/target/
 
 # nocode app uploads (작품별 업로드 파일)
 /public/uploads
