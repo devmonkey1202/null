@@ -3330,6 +3330,42 @@ export class NoopEditorBridge implements EditorBridge {
           shapingRunBytes: 0,
           shapingRunByteCapacity: 0,
         };
+      case "render_frame": {
+        const page = this.document.pages.find((candidate) => candidate.id === selector.pageId);
+        const drawableNodes =
+          page?.nodes.filter((node) =>
+            node.kind === "shape" ||
+            node.kind === "text" ||
+            node.kind === "image" ||
+            node.kind === "video",
+          ).length ?? 0;
+        return {
+          list: {
+            version: 1,
+            pageId: selector.pageId,
+            revision: "noop",
+            viewport: selector.viewport,
+            items: [],
+            issues: [
+              {
+                nodeId: page?.rootId ?? selector.pageId,
+                code: "render.bridge.noop",
+                message: "Rust render commands are unavailable in the browser fallback bridge.",
+                severity: "warning",
+              },
+            ],
+            stats: {
+              visitedNodes: page?.nodes.length ?? 0,
+              drawableNodes,
+              visibleNodes: 0,
+              culledNodes: drawableNodes,
+              commandCount: 0,
+              glyphCount: 0,
+              textRunCount: 0,
+            },
+          },
+        };
+      }
       case "hit_test":
         return runHitTest(
           this.document,

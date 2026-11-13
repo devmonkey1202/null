@@ -22,6 +22,7 @@ import type {
   LayoutSizingAxis,
   MoveSnapPreview,
   ReorderNodePosition,
+  RenderFrame,
   RuntimeGraph,
   SceneGuide,
   SceneNode,
@@ -1665,6 +1666,7 @@ export function V2EditorShell() {
   const [activeTextRangeIndex, setActiveTextRangeIndex] = useState<number | null>(null);
   const [activeTextLayout, setActiveTextLayout] = useState<TextLayout | null>(null);
   const [activeTextCacheStats, setActiveTextCacheStats] = useState<TextLayoutCacheStats | null>(null);
+  const [activeRenderFrame, setActiveRenderFrame] = useState<RenderFrame | null>(null);
   const [activePathPointIndex, setActivePathPointIndex] = useState<number | null>(null);
   const [textStyleScope, setTextStyleScope] = useState<"node" | "selection">("node");
   const [moveSnapPreview, setMoveSnapPreview] = useState<MoveSnapPreview>(EMPTY_MOVE_SNAP_PREVIEW);
@@ -1676,6 +1678,7 @@ export function V2EditorShell() {
   const inspectorTextRef = useRef<HTMLTextAreaElement | null>(null);
   const snapQuerySeqRef = useRef(0);
   const textLayoutQuerySeqRef = useRef(0);
+  const renderFrameQuerySeqRef = useRef(0);
 
   const syncBridgeState = useCallback(async () => {
     const bridge = bridgeRef.current;
@@ -2024,6 +2027,49 @@ export function V2EditorShell() {
     [dragMarquee],
   );
   const viewViewport = draftViewport ?? snapshot?.viewport ?? { zoom: 1, x: 0, y: 0 };
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge || !currentPage || canvasSize.width <= 0 || canvasSize.height <= 0) {
+      renderFrameQuerySeqRef.current += 1;
+      setActiveRenderFrame(null);
+      return;
+    }
+
+    const sequence = ++renderFrameQuerySeqRef.current;
+    const zoom = Math.max(viewViewport.zoom, 0.01);
+    void bridge
+      .query({
+        kind: "render_frame",
+        pageId: currentPage.id,
+        viewport: {
+          x: -viewViewport.x / zoom,
+          y: -viewViewport.y / zoom,
+          width: canvasSize.width / zoom,
+          height: canvasSize.height / zoom,
+          scale: zoom,
+          overscan: 96 / zoom,
+        },
+      })
+      .then((result) => {
+        if (renderFrameQuerySeqRef.current === sequence) {
+          setActiveRenderFrame(result as RenderFrame);
+        }
+      })
+      .catch(() => {
+        if (renderFrameQuerySeqRef.current === sequence) {
+          setActiveRenderFrame(null);
+        }
+      });
+  }, [
+    bridgeInfo?.kernel,
+    canvasSize.height,
+    canvasSize.width,
+    currentPage,
+    snapshot?.version,
+    viewViewport.x,
+    viewViewport.y,
+    viewViewport.zoom,
+  ]);
   const dragMoveDelta = useMemo(
     () =>
       dragMove
@@ -6978,6 +7024,31 @@ export function V2EditorShell() {
               <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                 <div>mode: {bridgeInfo?.mode ?? "loading"}</div>
                 <div className="mt-1">kernel: {bridgeInfo?.kernel ?? "loading"}</div>
+                <div
+                  className="mt-1"
+                  data-testid="v2-render-list-summary"
+                  data-render-revision={activeRenderFrame?.list.revision ?? ""}
+                  data-command-count={activeRenderFrame?.list.stats.commandCount ?? 0}
+                  data-glyph-count={activeRenderFrame?.list.stats.glyphCount ?? 0}
+                  data-render-issue-count={activeRenderFrame?.list.issues.length ?? 0}
+                >
+                  render: {activeRenderFrame?.list.stats.commandCount ?? 0} commands / {activeRenderFrame?.list.stats.glyphCount ?? 0} glyphs
+                </div>
+                <div className="mt-1">
+                  visible: {activeRenderFrame?.list.stats.visibleNodes ?? 0} / {activeRenderFrame?.list.stats.drawableNodes ?? 0} drawables
+                </div>
+                {activeRenderFrame?.diff ? (
+                  <div
+                    className="mt-1"
+                    data-testid="v2-render-diff-summary"
+                    data-added-count={activeRenderFrame.diff.added.length}
+                    data-updated-count={activeRenderFrame.diff.updated.length}
+                    data-removed-count={activeRenderFrame.diff.removed.length}
+                    data-unchanged-count={activeRenderFrame.diff.unchanged.length}
+                  >
+                    diff: +{activeRenderFrame.diff.added.length} ~{activeRenderFrame.diff.updated.length} -{activeRenderFrame.diff.removed.length}
+                  </div>
+                ) : null}
                 <div className="mt-1">
                   viewport: {Math.round(viewViewport.zoom * 100)}% / {Math.round(viewViewport.x)}/
                   {Math.round(viewViewport.y)}

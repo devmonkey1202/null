@@ -3,6 +3,9 @@ use kernel_doc::{
     parse_scene_doc, serialize_scene_doc, EditorCommand, TransformHandleKind, ValidationReport,
 };
 use kernel_history::HistoryStore;
+use kernel_render::{
+    build_render_list, diff_render_lists, RenderFrame, RenderList, RenderViewport,
+};
 use kernel_scene::{
     dispatch_commands, hit_test, move_snap_preview, normalize_document_with_text_handle,
     query_node, resize_snap_preview, selection_bounds, selection_handles,
@@ -10,7 +13,7 @@ use kernel_scene::{
 };
 use kernel_text::TextLayoutHandle;
 use serde_json::json;
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::HashMap};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -19,6 +22,7 @@ pub struct EditorBridgeHandle {
     state: RefCell<Option<EditorState>>,
     history: RefCell<HistoryStore>,
     text_layout: RefCell<TextLayoutHandle>,
+    render_lists: RefCell<HashMap<String, RenderList>>,
 }
 
 impl EditorBridgeHandle {
@@ -40,6 +44,7 @@ impl EditorBridgeHandle {
         let snapshot = state.snapshot();
         self.history.borrow_mut().seed(snapshot.clone());
         self.text_layout.borrow_mut().clear();
+        self.render_lists.borrow_mut().clear();
         *self.state.borrow_mut() = Some(state);
 
         serde_json::to_string(&snapshot)
@@ -280,6 +285,42 @@ impl EditorBridgeHandle {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_frame(
+        &self,
+        page_id: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        scale: f32,
+        overscan: f32,
+    ) -> Result<String, CoreError> {
+        let state = self.state.borrow();
+        let editor_state = state.as_ref().ok_or_else(|| {
+            CoreError::new("editor.state.missing", "No document has been loaded.")
+        })?;
+        let viewport = RenderViewport::new(x, y, width, height, scale).with_overscan(overscan);
+        let list = build_render_list(
+            &editor_state.doc,
+            page_id,
+            viewport,
+            &mut self.text_layout.borrow_mut(),
+        )?;
+        let diff = self
+            .render_lists
+            .borrow()
+            .get(page_id)
+            .map(|previous| diff_render_lists(previous, &list));
+        self.render_lists
+            .borrow_mut()
+            .insert(page_id.to_string(), list.clone());
+
+        serde_json::to_string(&RenderFrame { list, diff }).map_err(|error| {
+            CoreError::new("editor.render_frame.serialize_failed", error.to_string())
+        })
+    }
+
     pub fn move_snap(
         &self,
         delta_x: f32,
@@ -488,6 +529,22 @@ impl WasmEditorBridgeHandle {
 
     pub fn text_layout_cache_stats(&self) -> Result<String, JsValue> {
         self.inner.text_layout_cache_stats().map_err(map_js_error)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_frame(
+        &self,
+        page_id: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        scale: f32,
+        overscan: f32,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .render_frame(page_id, x, y, width, height, scale, overscan)
+            .map_err(map_js_error)
     }
 
     pub fn move_snap(
@@ -743,6 +800,48 @@ mod tests {
         assert!(resized.contains("\"dirtyNodeIds\":[\"title\"]"));
         assert!(resized.contains("\"w\":60.0"));
         assert!(resized.contains("\"h\":24.0"));
+    }
+
+    #[test]
+    fn bridge_builds_and_diffs_render_frames_with_shaped_glyphs() {
+        let bridge = bridge_with_editor_fonts();
+        let _ = bridge.load_document(&sample_doc_json()).expect("load doc");
+
+        let first_raw = bridge
+            .render_frame("page-1", 0.0, 0.0, 800.0, 600.0, 1.0, 64.0)
+            .expect("first render frame");
+        let first: serde_json::Value = serde_json::from_str(&first_raw).expect("first frame json");
+        assert!(first.get("diff").is_none());
+        assert_eq!(first["list"]["stats"]["visibleNodes"], 1);
+        assert_eq!(first["list"]["stats"]["commandCount"], 1);
+        assert!(first["list"]["stats"]["glyphCount"]
+            .as_u64()
+            .is_some_and(|count| count > 0));
+        assert_eq!(first["list"]["items"][0]["primitive"]["kind"], "glyph_run");
+
+        let second_raw = bridge
+            .render_frame("page-1", 0.0, 0.0, 800.0, 600.0, 1.0, 64.0)
+            .expect("second render frame");
+        let second: serde_json::Value =
+            serde_json::from_str(&second_raw).expect("second frame json");
+        assert_eq!(second["diff"]["added"].as_array().map(Vec::len), Some(0));
+        assert_eq!(second["diff"]["updated"].as_array().map(Vec::len), Some(0));
+        assert_eq!(
+            second["diff"]["unchanged"].as_array().map(Vec::len),
+            Some(1)
+        );
+
+        bridge
+            .dispatch_editor_commands(
+                r#"[{"kind":"set_text_content","nodeId":"title","content":"Changed"}]"#,
+            )
+            .expect("text edit");
+        let changed_raw = bridge
+            .render_frame("page-1", 0.0, 0.0, 800.0, 600.0, 1.0, 64.0)
+            .expect("changed render frame");
+        let changed: serde_json::Value =
+            serde_json::from_str(&changed_raw).expect("changed frame json");
+        assert_eq!(changed["diff"]["updated"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]

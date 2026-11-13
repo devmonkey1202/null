@@ -13,6 +13,7 @@ export class WasmEditorBridgeHandle {
     constructor();
     query_node(node_id: string): string;
     register_font(family: string, data: Uint8Array, italic: boolean): string;
+    render_frame(page_id: string, x: number, y: number, width: number, height: number, scale: number, overscan: number): string;
     resize_snap(handle: string, delta_x: number, delta_y: number, lock_aspect: boolean, threshold?: number | null): string;
     run_validation(): string;
     selection_bounds(): string;
@@ -39,6 +40,7 @@ export interface InitOutput {
     readonly wasmeditorbridgehandle_unregister_font: (a: number, b: number, c: number, d: number) => number;
     readonly wasmeditorbridgehandle_font_registry: (a: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_text_layout_cache_stats: (a: number) => [number, number, number, number];
+    readonly wasmeditorbridgehandle_render_frame: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_move_snap: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_resize_snap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly wasmeditorbridgehandle_run_validation: (a: number) => [number, number, number, number];

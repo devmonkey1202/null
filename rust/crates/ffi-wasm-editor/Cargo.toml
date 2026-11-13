@@ -14,6 +14,7 @@ kernel-scene = { path = "../kernel-scene" }
 kernel-layout = { path = "../kernel-layout" }
 kernel-history = { path = "../kernel-history" }
 kernel-text = { path = "../kernel-text" }
+kernel-render = { path = "../kernel-render" }
 wasm-bindgen = "0.2"
 
 [lib]

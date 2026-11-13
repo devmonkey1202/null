@@ -454,12 +454,167 @@ export type TextLayoutCacheStats = {
   shapingRunByteCapacity: number;
 };
 
+export type RenderViewport = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  overscan?: number;
+};
+
+export type RenderBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type RenderTransform = {
+  m11: number;
+  m12: number;
+  m21: number;
+  m22: number;
+  dx: number;
+  dy: number;
+};
+
+export type RenderPaint = {
+  fill?: string;
+  stroke?: string;
+  strokeWidth: number;
+  opacity: number;
+};
+
+export type RenderPathPoint = {
+  x: number;
+  y: number;
+  handleIn?: { x: number; y: number };
+  handleOut?: { x: number; y: number };
+};
+
+export type RenderGlyph = {
+  glyphId: number;
+  clusterStart: number;
+  clusterEnd: number;
+  x: number;
+  y: number;
+  advanceX: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+export type RenderTextStyle = {
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  italic: boolean;
+  color: string;
+  underline: boolean;
+  lineThrough: boolean;
+};
+
+export type RenderPrimitive =
+  | {
+      kind: "rect";
+      width: number;
+      height: number;
+      cornerRadius: number;
+      paint: RenderPaint;
+    }
+  | {
+      kind: "ellipse";
+      width: number;
+      height: number;
+      paint: RenderPaint;
+    }
+  | {
+      kind: "line";
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      paint: RenderPaint;
+    }
+  | {
+      kind: "path";
+      points: RenderPathPoint[];
+      closed: boolean;
+      paint: RenderPaint;
+    }
+  | {
+      kind: "glyph_run";
+      style: RenderTextStyle;
+      glyphs: RenderGlyph[];
+      measurementMode: TextMeasurementMode;
+    }
+  | {
+      kind: "placeholder";
+      resourceKind: "image" | "video";
+      width: number;
+      height: number;
+    };
+
+export type RenderItem = {
+  commandId: string;
+  nodeId: string;
+  zIndex: number;
+  bounds: RenderBounds;
+  transform: RenderTransform;
+  fingerprint: string;
+  primitive: RenderPrimitive;
+};
+
+export type RenderIssue = {
+  nodeId: string;
+  code: string;
+  message: string;
+  severity: "warning" | "error";
+};
+
+export type RenderListStats = {
+  visitedNodes: number;
+  drawableNodes: number;
+  visibleNodes: number;
+  culledNodes: number;
+  commandCount: number;
+  glyphCount: number;
+  textRunCount: number;
+};
+
+export type RenderList = {
+  version: number;
+  pageId: string;
+  revision: string;
+  viewport: RenderViewport;
+  contentBounds?: RenderBounds;
+  items: RenderItem[];
+  issues: RenderIssue[];
+  stats: RenderListStats;
+};
+
+export type RenderDiff = {
+  fromRevision: string;
+  toRevision: string;
+  fullRebuild: boolean;
+  added: RenderItem[];
+  updated: RenderItem[];
+  removed: string[];
+  unchanged: string[];
+};
+
+export type RenderFrame = {
+  list: RenderList;
+  diff?: RenderDiff;
+};
+
 export type BridgeQuery =
   | { kind: "selection" }
   | { kind: "document" }
   | { kind: "node"; nodeId: string }
   | { kind: "text_layout"; nodeId: string }
   | { kind: "text_layout_cache_stats" }
+  | { kind: "render_frame"; pageId: string; viewport: RenderViewport }
   | { kind: "hit_test"; pageId: string; x: number; y: number; mode?: HitTestMode }
   | { kind: "selection_bounds" }
   | { kind: "transform_handles" }

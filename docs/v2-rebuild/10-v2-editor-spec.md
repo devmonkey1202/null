@@ -271,6 +271,14 @@ Phase 2B bounded text-cache checkpoint (`TextLayout.engineVersion = 9`):
 - exact/paragraph/run별 bytes, byte capacity, eviction을 동일 `TextLayoutCacheStats` 및 WASM bridge query로 노출
 - inspector는 세 계층의 현재/최대 cache payload를 합산해 표시하고 browser E2E에서 기본 총 `40 MiB` 계약을 검증
 
+Phase 3 render-command checkpoint (`RenderList.version = 1`, partial):
+
+- `kernel-render`가 SceneDoc 계층 순서와 Rust scene absolute frame을 사용해 shape/path/styled glyph-run 명령을 생성
+- center rotation matrix, 회전 AABB, stroke inflation, world-space viewport/overscan culling을 command 생성 전에 적용
+- command stable fingerprint와 RenderList revision을 생성하고 이전 frame 대비 added/updated/removed/unchanged diff를 계산
+- WASM `render_frame`이 실제 editor pan/zoom viewport와 연결되고 inspector에서 command/glyph/visible/cull/diff를 진단
+- 현재 DOM/SVG 캔버스는 비교 기준으로 유지한다. glyph raster/atlas, WebGL2 backend, batching과 pixel parity를 통과하기 전에는 GPU renderer 전환 완료로 판정하지 않는다.
+
 현재 명시적 한계:
 
 - 현재 기본 face 4개(Inter regular/italic, Noto Sans Hebrew/Arabic)는 같은 origin의 public asset을 동적 등록하며 WASM binary에 font bytes를 내장하지 않는다.

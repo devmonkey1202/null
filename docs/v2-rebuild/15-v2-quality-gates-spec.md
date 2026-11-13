@@ -105,7 +105,7 @@
 
 ## 11. Text Engine checkpoint 판정
 
-2026-10-09 Phase 2B partial까지 통과한 항목:
+2026-11-14 Phase 2B partial와 RenderList v1까지 통과한 항목:
 
 - Rust native font parse/shaping tests
 - Inter kerning, variable weight, italic face test
@@ -129,11 +129,14 @@
 - selection style edit -> WASM run-cache reuse -> inspector diagnostics Playwright E2E
 - `cargo bench -p kernel-text --bench text_layout` 10k grapheme/100-run incremental release benchmark
 - `npm run verify:v2:assets`로 font SHA-256, raw WASM 3 MB, WASM+기본 font gzip 2.5 MB 상한을 CI에서 차단
+- shape/path/styled glyph-run RenderList 생성, 절대 transform, 회전 AABB, viewport/overscan culling Rust test
+- stable command fingerprint와 added/updated/removed/unchanged RenderDiff Rust/FFI test
+- 실제 editor viewport -> WASM `render_frame` -> inspector diagnostics와 text edit incremental diff Playwright E2E
 
 아직 release blocker인 항목:
 
 - CJK bundled/streamed fallback font
 - Syriac 등 기타 RTL glyph shaping과 Script_Extensions 교집합 기반 정밀 itemization
-- glyph atlas/render command renderer
+- glyph raster/atlas, WebGL2 backend draw call과 DOM/SVG renderer 제거
 - multi-script/very-large document benchmark, allocator overhead/fragmentation을 포함한 process-memory profile, calibrated CI performance gate
 - editor/preview/publish pixel parity

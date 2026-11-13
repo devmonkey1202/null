@@ -51,6 +51,7 @@ dependencies = [
  "kernel-doc",
  "kernel-history",
  "kernel-layout",
+ "kernel-render",
  "kernel-scene",
  "kernel-text",
  "serde",
@@ -103,6 +104,11 @@ name = "kernel-render"
 version = "0.1.0"
 dependencies = [
  "core-error",
+ "kernel-doc",
+ "kernel-scene",
+ "kernel-text",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -26,7 +26,7 @@ export default defineConfig({
   webServer: {
     command: "npm run dev:e2e",
     url: healthURL,
-    reuseExistingServer: false,
+    reuseExistingServer: process.env.PLAYWRIGHT_REUSE_EXISTING_SERVER === "1",
     timeout: 60_000,
   },
 });

@@ -141,9 +141,16 @@ pub fn flatten_path(shape: &VectorShape, tolerance: f32) -> FlattenedPath;
 ### `kernel-render`
 
 ```rust
-pub fn build_render_list(graph: &SceneGraph, viewport: Viewport) -> RenderList;
+pub fn build_render_list(
+    doc: &SceneDoc,
+    page_id: &str,
+    viewport: RenderViewport,
+    text_handle: &mut TextLayoutHandle,
+) -> Result<RenderList, CoreError>;
 pub fn diff_render_lists(prev: &RenderList, next: &RenderList) -> RenderDiff;
 ```
+
+WASM editor bridge는 같은 API를 `render_frame(...) -> RenderFrame { list, diff }`로 노출하고 page별 이전 RenderList를 보존합니다.
 
 ### `kernel-sync`
 

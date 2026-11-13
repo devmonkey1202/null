@@ -8,6 +8,7 @@ import type {
   HitTestResult,
   MoveSnapPreview,
   ResizeSnapPreview,
+  RenderFrame,
   RuntimeGraph,
   SceneDoc,
   TextLayout,
@@ -24,6 +25,15 @@ type WasmEditorBridgeModule = {
     query_node(nodeId: string): string;
     text_layout(nodeId: string): string;
     text_layout_cache_stats(): string;
+    render_frame(
+      pageId: string,
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      scale: number,
+      overscan: number,
+    ): string;
     register_font(family: string, data: Uint8Array, italic: boolean): string;
     unregister_font(family: string, italic: boolean): boolean;
     font_registry(): string;
@@ -196,6 +206,21 @@ export class BrowserWasmEditorBridge implements EditorBridge {
 
     if (selector.kind === "text_layout_cache_stats") {
       return JSON.parse(this.handle.text_layout_cache_stats()) as TextLayoutCacheStats;
+    }
+
+    if (selector.kind === "render_frame") {
+      const { viewport } = selector;
+      return JSON.parse(
+        this.handle.render_frame(
+          selector.pageId,
+          viewport.x,
+          viewport.y,
+          viewport.width,
+          viewport.height,
+          viewport.scale,
+          viewport.overscan ?? 0,
+        ),
+      ) as RenderFrame;
     }
 
     if (selector.kind === "hit_test") {

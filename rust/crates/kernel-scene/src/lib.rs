@@ -678,7 +678,7 @@ fn resolve_absolute_frame(
     Some(frame)
 }
 
-fn build_absolute_frame_map(nodes: &[SceneNode]) -> HashMap<String, EditorRect> {
+pub fn build_absolute_frame_map(nodes: &[SceneNode]) -> HashMap<String, EditorRect> {
     let node_map = build_page_node_map(nodes);
     let mut cache = HashMap::new();
     for node in nodes {

@@ -170,11 +170,21 @@ Implemented in `kernel-text` Phase 2B partial:
 - shaping-run key/glyph retained-payload accounting, 8 MiB byte budget, oversize insertion rejection, and LRU eviction diagnostics
 - exact result geometry 16 MiB, paragraph shape geometry 16 MiB, shaping-run 8 MiB의 독립 byte-bounded LRU와 합산 inspector diagnostics
 
+Implemented in `kernel-render` Phase 3 partial:
+
+- versioned Rust RenderList/RenderItem/RenderPrimitive contract
+- scene hierarchy order, absolute node transform, center rotation matrix, rotated AABB, stroke-aware bounds
+- rect, ellipse, line, bezier path, styled shaped-glyph run, media placeholder commands
+- world-space viewport/overscan culling and page content bounds
+- stable command fingerprint/revision and added/updated/removed/unchanged frame diff
+- WASM `render_frame` FFI, editor pan/zoom viewport connection, inspector diagnostics
+- Rust/FFI tests and real browser text-edit incremental diff E2E
+
 Not yet implemented and still release-blocking:
 
 - end-user font ingestion UI, project font manifest/persistence, content-hash persistent cache, and a CJK fallback set
 - other RTL shaping, Script_Extensions refinement, and configurable OpenType features
-- glyph raster/atlas and GPU render commands
+- glyph raster/atlas, WebGL2 backend draw calls, batching, texture eviction, and replacement of the current DOM/SVG visual path
 - multi-script/very-large-document profiling and allocator overhead/fragmentation을 포함한 process-memory budget 검증
 - editor/preview/publish shaped-text visual parity
 
